@@ -1,6 +1,6 @@
 # AGXCLI
 
-<img src="assets/oc/agx-oc-github-banner-16x9.png" width="100%" alt="AGXCLI 黑白 CRT 猫娘协调员，置于部署与验收诊断界面中。">
+<img src="assets/oc/agx-oc-overview.png" width="720" alt="AGXCLI 黑白 CRT 猫娘协调员，置于部署与验收诊断界面中。">
 
 AGX 的猫娘协调员对应安装、计划、验收和回执；她是项目身份，不代表目标环境已通过 `verified`。其余画幅与 GitHub 文档落点见 [OC kit](assets/oc/README.md)。
 
