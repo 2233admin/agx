@@ -1,0 +1,28 @@
+{
+  "schema_version": "agx.bundle/v1",
+  "bundle_id": "dev-bundle-001",
+  "mode": "development",
+  "provenance": "synthetic_test_only",
+  "development_override": true,
+  "compatibility": {"agx": "test-only", "multica_cli": "test-only"},
+  "artifacts": {
+    "agent_control": {
+      "repository": "2233admin/agent-control",
+      "release_tag": "fixture",
+      "commit_sha": "1111111111111111111111111111111111111111",
+      "asset_name": "agent-control.tar.gz",
+      "download_url": "https://example.invalid/agent-control.tar.gz",
+      "asset_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "agent_plugins": {
+      "repository": "2233admin/agent-plugins",
+      "release_tag": "fixture",
+      "commit_sha": "2222222222222222222222222222222222222222",
+      "asset_name": "agent-plugins.tar.gz",
+      "download_url": "https://example.invalid/agent-plugins.tar.gz",
+      "asset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  }
+}
