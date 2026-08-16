@@ -14,9 +14,8 @@ Required status contexts:
 
 Pull request review policy:
 
-- one approving review is required;
-- stale approvals are dismissed after new commits;
-- the last pusher cannot approve their own final push;
+- zero approving reviews are required while the repository has one maintainer;
+- the maintainer may merge their own PR only after every required automated check passes;
 - unresolved conversations block merge.
 
 History and branch mutation policy:
@@ -26,4 +25,4 @@ History and branch mutation policy:
 - branch deletion is disabled;
 - the branch is not locked, so protected merges remain possible.
 
-This rule supports the project process: Issue -> branch -> PR -> local validation -> push -> CI/review. It does not authorize self-merge, bypassing review, or claiming live installation success.
+This rule supports the lightweight project process: Issue -> branch -> PR -> local validation -> push -> required CI -> maintainer merge. It does not authorize bypassing checks or claiming live installation success without matching GitHub and Multica evidence. If additional maintainers join, approval requirements can be restored without changing the product delivery contract.

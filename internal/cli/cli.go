@@ -47,6 +47,9 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "agx %s\n", version)
 		return exitcode.Success
+	case "mascot":
+		fmt.Fprint(stdout, mascotText)
+		return exitcode.Success
 	case "plan":
 		return runPlan(args[1:], stdout, stderr)
 	case "task", "tasks":
@@ -157,6 +160,7 @@ func printGlobalHelp(stdout io.Writer) {
 	fmt.Fprintln(stdout, "Available now:")
 	fmt.Fprintln(stdout, "  help       Show command help")
 	fmt.Fprintln(stdout, "  version    Show the build version")
+	fmt.Fprintln(stdout, "  mascot     Show the terminal-safe AGX OC identity")
 	fmt.Fprintln(stdout, "")
 	fmt.Fprintln(stdout, "Lifecycle commands (safe placeholders):")
 	for _, command := range lifecycleCommands {
@@ -171,6 +175,12 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Usage: agx version")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Print the build version. No external system is contacted.")
+		return exitcode.Success
+	}
+	if commandName == "mascot" {
+		fmt.Fprintln(stdout, "Usage: agx mascot")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Print the terminal-safe AGX identity. No external system is contacted.")
 		return exitcode.Success
 	}
 	if command, ok := lookupLifecycleCommand(commandName); ok {
@@ -205,3 +215,8 @@ func lookupLifecycleCommand(name string) (command, bool) {
 	}
 	return command{}, false
 }
+
+const mascotText = ` /\_/\\
+( o.o )  AGXCLI coordination console
+ > ^ <   identity only; use command receipts for state
+`

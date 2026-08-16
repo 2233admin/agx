@@ -22,4 +22,4 @@ AGXCLI (`agx`) 让用户针对一个 GitHub 仓库得到可解释、可恢复的
 
 ## 支持与证据口径
 
-Windows 11 x64 与 Ubuntu 24.04 x64 是候选 D1 平台，但在真实双平台验收之前只能标为 preview。真实验收需要官方 Multica CLI、认证的可丢弃 Workspace、在线 Runtime、可丢弃 GitHub 仓和 GitHub/Multica 双侧回读；这些输入当前不可用，不能由 mock 替代。
+Windows 11 x64 与 Ubuntu 24.04 x64 是候选 D1 平台，但在真实双平台验收之前只能标为 preview。官方 Multica CLI、认证的可丢弃 Workspace、在线 Runtime 和 GitHub/Multica 双侧回读已经完成一次有边界的 preflight；这只证明适配器路径可行。每个实际 AGX adapter 命令及完整安装仍须取得独立真实证据，不能由 mock 替代。

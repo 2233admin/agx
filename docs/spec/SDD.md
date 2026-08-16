@@ -22,6 +22,6 @@ Bundle v1 应包含 schema/version、兼容范围、control/plugins artifact pin
 
 验收 Issue 使用稳定的 installation marker；同一 installation ID 不得重复创建。只有无害 GitHub acceptance Issue 触发的 Multica Task 已由 Runtime 完成，且 GitHub/Multica 的回读证据一致时，Receipt 才能写为 `verified`。
 
-## 未满足的 live Gate
+## Live Gate 状态
 
-当前没有可用于该合同的真实官方 Multica CLI、认证 disposable Workspace、Runtime 或 live fixture。因此 adapter、资源操作、Task 取消语义和端到端验收均为 blocked；fake contract test 只能验证本地设计，不能关闭 Gate。
+官方 Multica CLI v0.4.26 已完成一次认证 disposable Workspace、在线 Runtime、Issue 创建/分配、执行消息和清理的有边界 preflight。该证据允许开始实现结构化 CLI adapter，但不等于 AGX 安装已通过。资源操作、Task 取消语义以及完整 GitHub -> Multica -> Runtime 双回读仍须随实际命令逐项验证；fake contract test 只能验证本地设计，不能关闭这些 Gate。
