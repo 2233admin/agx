@@ -47,6 +47,17 @@ go run ./cmd/agx help
 
 本仓目前由 `2233admin` 建立，用于推进 AGXCLI。除非上游明确接受或迁移，本仓不代表 `zaurakworks` 的官方发行版。
 
+## D1 规格基线
+
+当前可审阅的 D1 基线在仓内维护：
+
+- [产品需求](docs/spec/PRD.md)
+- [软件设计](docs/spec/SDD.md)
+- [任务与 Gate](docs/spec/TASKS.md)
+- [仓库归属决策](docs/decisions/repository-provenance.md)
+
+这些文档记录了目标合同和阻塞条件；评审通过不表示相应功能已经实现。特别是，真实 Multica CLI、认证的可丢弃 Workspace、在线 Runtime 与双侧验收证据尚不可用，因此任何 live 安装验收仍是 blocked。
+
 ## 贡献流程
 
 1. 先创建有边界和验收标准的 Issue。
