@@ -9,8 +9,9 @@ Required status contexts:
 - `test (ubuntu-latest)`
 - `test (windows-latest)`
 - `build`
-- `CodeRabbit`
 - `GitGuardian Security Checks`
+
+`CodeRabbit` and other advisory review bots may report findings, but they are not merge-blocking because their latency and availability are outside the repository's control.
 
 Pull request review policy:
 
