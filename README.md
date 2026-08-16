@@ -100,6 +100,15 @@ go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-202
 
 `init` 必须显式指定 GitHub owner 和运行端，能力包默认是 `core`，仓库默认私有：
 
+首次初始化前先确认本机入口，不需要把任何凭据交给 AGX：
+
+```powershell
+git --version
+gh auth status
+codex --version   # 只选 Claude 时可省略
+claude --version  # 只选 Codex 时可省略
+```
+
 ```powershell
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --visibility public
@@ -107,6 +116,8 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 ```
 
 不带 `--apply` 的结果是只读初始化计划；带 `--apply` 的成功结果中，`repositories` 记录目标 URL、visibility、初始 commit 与模板 digest，`first_use` 数组按运行端提供结构化的 `provider` 与 `prompt`。部分成功会保留可恢复回执并返回错误，不会删除已经创建的远端仓库。
+
+若默认的 `<owner>/agent-control` 或 `<owner>/agent-contracts` 已存在，AGX 会在写入前停止，不会把它们静默当成自己创建的仓库。此时用 `--control-repo` / `--contracts-repo` 选择未占用名称，再重新运行只读计划。若 provider 已有同名 Marketplace 指向别处，AGX 同样不会改绑；先确认并处理原来源，或只选择没有冲突的 provider。初始化中断时没有单独的 `agx resume` 命令：修复输出的问题后，原样重跑此前的 `agx init ... --apply`，AGX 会根据恢复回执继续缺失步骤。
 
 | 能力包 | 插件能力 |
 | --- | --- |

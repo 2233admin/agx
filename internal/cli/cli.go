@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -217,14 +218,18 @@ func printInitializationPlan(output io.Writer, plan activation.InitializationPla
 	fmt.Fprintln(output, "Order with --apply: create repositories, persist a recovery receipt after each repository, then activate providers.")
 	fmt.Fprintln(output, "Remote repositories are retained on uninstall; existing same-name repositories stop before writes and are never adopted or overwritten.")
 	if len(applyCommand) > 0 && applyCommand[0] != "" {
-		fmt.Fprintln(output, "Next: rerun this exact command with --apply appended and no other changes:")
+		fmt.Fprintf(output, "Next: run this %s command with the same arguments and --apply appended:\n", commandShellLabel())
 		fmt.Fprintf(output, "  %s\n", applyCommand[0])
 	} else {
-		fmt.Fprintln(output, "Next: rerun the same agx init command with --apply appended and no other changes.")
+		fmt.Fprintln(output, "Next: rerun the same agx init arguments with --apply appended and no other changes.")
 	}
 }
 
 func formatInitCommand(args []string, appendApply bool) string {
+	return formatInitCommandForPlatform(args, appendApply, runtime.GOOS)
+}
+
+func formatInitCommandForPlatform(args []string, appendApply bool, goos string) string {
 	command := []string{"agx", "init"}
 	command = append(command, args...)
 	if appendApply {
@@ -240,16 +245,52 @@ func formatInitCommand(args []string, appendApply bool) string {
 		}
 	}
 	for index, item := range command {
-		command[index] = quoteCommandArg(item)
+		command[index] = quoteCommandArgForPlatform(item, goos)
 	}
 	return strings.Join(command, " ")
 }
 
 func quoteCommandArg(value string) string {
-	if value != "" && !strings.ContainsAny(value, " \t\r\n\"") {
+	return quoteCommandArgForPlatform(value, runtime.GOOS)
+}
+
+func quoteCommandArgForPlatform(value, goos string) string {
+	if isSafeCommandArg(value, goos) {
 		return value
 	}
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	if goos == "windows" {
+		return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
+	}
+	return `'` + strings.ReplaceAll(value, `'`, `'"'"'`) + `'`
+}
+
+func isSafeCommandArg(value, goos string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' {
+			continue
+		}
+		if strings.ContainsRune("_./-", character) {
+			continue
+		}
+		if goos == "windows" && strings.ContainsRune(`:\`, character) {
+			continue
+		}
+		if goos != "windows" && strings.ContainsRune("@%+=:,", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func commandShellLabel() string {
+	if runtime.GOOS == "windows" {
+		return "PowerShell"
+	}
+	return "POSIX shell"
 }
 
 func printInitError(output io.Writer, err error, outputMode string) {
@@ -286,7 +327,7 @@ func printInitRecovery(output io.Writer, receipt activation.Receipt, args []stri
 	fmt.Fprintf(output, "Initialization stopped in phase %s. AGX retained its recovery receipt.\n", receipt.Phase)
 	printInitializedRepositories(output, receipt.Repositories)
 	fmt.Fprintln(output, "There is no separate resume command.")
-	fmt.Fprintln(output, "Next: resolve the reported problem, then rerun the original initialization command unchanged:")
+	fmt.Fprintf(output, "Next: resolve the reported problem, then run this %s command again with the same arguments:\n", commandShellLabel())
 	fmt.Fprintf(output, "  %s\n", formatInitCommand(args, false))
 }
 
@@ -416,14 +457,14 @@ func newApplyOptions(root, bundlePath string) installer.Options {
 }
 
 func printApplyNextStep(stdout io.Writer, root ...string) {
-	rootValue := "<directory>"
+	rootValue := quoteCommandArg("<directory>")
 	if len(root) > 0 && strings.TrimSpace(root[0]) != "" {
 		rootValue = quoteCommandArg(root[0])
 	}
-	fmt.Fprintln(stdout, "Next: preview initialization. Replace <owner> and ensure git, authenticated gh, and both selected provider CLIs are on PATH:")
-	fmt.Fprintf(stdout, "  agx init --root %s --github-owner <owner> --provider both --profile core\n", rootValue)
+	fmt.Fprintf(stdout, "Next: preview initialization with this %s command. Replace <owner> and ensure git, authenticated gh, and both selected provider CLIs are on PATH:\n", commandShellLabel())
+	fmt.Fprintf(stdout, "  agx init --root %s --github-owner %s --provider both --profile core\n", rootValue, quoteCommandArg("<owner>"))
 	fmt.Fprintln(stdout, "The preview names the two deployment repositories, provider changes, template digests, and collision behavior.")
-	fmt.Fprintln(stdout, "Review the plan, then append --apply to that exact command to create agent-control and agent-contracts and activate providers.")
+	fmt.Fprintln(stdout, "Review the plan, then append --apply with all other arguments unchanged to create agent-control and agent-contracts and activate providers.")
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 }
 
@@ -495,12 +536,12 @@ func printStatusNext(output io.Writer, root, installationPhase string, missing, 
 		if len(initialization.Problems) > 0 {
 			fmt.Fprintln(output, "Next: resolve every initialization problem listed above.")
 		}
-		fmt.Fprintf(output, "Then rerun: %s\n", statusCommand)
+		fmt.Fprintf(output, "Then rerun this %s command: %s\n", commandShellLabel(), statusCommand)
 		return
 	}
 	if installationPhase == "configured" && initialization.Status == activation.StatusAbsent {
-		fmt.Fprintln(output, "Next: preview initialization (no changes are made):")
-		fmt.Fprintf(output, "  agx init --root %s --github-owner <owner> --provider codex|claude|both --profile core\n", quoteCommandArg(root))
+		fmt.Fprintf(output, "Next: preview initialization with this %s command (no changes are made). Replace <owner> before running it:\n", commandShellLabel())
+		fmt.Fprintf(output, "  agx init --root %s --github-owner %s --provider both --profile core\n", quoteCommandArg(root), quoteCommandArg("<owner>"))
 		return
 	}
 	if initialization.Status == activation.PhaseNeedsResume || initialization.Status == activation.PhaseProvisioning {
@@ -740,9 +781,9 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "  - <owner>/agent-contracts: deployment-owned contract repository created from template.")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "First deployment order:")
-		fmt.Fprintln(stdout, "  agx apply --root <new-install-dir>")
-		fmt.Fprintln(stdout, "  agx init --root <new-install-dir> --github-owner <owner> --provider both")
-		fmt.Fprintln(stdout, "  agx init --root <new-install-dir> --github-owner <owner> --provider both --apply")
+		fmt.Fprintln(stdout, "  agx apply --root '<new-install-dir>'")
+		fmt.Fprintln(stdout, "  agx init --root '<new-install-dir>' --github-owner '<owner>' --provider both")
+		fmt.Fprintln(stdout, "  agx init --root '<new-install-dir>' --github-owner '<owner>' --provider both --apply")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "A same-name repository is a collision: AGX stops before writes and never adopts or overwrites it.")
 		return exitcode.Success

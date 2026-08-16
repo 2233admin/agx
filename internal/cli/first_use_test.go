@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -153,10 +154,10 @@ func TestApplyHelpAndNextStepRemainAvailable(t *testing.T) {
 
 	stdout.Reset()
 	printApplyNextStep(stdout, `D:\AGX installations\default`)
-	want := "Next: preview initialization. Replace <owner> and ensure git, authenticated gh, and both selected provider CLIs are on PATH:\n" +
-		"  agx init --root \"D:\\AGX installations\\default\" --github-owner <owner> --provider both --profile core\n" +
+	want := fmt.Sprintf("Next: preview initialization with this %s command. Replace <owner> and ensure git, authenticated gh, and both selected provider CLIs are on PATH:\n", commandShellLabel()) +
+		fmt.Sprintf("  agx init --root %s --github-owner %s --provider both --profile core\n", quoteCommandArg(`D:\AGX installations\default`), quoteCommandArg("<owner>")) +
 		"The preview names the two deployment repositories, provider changes, template digests, and collision behavior.\n" +
-		"Review the plan, then append --apply to that exact command to create agent-control and agent-contracts and activate providers.\n" +
+		"Review the plan, then append --apply with all other arguments unchanged to create agent-control and agent-contracts and activate providers.\n" +
 		"Installation phase is configured; initialization does not claim verified.\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("printApplyNextStep() = %q, want %q", got, want)
@@ -205,7 +206,7 @@ func TestPrintInitializationPlanMakesDryRunAndApplyExplicit(t *testing.T) {
 	for _, wanted := range []string{
 		"no changes made", "create octo-lab/agent-control", "Marketplace add", "grilling install", "--apply",
 		"agent-plugins as the only installed source", "persist a recovery receipt", "retained on uninstall",
-		"never adopted or overwritten", "exact command", "agx init --root D:\\agx --github-owner octo-lab --provider codex --apply",
+		"never adopted or overwritten", "same arguments", "agx init --root D:\\agx --github-owner octo-lab --provider codex --apply",
 	} {
 		if !strings.Contains(stdout.String(), wanted) {
 			t.Fatalf("plan output %q does not contain %q", stdout.String(), wanted)
@@ -214,10 +215,35 @@ func TestPrintInitializationPlanMakesDryRunAndApplyExplicit(t *testing.T) {
 }
 
 func TestFormatInitCommandAppendsApplyWithoutChangingArguments(t *testing.T) {
-	args := []string{"--root", `D:\AGX installations\default`, "--github-owner", "octo-lab", "--provider", "both", "--profile", "github"}
-	want := `agx init --root "D:\AGX installations\default" --github-owner octo-lab --provider both --profile github --apply`
-	if got := formatInitCommand(args, true); got != want {
-		t.Fatalf("formatInitCommand() = %q, want %q", got, want)
+	args := []string{"--root", `D:\AGX & tools\cost $5's`, "--github-owner", "octo-lab", "--provider", "both", "--profile", "github"}
+	tests := []struct {
+		goos string
+		want string
+	}{
+		{goos: "windows", want: `agx init --root 'D:\AGX & tools\cost $5''s' --github-owner octo-lab --provider both --profile github --apply`},
+		{goos: "linux", want: `agx init --root 'D:\AGX & tools\cost $5'"'"'s' --github-owner octo-lab --provider both --profile github --apply`},
+	}
+	for _, test := range tests {
+		if got := formatInitCommandForPlatform(args, true, test.goos); got != test.want {
+			t.Fatalf("formatInitCommandForPlatform(%s) = %q, want %q", test.goos, got, test.want)
+		}
+	}
+}
+
+func TestQuoteCommandArgForPlatformQuotesShellMetacharacters(t *testing.T) {
+	for _, value := range []string{"space here", "a&b", "a;b", "$HOME", "a|b", "it's"} {
+		for _, goos := range []string{"windows", "linux"} {
+			got := quoteCommandArgForPlatform(value, goos)
+			if got == value || !strings.HasPrefix(got, "'") || !strings.HasSuffix(got, "'") {
+				t.Fatalf("quoteCommandArgForPlatform(%q, %s) = %q, want single-quoted safe argument", value, goos, got)
+			}
+		}
+	}
+	if got := quoteCommandArgForPlatform("it's", "windows"); got != `'it''s'` {
+		t.Fatalf("PowerShell quote = %q", got)
+	}
+	if got := quoteCommandArgForPlatform("it's", "linux"); got != `'it'"'"'s'` {
+		t.Fatalf("POSIX quote = %q", got)
 	}
 }
 
@@ -227,8 +253,8 @@ func TestPrintInitRecoveryUsesOriginalApplyCommandAndRejectsResumeCommand(t *tes
 	printInitRecovery(stdout, activation.Receipt{Phase: activation.PhaseNeedsResume}, args)
 	want := "Initialization stopped in phase needs_resume. AGX retained its recovery receipt.\n" +
 		"There is no separate resume command.\n" +
-		"Next: resolve the reported problem, then rerun the original initialization command unchanged:\n" +
-		"  agx init --root D:\\agx --github-owner octo-lab --provider codex --apply\n"
+		fmt.Sprintf("Next: resolve the reported problem, then run this %s command again with the same arguments:\n", commandShellLabel()) +
+		fmt.Sprintf("  %s\n", formatInitCommand(args, false))
 	if got := stdout.String(); got != want {
 		t.Fatalf("printInitRecovery() = %q, want %q", got, want)
 	}
@@ -277,7 +303,7 @@ func TestPrintStatusNextGuidesInitializationAndRecoveryWithoutGuessing(t *testin
 		{
 			name: "configured installation needs preview", installPhase: "configured",
 			initialization: activation.State{Status: activation.StatusAbsent},
-			want:           []string{"preview initialization", `agx init --root "D:\AGX installations\default"`, "--github-owner <owner>", "--provider codex|claude|both"},
+			want:           []string{"preview initialization", "agx init --root " + quoteCommandArg(`D:\AGX installations\default`), "--github-owner " + quoteCommandArg("<owner>"), "--provider both"},
 		},
 		{
 			name: "needs resume uses original apply", installPhase: "configured",
@@ -292,7 +318,7 @@ func TestPrintStatusNextGuidesInitializationAndRecoveryWithoutGuessing(t *testin
 		{
 			name: "drift reports repairs before status", installPhase: "drifted", missing: []string{"missing"}, modified: []string{"modified"},
 			initialization: activation.State{Status: activation.StatusDrifted, Problems: []string{"problem"}},
-			want:           []string{"repair every missing or modified", "resolve every initialization problem", `agx status --root "D:\AGX installations\default"`},
+			want:           []string{"repair every missing or modified", "resolve every initialization problem", "agx status --root " + quoteCommandArg(`D:\AGX installations\default`)},
 		},
 	}
 	for _, test := range tests {
