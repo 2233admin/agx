@@ -3,8 +3,10 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
+	"github.com/2233admin/agx/internal/contracts"
 	"github.com/2233admin/agx/internal/exitcode"
 )
 
@@ -45,6 +47,8 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "agx %s\n", version)
 		return exitcode.Success
+	case "plan":
+		return runPlan(args[1:], stdout, stderr)
 	case "task", "tasks":
 		fmt.Fprintln(stderr, "AGX-UNSUPPORTED-TASK: AGX does not create, assign, or schedule daily Tasks")
 		return exitcode.Unsupported
@@ -57,6 +61,91 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stderr, "AGX-INVALID-INVOCATION: unknown command %q\n", commandName)
 	return exitcode.Software
+}
+
+type planOptions struct {
+	contractPath string
+	output       string
+}
+
+func runPlan(args []string, stdout, stderr io.Writer) int {
+	options, err := parsePlanOptions(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-USAGE-PLAN: %v\n", err)
+		return exitcode.Usage
+	}
+	data, err := os.ReadFile(options.contractPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-CONTRACT-READ: cannot read %q: %v\n", options.contractPath, err)
+		return exitcode.Data
+	}
+	document, err := contracts.Decode(data)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-CONTRACT-INVALID: %v\n", err)
+		return exitcode.Data
+	}
+
+	if options.output == "json" {
+		encoded, err := contracts.Encode(document)
+		if err != nil {
+			fmt.Fprintf(stderr, "AGX-CONTRACT-INVALID: %v\n", err)
+			return exitcode.Data
+		}
+		fmt.Fprintln(stdout, string(encoded))
+		return exitcode.Success
+	}
+
+	renderPlan(document, stdout)
+	return exitcode.Success
+}
+
+func parsePlanOptions(args []string) (planOptions, error) {
+	options := planOptions{output: "human"}
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--contract":
+			if index+1 == len(args) || options.contractPath != "" {
+				return planOptions{}, fmt.Errorf("provide exactly one --contract <path>")
+			}
+			index++
+			options.contractPath = args[index]
+		case "--output":
+			if index+1 == len(args) {
+				return planOptions{}, fmt.Errorf("--output requires human or json")
+			}
+			index++
+			options.output = args[index]
+			if options.output != "human" && options.output != "json" {
+				return planOptions{}, fmt.Errorf("--output must be human or json")
+			}
+		default:
+			return planOptions{}, fmt.Errorf("unknown plan option %q", args[index])
+		}
+	}
+	if options.contractPath == "" {
+		return planOptions{}, fmt.Errorf("--contract <path> is required")
+	}
+	return options, nil
+}
+
+func renderPlan(document contracts.Document, stdout io.Writer) {
+	desired := document.Contract.Desired
+	plan := document.Contract.Plan
+
+	fmt.Fprintln(stdout, "AGX Installation Plan")
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintf(stdout, "Installation: %s\n", desired.InstallationID)
+	fmt.Fprintf(stdout, "Bundle: %s\n", desired.BundleID)
+	fmt.Fprintf(stdout, "Desired hash: %s\n", desired.DesiredHash)
+	fmt.Fprintln(stdout, "Steps:")
+	if len(plan.Steps) == 0 {
+		fmt.Fprintln(stdout, "  (none)")
+	}
+	for _, step := range plan.Steps {
+		fmt.Fprintf(stdout, "  - %s: %s (risk: %s; compensation: %s)\n", step.ID, step.Kind, step.Risk, step.Compensation)
+	}
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintln(stdout, "No external system is contacted and no contract file is changed.")
 }
 
 func printGlobalHelp(stdout io.Writer) {
