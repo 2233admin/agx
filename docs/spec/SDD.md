@@ -4,11 +4,12 @@
 
 ## 分层
 
-1. `cmd/agx` 负责解析、呈现和稳定退出码；它不拥有状态机，也不直接进行外部写入。
-2. domain 定义 DesiredState、ObservedState、Plan、Step、Receipt、Verification、Diagnostic、installation ID、ownership、desired hash、幂等策略和补偿类别。
-3. plan/saga/journal 基于 domain 生成可重复的计划、执行已批准步骤、先发现后恢复，并在不确定外部结果时停止或进入 `needs_manual_cleanup`。
-4. GitHub adapter 只在批准后的 acceptance 工作中创建/回读受 installation ID 标记的 Issue。
-5. Multica adapter 只能包装版本化官方 CLI 的机器可读接口；必须使用结构化参数、超时、exit-code 捕获、JSON schema 验证和脱敏。CLI 缺失、版本不兼容、认证或 Workspace 歧义必须在写入前报告 `blocked_preflight`。
+1. agent-facing skill 是 `agx` 的薄调用合同：它约束 agent 的只读检查、用户批准和安全停止点，不能持有凭据、复制 saga 或绕过 CLI。
+2. `cmd/agx` 负责解析、呈现和稳定退出码；它不拥有状态机，也不直接进行外部写入。
+3. domain 定义 DesiredState、ObservedState、Plan、Step、Receipt、Verification、Diagnostic、installation ID、ownership、desired hash、幂等策略和补偿类别。
+4. plan/saga/journal 基于 domain 生成可重复的计划、执行已批准步骤、先发现后恢复，并在不确定外部结果时停止或进入 `needs_manual_cleanup`。
+5. GitHub adapter 只在批准后的 acceptance 工作中创建/回读受 installation ID 标记的 Issue。
+6. Multica adapter 只能包装版本化官方 CLI 的机器可读接口；必须使用结构化参数、超时、exit-code 捕获、JSON schema 验证和脱敏。CLI 缺失、版本不兼容、认证或 Workspace 歧义必须在写入前报告 `blocked_preflight`。
 
 ## 状态和安全语义
 

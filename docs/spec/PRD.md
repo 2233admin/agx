@@ -12,6 +12,12 @@ AGXCLI (`agx`) 让用户针对一个 GitHub 仓库得到可解释、可恢复的
 
 `init`、`plan`、`apply`、`status`、`verify`、`resume`、`diagnose`、`support-bundle`、`upgrade`、`rollback`、`uninstall`、`version` 构成 D1 的公共入口。实际功能按 Issue 依赖逐步实现；未实现的命令必须安全失败或清楚说明 unsupported，不能制造外部副作用。
 
+## Agent 调用层
+
+AGX 是部署 CLI，不是 skill。Agent 可以通过一个薄的 AGX skill 按受控流程调用 `agx`，但 skill 不得重新实现部署逻辑。它只定义何时做只读发现、何时请求用户批准、如何解释 receipt，以及遇到 `blocked_preflight` 或 `needs_manual_cleanup` 时何时停止并给出下一步。
+
+所有环境发现、计划、外部写入、恢复、诊断、升级、回滚和卸载仍由 `agx` 执行。skill 不保存或索取凭据、不直接调用 GitHub/Multica、不解析 Multica 人类输出，也不能将 `configured`、mock 或局部配置表述为 `verified`。
+
 ## 硬边界
 
 - 不做日常 Task 的 CRUD、分配、调度或日志。
