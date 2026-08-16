@@ -44,15 +44,15 @@ func TestRunPrintsOfflineVersion(t *testing.T) {
 func TestRunRejectsUnimplementedLifecycleCommand(t *testing.T) {
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
 
-	code := cli.Run([]string{"apply"}, "0.0.0-test", stdout, stderr)
+	code := cli.Run([]string{"resume"}, "0.0.0-test", stdout, stderr)
 	if code != exitcode.Unsupported {
-		t.Fatalf("Run(apply) exit code = %d, want %d", code, exitcode.Unsupported)
+		t.Fatalf("Run(resume) exit code = %d, want %d", code, exitcode.Unsupported)
 	}
 	if stdout.Len() != 0 {
-		t.Fatalf("Run(apply) stdout = %q, want empty", stdout.String())
+		t.Fatalf("Run(resume) stdout = %q, want empty", stdout.String())
 	}
-	if got := stderr.String(); !strings.Contains(got, "AGX-UNSUPPORTED-COMMAND") || !strings.Contains(got, "apply") {
-		t.Fatalf("Run(apply) stderr = %q", got)
+	if got := stderr.String(); !strings.Contains(got, "AGX-UNSUPPORTED-COMMAND") || !strings.Contains(got, "resume") {
+		t.Fatalf("Run(resume) stderr = %q", got)
 	}
 }
 

@@ -42,6 +42,18 @@ go run ./cmd/agx help
 go run ./cmd/agx mascot
 ```
 
+## 本地 Bundle 部署
+
+当前可用的部署闭环会下载 Bundle 固定的两个 GitHub Release 资产、校验 SHA-256、安全解包并写入非敏感回执：
+
+```powershell
+go run ./cmd/agx apply --bundle testdata/bundles/v1-production-agx-bootstrap-20260816.1.json --root D:\agx\installations\default
+go run ./cmd/agx status --root D:\agx\installations\default
+go run ./cmd/agx uninstall --root D:\agx\installations\default
+```
+
+重复应用同一 Bundle 不会重复写入；不同 Bundle 不会覆盖既有安装。`uninstall` 只移除回执证明为 AGX 所有的文件，未知文件会保留。此阶段最高状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+
 ## Preview 安装包（仅供测试）
 
 PR 的 `preview-package` 工作流会生成 Windows x64 ZIP、Ubuntu x64 tar.gz 和
