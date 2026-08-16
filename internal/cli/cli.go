@@ -20,16 +20,9 @@ type command struct {
 }
 
 var lifecycleCommands = []command{
-	{name: "init", description: "Initialize an Installation"},
 	{name: "plan", description: "Show a side-effect-free Installation Plan"},
-	{name: "apply", description: "Apply an approved Plan"},
+	{name: "apply", description: "Install pinned Bundle assets"},
 	{name: "status", description: "Show the observed Installation state"},
-	{name: "verify", description: "Verify matching GitHub and Multica evidence"},
-	{name: "resume", description: "Resume an interrupted lifecycle operation"},
-	{name: "diagnose", description: "Collect local diagnostics"},
-	{name: "support-bundle", description: "Create a redacted support bundle"},
-	{name: "upgrade", description: "Upgrade an Installation"},
-	{name: "rollback", description: "Rollback an Installation"},
 	{name: "uninstall", description: "Remove AGX-owned Installation resources"},
 }
 
@@ -64,6 +57,9 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 		return runUninstall(args[1:], stdout, stderr)
 	case "task", "tasks":
 		fmt.Fprintln(stderr, "AGX-UNSUPPORTED-TASK: AGX does not create, assign, or schedule daily Tasks")
+		return exitcode.Unsupported
+	case "init", "verify", "resume", "diagnose", "support-bundle", "upgrade", "rollback":
+		fmt.Fprintf(stderr, "AGX-UNSUPPORTED-COMMAND: %q is outside the AGX 0.1 deployment surface\n", commandName)
 		return exitcode.Unsupported
 	}
 

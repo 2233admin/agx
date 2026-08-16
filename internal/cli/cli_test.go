@@ -19,7 +19,7 @@ func TestRunShowsStableGlobalHelp(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("Run(help) stderr = %q, want empty", stderr.String())
 	}
-	for _, command := range []string{"init", "plan", "apply", "status", "verify", "resume", "diagnose", "support-bundle", "upgrade", "rollback", "uninstall", "version"} {
+	for _, command := range []string{"plan", "apply", "status", "uninstall", "version"} {
 		if !strings.Contains(stdout.String(), command) {
 			t.Errorf("global help does not contain %q", command)
 		}
