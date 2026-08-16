@@ -152,7 +152,8 @@ func TestApplyHelpAndNextStepRemainAvailable(t *testing.T) {
 	stdout.Reset()
 	printApplyNextStep(stdout)
 	want := "Next: preview initialization with agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full].\n" +
-		"Review the plan, then repeat it with --apply to create repositories and activate providers.\n" +
+		"The preview names the two deployment repositories, provider changes, template digests, and collision behavior.\n" +
+		"Review the plan, then repeat it with --apply to create agent-control and agent-contracts and activate providers.\n" +
 		"Installation phase is configured; initialization does not claim verified.\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("printApplyNextStep() = %q, want %q", got, want)
@@ -186,7 +187,10 @@ func TestPrintInitializationPlanMakesDryRunAndApplyExplicit(t *testing.T) {
 	}
 	stdout := new(bytes.Buffer)
 	printInitializationPlan(stdout, plan)
-	for _, wanted := range []string{"no changes made", "create octo-lab/agent-control", "Marketplace add", "grilling install", "--apply"} {
+	for _, wanted := range []string{
+		"no changes made", "create octo-lab/agent-control", "Marketplace add", "grilling install", "--apply",
+		"agent-plugins as the only installed source", "persist a recovery receipt", "retained on uninstall",
+	} {
 		if !strings.Contains(stdout.String(), wanted) {
 			t.Fatalf("plan output %q does not contain %q", stdout.String(), wanted)
 		}

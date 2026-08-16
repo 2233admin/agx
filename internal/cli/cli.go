@@ -196,7 +196,9 @@ func printInitUsage(output io.Writer) {
 func printInitializationPlan(output io.Writer, plan activation.InitializationPlan) {
 	fmt.Fprintln(output, "AGX initialization plan (no changes made)")
 	fmt.Fprintf(output, "Installation: %s\n", plan.InstallationID)
+	fmt.Fprintf(output, "Plugin source: %s (installed by agx apply)\n", plan.PluginSource)
 	fmt.Fprintf(output, "Template: %s (%s)\n", plan.TemplateVersion, plan.TemplateContentSHA256)
+	fmt.Fprintln(output, "Deployment model: AGX keeps agent-plugins as the only installed source, then creates deployment-owned agent-control and agent-contracts repositories from clean templates.")
 	fmt.Fprintln(output, "Repositories:")
 	for _, item := range plan.Repositories {
 		fmt.Fprintf(output, "  - %s %s/%s (%s; %s; template %s %s)\n", item.Action, item.Owner, item.Name, item.Visibility, item.Kind, item.TemplateVersion, item.TemplateDigest)
@@ -209,6 +211,8 @@ func printInitializationPlan(output io.Writer, plan activation.InitializationPla
 		}
 		fmt.Fprintln(output)
 	}
+	fmt.Fprintln(output, "Order with --apply: create repositories, persist a recovery receipt after each repository, then activate providers.")
+	fmt.Fprintln(output, "Remote repositories are retained on uninstall; existing same-name repositories stop before writes.")
 	fmt.Fprintln(output, "Review this plan, then repeat the command with --apply.")
 }
 
@@ -341,7 +345,8 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 
 func printApplyNextStep(stdout io.Writer) {
 	fmt.Fprintln(stdout, "Next: preview initialization with agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full].")
-	fmt.Fprintln(stdout, "Review the plan, then repeat it with --apply to create repositories and activate providers.")
+	fmt.Fprintln(stdout, "The preview names the two deployment repositories, provider changes, template digests, and collision behavior.")
+	fmt.Fprintln(stdout, "Review the plan, then repeat it with --apply to create agent-control and agent-contracts and activate providers.")
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 }
 
@@ -618,6 +623,17 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Preview a side-effect-free initialization plan. Add --apply to create deployment repositories and activate the pinned agent-plugins component.")
 		fmt.Fprintln(stdout, "Ownership is recorded for safe uninstall; remote repositories are always retained.")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Repository model:")
+		fmt.Fprintln(stdout, "  - 2233admin/agx: the installer and lifecycle CLI.")
+		fmt.Fprintln(stdout, "  - zaurakworks/agent-plugins: the only installed Plugin source.")
+		fmt.Fprintln(stdout, "  - <owner>/agent-control: deployment-owned control-state repository created from template.")
+		fmt.Fprintln(stdout, "  - <owner>/agent-contracts: deployment-owned contract repository created from template.")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Typical first run:")
+		fmt.Fprintln(stdout, "  agx apply --bundle bundle.json --root <new-install-dir>")
+		fmt.Fprintln(stdout, "  agx init --root <new-install-dir> --github-owner <owner> --provider both")
+		fmt.Fprintln(stdout, "  agx init --root <new-install-dir> --github-owner <owner> --provider both --apply")
 		return exitcode.Success
 	case "status":
 		fmt.Fprintln(stdout, "Usage: agx status --root <directory> [--output human|json]")

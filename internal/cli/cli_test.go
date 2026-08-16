@@ -33,7 +33,11 @@ func TestRunShowsInitHelp(t *testing.T) {
 	if code != exitcode.Success {
 		t.Fatalf("Run(init --help) exit code = %d, want %d", code, exitcode.Success)
 	}
-	for _, text := range []string{"--root", "--github-owner", "--provider", "core|github|team|full", "--apply", "safe uninstall"} {
+	for _, text := range []string{
+		"--root", "--github-owner", "--provider", "core|github|team|full", "--apply", "safe uninstall",
+		"Repository model", "2233admin/agx", "zaurakworks/agent-plugins", "<owner>/agent-control", "<owner>/agent-contracts",
+		"Typical first run",
+	} {
 		if !strings.Contains(stdout.String(), text) {
 			t.Errorf("Run(init --help) stdout does not contain %q: %q", text, stdout.String())
 		}

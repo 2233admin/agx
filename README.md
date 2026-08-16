@@ -20,6 +20,29 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 
 第一条 `init` 只执行 GitHub、模板、安装和 provider 的只读 preflight，并打印将要创建的仓库与激活对象；只有带 `--apply` 才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control` 和 `octo-lab/agent-contracts`，每创建一个仓库就持久化一次恢复回执，然后从已安装的 `agent-plugins` 激活选定能力并结构化回读。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
+## 四仓部署速查
+
+AGX 交付时用户会看到四类仓库，但它们不是同一层东西：
+
+| 仓库 | 谁拥有 | 部署时怎么用 |
+| --- | --- | --- |
+| `2233admin/agx` | AGX 当前分发方 | 构建并发布 `agx` CLI；用户下载它来执行 `apply`、`init`、`status`、`uninstall`。 |
+| `zaurakworks/agent-plugins` | 上游 Plugin 源 | AGX 只从固定 Release artifact 安装这个源；Codex/Claude 的 Marketplace 都指向它的安装副本。 |
+| `<owner>/agent-control` | 用户部署拥有者 | `agx init --apply` 从 AGX 内置 `agent-control/v1` 模板创建，保存该部署的控制状态与工作入口。 |
+| `<owner>/agent-contracts` | 用户部署拥有者 | `agx init --apply` 从 AGX 内置 `agent-contracts/v1` 模板创建，保存 GitHub Issue 合同表单、schema、样例和回执工具。 |
+
+从零部署顺序是固定的：
+
+```powershell
+agx apply --bundle bundle.json --root D:\agx\installations\default
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile github
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile github --apply
+```
+
+第二条命令必须先看计划：它会列出目标 owner、两个仓库名、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名仓库冲突行为。第三条命令才创建远端仓库并激活 Codex/Claude。初始化后开启新的 Codex 或 Claude 会话，再使用输出中的 first-use prompt，例如 Codex 的 `$grilling:grilling ...` 或 `$github-collaboration:issue-workflow ...`，Claude 对应 `/grilling:grilling ...` 或 `/github-collaboration:issue-workflow ...`。
+
+卸载边界也要直接理解：`agx uninstall` 只撤销回执证明由 AGX 新增的本地文件和 provider 激活；不会删除 `<owner>/agent-control` 或 `<owner>/agent-contracts`。远端仓库要由 operator 自己决定是否归档、迁移或删除。
+
 ## 产品边界
 
 AGX 负责：
@@ -116,6 +139,7 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
 - [zaurakworks/agent-control](https://github.com/zaurakworks/agent-control)
 - [zaurakworks/agent-plugins](https://github.com/zaurakworks/agent-plugins)
 - [zaurakworks/agent-contracts](https://github.com/zaurakworks/agent-contracts)
+- [四仓部署关系研究](docs/research/zaurakworks-four-repository-deployment.md)
 - [Multica concepts](https://multica.ai/docs/zh/concepts)
 
 本仓目前由 `2233admin` 建立，用于推进 AGXCLI。除非上游明确接受或迁移，本仓不代表 `zaurakworks` 的官方发行版。
