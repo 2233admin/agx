@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/2233admin/agx/blob/main/docs/contracts/agx-bundle.schema.json",
+  "title": "AGX Bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "mode",
+    "provenance",
+    "compatibility",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "agx.bundle/v1"
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "mode": {
+      "enum": ["production", "development"]
+    },
+    "provenance": {
+      "enum": ["github_release", "synthetic_test_only"]
+    },
+    "development_override": {
+      "type": "boolean",
+      "default": false
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agx", "multica_cli"],
+      "properties": {
+        "agx": {"type": "string", "minLength": 1},
+        "multica_cli": {"type": "string", "minLength": 1}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_control", "agent_plugins"],
+      "properties": {
+        "agent_control": {"$ref": "#/$defs/agentControlArtifact"},
+        "agent_plugins": {"$ref": "#/$defs/agentPluginsArtifact"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"mode": {"const": "production"}}},
+      "then": {
+        "properties": {
+          "provenance": {"const": "github_release"},
+          "development_override": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"mode": {"const": "development"}}},
+      "then": {
+        "properties": {
+          "provenance": {"const": "synthetic_test_only"},
+          "development_override": {"const": true}
+        },
+        "required": ["development_override"]
+      }
+    }
+  ],
+  "$defs": {
+    "baseArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "release_tag",
+        "commit_sha",
+        "asset_name",
+        "download_url",
+        "asset_sha256",
+        "content_sha256"
+      ],
+      "properties": {
+        "repository": {"type": "string"},
+        "release_tag": {"type": "string", "minLength": 1},
+        "commit_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "asset_name": {"type": "string", "minLength": 1},
+        "download_url": {"type": "string", "format": "uri"},
+        "asset_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "agentControlArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/baseArtifact"},
+        {"properties": {"repository": {"const": "zaurakworks/agent-control"}}}
+      ]
+    },
+    "agentPluginsArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/baseArtifact"},
+        {"properties": {"repository": {"const": "zaurakworks/agent-plugins"}}}
+      ]
+    }
+  }
+}
