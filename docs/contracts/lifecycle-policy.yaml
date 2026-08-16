@@ -1,0 +1,49 @@
+policy_version: 1
+status: approved_by_2233admin_pending_merge
+gate_issue: 5
+approved_by: 2233admin
+approval_scope:
+  - security
+  - release
+success:
+  terminal_state: verified
+  requires:
+    - github_acceptance_issue_readback
+    - multica_task_runtime_readback
+    - matching_installation_id
+states:
+  - planned
+  - applying
+  - configured
+  - blocked_preflight
+  - awaiting_verification
+  - verified
+  - needs_manual_cleanup
+read_only_commands:
+  - status
+  - diagnose
+verify:
+  new_acceptance_requires_explicit_approval: true
+credentials:
+  plaintext_fallback: forbidden
+  export: forbidden
+  retained_on_uninstall: true
+serialization:
+  unknown_sensitive_fields: reject_or_drop
+  prohibited_data:
+    - token
+    - cookie
+    - oauth_code
+    - email
+    - business_content
+    - full_local_path
+resume:
+  discover_before_retry: true
+  unknown_external_outcome: stop_or_manual_cleanup
+rollback:
+  latest_transaction_only: true
+  unconfirmed_running_task: stop_compensation
+uninstall:
+  requires_agx_ownership_proof: true
+  retain_unknown_resources: true
+  retain_user_owned_resources: true
