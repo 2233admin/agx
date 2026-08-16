@@ -1,0 +1,37 @@
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+      - run: go vet ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build Ubuntu x64
+        run: GOOS=linux GOARCH=amd64 go build -trimpath -o bin/agx-linux-amd64 ./cmd/agx
+      - name: Build Windows x64
+        run: GOOS=windows GOARCH=amd64 go build -trimpath -o bin/agx-windows-amd64.exe ./cmd/agx

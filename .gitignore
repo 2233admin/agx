@@ -1,0 +1,5 @@
+/bin/
+/.agx/
+*.exe
+*.test
+coverage.out
