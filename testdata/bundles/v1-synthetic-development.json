@@ -10,7 +10,7 @@
   },
   "artifacts": {
     "agent_control": {
-      "repository": "zaurakworks/agent-control",
+      "repository": "2233admin/agent-control",
       "release_tag": "synthetic-agent-control-v0",
       "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "asset_name": "synthetic-agent-control.tar.gz",
@@ -19,7 +19,7 @@
       "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
     "agent_plugins": {
-      "repository": "zaurakworks/agent-plugins",
+      "repository": "2233admin/agent-plugins",
       "release_tag": "synthetic-agent-plugins-v0",
       "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
       "asset_name": "synthetic-agent-plugins.tar.gz",

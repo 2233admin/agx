@@ -96,13 +96,13 @@
     "agentControlArtifact": {
       "allOf": [
         {"$ref": "#/$defs/baseArtifact"},
-        {"properties": {"repository": {"const": "zaurakworks/agent-control"}}}
+        {"properties": {"repository": {"const": "2233admin/agent-control"}}}
       ]
     },
     "agentPluginsArtifact": {
       "allOf": [
         {"$ref": "#/$defs/baseArtifact"},
-        {"properties": {"repository": {"const": "zaurakworks/agent-plugins"}}}
+        {"properties": {"repository": {"const": "2233admin/agent-plugins"}}}
       ]
     }
   }
