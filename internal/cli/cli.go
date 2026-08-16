@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/2233admin/agx/internal/contracts"
 	"github.com/2233admin/agx/internal/exitcode"
+	installer "github.com/2233admin/agx/internal/install"
 )
 
 type command struct {
@@ -52,6 +56,12 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 		return exitcode.Success
 	case "plan":
 		return runPlan(args[1:], stdout, stderr)
+	case "apply":
+		return runApply(args[1:], stdout, stderr)
+	case "status":
+		return runStatus(args[1:], stdout, stderr)
+	case "uninstall":
+		return runUninstall(args[1:], stdout, stderr)
 	case "task", "tasks":
 		fmt.Fprintln(stderr, "AGX-UNSUPPORTED-TASK: AGX does not create, assign, or schedule daily Tasks")
 		return exitcode.Unsupported
@@ -64,6 +74,99 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stderr, "AGX-INVALID-INVOCATION: unknown command %q\n", commandName)
 	return exitcode.Software
+}
+
+func runApply(args []string, stdout, stderr io.Writer) int {
+	values, err := parseNamedOptions(args, map[string]bool{"--bundle": true, "--root": true})
+	if err != nil || values["--bundle"] == "" || values["--root"] == "" {
+		fmt.Fprintln(stderr, "AGX-USAGE-APPLY: --bundle <path> and --root <directory> are required")
+		return exitcode.Usage
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	receipt, unchanged, err := installer.Apply(ctx, installer.Options{BundlePath: values["--bundle"], Root: values["--root"]})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Software
+	}
+	if unchanged {
+		fmt.Fprintf(stdout, "AGX installation %s already configured (Bundle %s); no changes made.\n", receipt.InstallationID, receipt.BundleID)
+		return exitcode.Success
+	}
+	fmt.Fprintf(stdout, "AGX installation %s configured from Bundle %s.\n", receipt.InstallationID, receipt.BundleID)
+	fmt.Fprintln(stdout, "Run agx verify after GitHub and Multica evidence exists; configured is not verified.")
+	return exitcode.Success
+}
+
+func runStatus(args []string, stdout, stderr io.Writer) int {
+	values, err := parseNamedOptions(args, map[string]bool{"--root": true, "--output": true})
+	if err != nil || values["--root"] == "" || (values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
+		fmt.Fprintln(stderr, "AGX-USAGE-STATUS: --root <directory> [--output human|json]")
+		return exitcode.Usage
+	}
+	state, err := installer.Status(values["--root"])
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Data
+	}
+	if values["--output"] == "json" {
+		result := struct {
+			Phase          string   `json:"phase"`
+			InstallationID string   `json:"installation_id,omitempty"`
+			BundleID       string   `json:"bundle_id,omitempty"`
+			Missing        []string `json:"missing,omitempty"`
+		}{Phase: state.Phase, Missing: state.Missing}
+		if state.Receipt != nil {
+			result.InstallationID = state.Receipt.InstallationID
+			result.BundleID = state.Receipt.BundleID
+		}
+		data, _ := json.Marshal(result)
+		fmt.Fprintln(stdout, string(data))
+		return exitcode.Success
+	}
+	fmt.Fprintf(stdout, "AGX installation phase: %s\n", state.Phase)
+	if state.Receipt != nil {
+		fmt.Fprintf(stdout, "Installation: %s\nBundle: %s\n", state.Receipt.InstallationID, state.Receipt.BundleID)
+	}
+	for _, missing := range state.Missing {
+		fmt.Fprintf(stdout, "Missing owned file: %s\n", missing)
+	}
+	return exitcode.Success
+}
+
+func runUninstall(args []string, stdout, stderr io.Writer) int {
+	values, err := parseNamedOptions(args, map[string]bool{"--root": true})
+	if err != nil || values["--root"] == "" {
+		fmt.Fprintln(stderr, "AGX-USAGE-UNINSTALL: --root <directory> is required")
+		return exitcode.Usage
+	}
+	retained, err := installer.Uninstall(values["--root"])
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Software
+	}
+	if len(retained) == 0 {
+		fmt.Fprintln(stdout, "AGX-owned installation removed.")
+		return exitcode.Success
+	}
+	fmt.Fprintf(stdout, "AGX-owned files removed; retained %d unknown path(s):\n", len(retained))
+	for _, item := range retained {
+		fmt.Fprintf(stdout, "  %s\n", item)
+	}
+	return exitcode.Success
+}
+
+func parseNamedOptions(args []string, allowed map[string]bool) (map[string]string, error) {
+	values := map[string]string{}
+	for index := 0; index < len(args); index++ {
+		name := args[index]
+		if !allowed[name] || values[name] != "" || index+1 >= len(args) {
+			return nil, fmt.Errorf("invalid option %q", name)
+		}
+		index++
+		values[name] = args[index]
+	}
+	return values, nil
 }
 
 type planOptions struct {
@@ -162,7 +265,7 @@ func printGlobalHelp(stdout io.Writer) {
 	fmt.Fprintln(stdout, "  version    Show the build version")
 	fmt.Fprintln(stdout, "  mascot     Show the terminal-safe AGX OC identity")
 	fmt.Fprintln(stdout, "")
-	fmt.Fprintln(stdout, "Lifecycle commands (safe placeholders):")
+	fmt.Fprintln(stdout, "Lifecycle commands:")
 	for _, command := range lifecycleCommands {
 		fmt.Fprintf(stdout, "  %-15s %s\n", command.name, command.description)
 	}
@@ -181,6 +284,23 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Usage: agx mascot")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Print the terminal-safe AGX identity. No external system is contacted.")
+		return exitcode.Success
+	}
+	switch commandName {
+	case "apply":
+		fmt.Fprintln(stdout, "Usage: agx apply --bundle <bundle.json> --root <directory>")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Download, verify, and atomically install pinned Bundle assets.")
+		return exitcode.Success
+	case "status":
+		fmt.Fprintln(stdout, "Usage: agx status --root <directory> [--output human|json]")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Read the local receipt and detect missing AGX-owned files without writing.")
+		return exitcode.Success
+	case "uninstall":
+		fmt.Fprintln(stdout, "Usage: agx uninstall --root <directory>")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Remove only files recorded as AGX-owned; retain unknown files.")
 		return exitcode.Success
 	}
 	if command, ok := lookupLifecycleCommand(commandName); ok {
