@@ -1,0 +1,39 @@
+name: preview-package
+
+on:
+  pull_request:
+    paths:
+      - ".goreleaser.yaml"
+      - ".github/workflows/preview-package.yml"
+      - "cmd/**"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --snapshot --clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agx-preview-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/checksums.txt
