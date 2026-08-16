@@ -1,6 +1,7 @@
 package bundle_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,31 @@ import (
 
 	"github.com/2233admin/agx/internal/bundle"
 )
+
+func TestProductionMatchesRepositoryFixtureAndReturnsIsolatedCopies(t *testing.T) {
+	want, err := os.ReadFile(filepath.Join("..", "..", "testdata", "bundles", "v2-production-agx-bootstrap-20260816.1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := bundle.Production()
+	if !bytes.Equal(first, want) {
+		t.Fatal("Production() does not byte-match the repository production fixture")
+	}
+	document, err := bundle.Decode(first)
+	if err != nil {
+		t.Fatalf("Decode(Production()) error = %v", err)
+	}
+	if document.Mode != bundle.ModeProduction || document.BundleID != "agx-bootstrap-20260816.1" {
+		t.Fatalf("production document = %#v", document)
+	}
+
+	first[0] ^= 0xff
+	second := bundle.Production()
+	if !bytes.Equal(second, want) {
+		t.Fatal("mutating a Production() result polluted the embedded Bundle")
+	}
+}
 
 func TestDecodeAcceptsProductionBundleV2(t *testing.T) {
 	document := decodeFixture(t, "production-valid.json")

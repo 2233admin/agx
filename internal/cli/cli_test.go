@@ -35,8 +35,9 @@ func TestRunShowsInitHelp(t *testing.T) {
 	}
 	for _, text := range []string{
 		"--root", "--github-owner", "--provider", "core|github|team|full", "--apply", "safe uninstall",
+		"Prerequisites", "Defaults", "profile: core", "visibility: private",
 		"Repository model", "2233admin/agx", "zaurakworks/agent-plugins", "<owner>/agent-control", "<owner>/agent-contracts",
-		"Typical first run",
+		"First deployment order", "A same-name repository is a collision",
 	} {
 		if !strings.Contains(stdout.String(), text) {
 			t.Errorf("Run(init --help) stdout does not contain %q: %q", text, stdout.String())
@@ -56,6 +57,34 @@ func TestRunInitRequiresRootAndProvider(t *testing.T) {
 	}
 	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "AGX-USAGE-INIT") {
 		t.Fatalf("Run(init) stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	for _, text := range []string{
+		"Prerequisites", "git", "authenticated GitHub CLI", "selected provider CLI",
+		"Defaults", "--profile core", "--visibility private", "--control-repo agent-control", "--contracts-repo agent-contracts",
+		"Order", "agx apply", "agx init (plan)", "Collision policy", "never adopts or overwrites",
+	} {
+		if !strings.Contains(stderr.String(), text) {
+			t.Fatalf("Run(init) usage stderr does not contain %q: %q", text, stderr.String())
+		}
+	}
+}
+
+func TestRunApplyUsageExplainsBuiltInAndOverrideSources(t *testing.T) {
+	for _, args := range [][]string{
+		{"apply"},
+		{"apply", "--bundle", "bundle.json"},
+		{"apply", "--root", `D:\agx`, "--bundle", "one.json", "--bundle", "two.json"},
+	} {
+		stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+		code := cli.Run(args, "0.0.0-test", stdout, stderr)
+		if code != exitcode.Usage || stdout.Len() != 0 {
+			t.Fatalf("Run(%v) code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+		for _, want := range []string{"--root <directory> is required", "built-in production Bundle", "explicitly overrides", "cannot be combined"} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Fatalf("Run(%v) stderr=%q, want %q", args, stderr.String(), want)
+			}
+		}
 	}
 }
 

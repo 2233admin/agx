@@ -1,0 +1,40 @@
+{
+  "schema_version": "agx.bundle/v2",
+  "bundle_id": "agx-bootstrap-20260816.1",
+  "mode": "production",
+  "provenance": "github_release",
+  "development_override": false,
+  "compatibility": {
+    "agx": ">=0.1.0 <0.2.0"
+  },
+  "sources": {
+    "agent_plugins": {
+      "upstream_repository": "zaurakworks/agent-plugins",
+      "distribution_repository": "2233admin/agent-plugins",
+      "release_tag": "agx-bootstrap-20260816.1",
+      "commit_sha": "eb10f7f14cc05b70b6c27a121c6f72d1b3b9edb8",
+      "asset_name": "agent-plugins-agx-bootstrap-20260816.1.tar.gz",
+      "download_url": "https://github.com/2233admin/agent-plugins/releases/download/agx-bootstrap-20260816.1/agent-plugins-agx-bootstrap-20260816.1.tar.gz",
+      "asset_sha256": "ba8142548d7b055b4f6faba4587b12a9c6411815431042607436676437ae2de1",
+      "content_sha256": "d4f53c2d2d45f7efcb2884d8232248434bae44f071369cc938aface47e120002"
+    }
+  },
+  "templates": {
+    "version": "bootstrap-20260817.1",
+    "content_sha256": "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca",
+    "references": {
+      "agent_plugins": {
+        "repository": "zaurakworks/agent-plugins",
+        "commit_sha": "ad07742ade0f0039ed1df1a9262e8f087117fca0"
+      },
+      "agent_control": {
+        "repository": "zaurakworks/agent-control",
+        "commit_sha": "b0e6e0e8244ef518f671e2326745cd67c6d2307a"
+      },
+      "agent_contracts": {
+        "repository": "zaurakworks/agent-contracts",
+        "commit_sha": "5bb8ea0b54f063b0758c294b73ea270ba69322d2"
+      }
+    }
+  }
+}

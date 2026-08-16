@@ -13,7 +13,7 @@ AGXCLI (`agx`) 是小型部署 CLI：它安装固定版本的 `agent-plugins`，
 用户下载一个独立可执行文件，先安装插件发行包，再预演初始化：
 
 ```text
-agx apply --bundle bundle.json --root D:\agx\installations\default
+agx apply --root D:\agx\installations\default
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --apply
 ```
@@ -34,7 +34,7 @@ AGX 交付时用户会看到四类仓库，但它们不是同一层东西：
 从零部署顺序是固定的：
 
 ```powershell
-agx apply --bundle bundle.json --root D:\agx\installations\default
+agx apply --root D:\agx\installations\default
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile github
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile github --apply
 ```
@@ -72,17 +72,25 @@ go run ./cmd/agx init --help
 
 ## 本地 Bundle 部署
 
-当前可用的部署闭环会下载 Bundle 固定的单个 `agent-plugins` GitHub Release 资产、校验 SHA-256、安全解包并写入非敏感回执：
+正式二进制内置经过 Schema 校验、版本固定的 production Bundle manifest。普通用户不需要另外下载或寻找 `bundle.json`；`apply` 会按内置 manifest 下载唯一的 `agent-plugins` GitHub Release 资产、分别校验压缩资产和解压内容的 SHA-256、安全解包并写入非敏感回执。
 
 首次 `apply` 的 `--root` 必须尚不存在；AGX 会原子创建它。不要预先创建空目录，因为无法证明归属的既有目录会被当作冲突而保留。
 
 ```powershell
-go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-20260816.1.json --root D:\agx\installations\default
+go run ./cmd/agx apply --root D:\agx\installations\default
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --apply
 go run ./cmd/agx status --root D:\agx\installations\default
 go run ./cmd/agx uninstall --root D:\agx\installations\default
 ```
+
+开发、审计或受控回归需要显式 manifest 时，仍可覆盖内置 production Bundle：
+
+```powershell
+go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-20260816.1.json --root D:\agx\installations\review
+```
+
+`--bundle` 与内置 production manifest 二选一；普通部署省略它，显式指定时 AGX 不会再混入内置 manifest。
 
 重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。初始化中断后，重试会先验证回执记录的远端仓库及其初始提交，再只继续缺失的步骤；AGX 不把一个碰巧同名的仓库当成自己创建的仓库。
 

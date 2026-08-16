@@ -36,9 +36,11 @@ GitHub commit permalinks:
 ## Deployment Sequence
 
 1. User downloads or builds `agx` from `2233admin/agx`.
-2. `agx apply --bundle ... --root <new-install-dir>` installs the pinned
-   `agent-plugins` artifact into the local installation root and writes an AGX
-   receipt.
+2. `agx apply --root <new-install-dir>` uses the production Bundle manifest
+   embedded in the AGX binary, downloads the pinned `agent-plugins` artifact
+   into the local installation root, and writes an AGX receipt. `--bundle
+   <bundle.json>` is an explicit override for development, audit, or controlled
+   regression use.
 3. `agx init --root <install-dir> --github-owner <owner> --provider ...`
    performs a read-only preflight and prints the exact repositories, template
    digests, provider changes, and collision behavior.

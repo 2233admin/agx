@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/2233admin/agx/internal/activation"
+	"github.com/2233admin/agx/internal/bundle"
 	"github.com/2233admin/agx/internal/contracts"
 	"github.com/2233admin/agx/internal/exitcode"
 	installer "github.com/2233admin/agx/internal/install"
@@ -125,7 +126,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	if values["--apply"] == "" {
 		plan, err := activation.Plan(ctx, options)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			printInitError(stderr, err, values["--output"])
 			return exitcode.Software
 		}
 		if values["--output"] == "json" {
@@ -137,7 +138,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, string(data))
 			return exitcode.Success
 		}
-		printInitializationPlan(stdout, plan)
+		printInitializationPlan(stdout, plan, formatInitCommand(args, true))
 		return exitcode.Success
 	}
 
@@ -154,12 +155,10 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 					fmt.Fprintln(stdout, string(data))
 				}
 			} else {
-				fmt.Fprintf(stdout, "Initialization stopped in phase %s. AGX retained its recovery receipt.\n", receipt.Phase)
-				printInitializedRepositories(stdout, receipt.Repositories)
-				fmt.Fprintln(stdout, "Resolve the reported problem, then repeat the same --apply command to resume.")
+				printInitRecovery(stdout, receipt, args)
 			}
 		}
-		fmt.Fprintln(stderr, err)
+		printInitError(stderr, err, values["--output"])
 		return exitcode.Software
 	}
 	if values["--output"] == "json" {
@@ -191,9 +190,13 @@ func newInitPlanResult(plan activation.InitializationPlan) initPlanResult {
 
 func printInitUsage(output io.Writer) {
 	fmt.Fprintln(output, "AGX-USAGE-INIT: --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
+	fmt.Fprintln(output, "Prerequisites: git, an authenticated GitHub CLI (gh), and every selected provider CLI must be on PATH.")
+	fmt.Fprintln(output, "Defaults: --profile core, --visibility private, --control-repo agent-control, --contracts-repo agent-contracts.")
+	fmt.Fprintln(output, "Order: agx apply, agx init (plan), then the same agx init command with --apply appended.")
+	fmt.Fprintln(output, "Collision policy: AGX stops on same-name repositories; it never adopts or overwrites them.")
 }
 
-func printInitializationPlan(output io.Writer, plan activation.InitializationPlan) {
+func printInitializationPlan(output io.Writer, plan activation.InitializationPlan, applyCommand ...string) {
 	fmt.Fprintln(output, "AGX initialization plan (no changes made)")
 	fmt.Fprintf(output, "Installation: %s\n", plan.InstallationID)
 	fmt.Fprintf(output, "Plugin source: %s (installed by agx apply)\n", plan.PluginSource)
@@ -212,8 +215,61 @@ func printInitializationPlan(output io.Writer, plan activation.InitializationPla
 		fmt.Fprintln(output)
 	}
 	fmt.Fprintln(output, "Order with --apply: create repositories, persist a recovery receipt after each repository, then activate providers.")
-	fmt.Fprintln(output, "Remote repositories are retained on uninstall; existing same-name repositories stop before writes.")
-	fmt.Fprintln(output, "Review this plan, then repeat the command with --apply.")
+	fmt.Fprintln(output, "Remote repositories are retained on uninstall; existing same-name repositories stop before writes and are never adopted or overwritten.")
+	if len(applyCommand) > 0 && applyCommand[0] != "" {
+		fmt.Fprintln(output, "Next: rerun this exact command with --apply appended and no other changes:")
+		fmt.Fprintf(output, "  %s\n", applyCommand[0])
+	} else {
+		fmt.Fprintln(output, "Next: rerun the same agx init command with --apply appended and no other changes.")
+	}
+}
+
+func formatInitCommand(args []string, appendApply bool) string {
+	command := []string{"agx", "init"}
+	command = append(command, args...)
+	if appendApply {
+		hasApply := false
+		for _, item := range args {
+			if item == "--apply" {
+				hasApply = true
+				break
+			}
+		}
+		if !hasApply {
+			command = append(command, "--apply")
+		}
+	}
+	for index, item := range command {
+		command[index] = quoteCommandArg(item)
+	}
+	return strings.Join(command, " ")
+}
+
+func quoteCommandArg(value string) string {
+	if value != "" && !strings.ContainsAny(value, " \t\r\n\"") {
+		return value
+	}
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+}
+
+func printInitError(output io.Writer, err error, outputMode string) {
+	fmt.Fprintln(output, err)
+	if outputMode == "json" || err == nil {
+		return
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "AGX-REPOSITORY-COLLISION"):
+		fmt.Fprintln(output, "Next: choose unused names with --control-repo and --contracts-repo, then rerun the same init command. AGX will not adopt or overwrite same-name repositories.")
+	case strings.Contains(message, "AGX-INIT-SOURCE-CONFLICT"):
+		fmt.Fprintln(output, "Next: resolve the existing Marketplace source conflict in the selected provider, then rerun the same init command. AGX will not replace an existing source.")
+	case strings.Contains(message, "AGX-REPOSITORY-AUTH"):
+		fmt.Fprintln(output, "Next: run gh auth login, confirm access to the target owner with gh auth status, then rerun the same init command.")
+	case strings.Contains(message, "AGX-REPOSITORY-CLI-MISSING"):
+		fmt.Fprintln(output, "Next: install git and GitHub CLI (gh), ensure both are on PATH, authenticate gh, then rerun the same init command.")
+	case strings.Contains(message, "AGX-INIT-PROVIDER-CLI-MISSING"):
+		fmt.Fprintln(output, "Next: install every selected provider CLI (codex and/or claude), ensure it is on PATH, then rerun the same init command.")
+	}
 }
 
 func printInitializedRepositories(output io.Writer, repositories []repository.Receipt) {
@@ -224,6 +280,14 @@ func printInitializedRepositories(output io.Writer, repositories []repository.Re
 	for _, item := range repositories {
 		fmt.Fprintf(output, "  - %s (%s; initial commit %s)\n", item.URL, item.Visibility, item.InitialCommit)
 	}
+}
+
+func printInitRecovery(output io.Writer, receipt activation.Receipt, args []string) {
+	fmt.Fprintf(output, "Initialization stopped in phase %s. AGX retained its recovery receipt.\n", receipt.Phase)
+	printInitializedRepositories(output, receipt.Repositories)
+	fmt.Fprintln(output, "There is no separate resume command.")
+	fmt.Fprintln(output, "Next: resolve the reported problem, then rerun the original initialization command unchanged:")
+	fmt.Fprintf(output, "  %s\n", formatInitCommand(args, false))
 }
 
 type initResult struct {
@@ -323,13 +387,14 @@ func providerDisplayName(name provider.Name) string {
 
 func runApply(args []string, stdout, stderr io.Writer) int {
 	values, err := parseNamedOptions(args, map[string]bool{"--bundle": true, "--root": true})
-	if err != nil || values["--bundle"] == "" || values["--root"] == "" {
-		fmt.Fprintln(stderr, "AGX-USAGE-APPLY: --bundle <path> and --root <directory> are required")
+	_, bundleProvided := values["--bundle"]
+	if err != nil || values["--root"] == "" || (bundleProvided && values["--bundle"] == "") {
+		fmt.Fprintln(stderr, "AGX-USAGE-APPLY: --root <directory> is required. Without --bundle, AGX uses its built-in production Bundle; --bundle <bundle.json> explicitly overrides it. These Bundle sources cannot be combined.")
 		return exitcode.Usage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	receipt, unchanged, err := installer.Apply(ctx, installer.Options{BundlePath: values["--bundle"], Root: values["--root"]})
+	receipt, unchanged, err := installer.Apply(ctx, newApplyOptions(values["--root"], values["--bundle"]))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Software
@@ -339,14 +404,26 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stdout, "AGX installation %s configured from Bundle %s.\n", receipt.InstallationID, receipt.BundleID)
 	}
-	printApplyNextStep(stdout)
+	printApplyNextStep(stdout, values["--root"])
 	return exitcode.Success
 }
 
-func printApplyNextStep(stdout io.Writer) {
-	fmt.Fprintln(stdout, "Next: preview initialization with agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full].")
+func newApplyOptions(root, bundlePath string) installer.Options {
+	if bundlePath != "" {
+		return installer.Options{BundlePath: bundlePath, Root: root}
+	}
+	return installer.Options{BundleData: bundle.Production(), Root: root}
+}
+
+func printApplyNextStep(stdout io.Writer, root ...string) {
+	rootValue := "<directory>"
+	if len(root) > 0 && strings.TrimSpace(root[0]) != "" {
+		rootValue = quoteCommandArg(root[0])
+	}
+	fmt.Fprintln(stdout, "Next: preview initialization. Replace <owner> and ensure git, authenticated gh, and both selected provider CLIs are on PATH:")
+	fmt.Fprintf(stdout, "  agx init --root %s --github-owner <owner> --provider both --profile core\n", rootValue)
 	fmt.Fprintln(stdout, "The preview names the two deployment repositories, provider changes, template digests, and collision behavior.")
-	fmt.Fprintln(stdout, "Review the plan, then repeat it with --apply to create agent-control and agent-contracts and activate providers.")
+	fmt.Fprintln(stdout, "Review the plan, then append --apply to that exact command to create agent-control and agent-contracts and activate providers.")
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 }
 
@@ -405,7 +482,30 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	for _, problem := range initialization.Problems {
 		fmt.Fprintf(stdout, "Initialization problem: %s\n", problem)
 	}
+	printStatusNext(stdout, values["--root"], state.Phase, state.Missing, state.Modified, initialization)
 	return exitcode.Success
+}
+
+func printStatusNext(output io.Writer, root, installationPhase string, missing, modified []string, initialization activation.State) {
+	statusCommand := "agx status --root " + quoteCommandArg(root)
+	if installationPhase == "drifted" || initialization.Status == activation.StatusDrifted {
+		if len(missing) > 0 || len(modified) > 0 {
+			fmt.Fprintln(output, "Next: repair every missing or modified owned file listed above.")
+		}
+		if len(initialization.Problems) > 0 {
+			fmt.Fprintln(output, "Next: resolve every initialization problem listed above.")
+		}
+		fmt.Fprintf(output, "Then rerun: %s\n", statusCommand)
+		return
+	}
+	if installationPhase == "configured" && initialization.Status == activation.StatusAbsent {
+		fmt.Fprintln(output, "Next: preview initialization (no changes are made):")
+		fmt.Fprintf(output, "  agx init --root %s --github-owner <owner> --provider codex|claude|both --profile core\n", quoteCommandArg(root))
+		return
+	}
+	if initialization.Status == activation.PhaseNeedsResume || initialization.Status == activation.PhaseProvisioning {
+		fmt.Fprintln(output, "Next: there is no separate resume command. Resolve the initialization problem, then rerun the original agx init ... --apply command unchanged.")
+	}
 }
 
 func runUninstall(args []string, stdout, stderr io.Writer) int {
@@ -614,9 +714,9 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 	}
 	switch commandName {
 	case "apply":
-		fmt.Fprintln(stdout, "Usage: agx apply --bundle <bundle.json> --root <directory>")
+		fmt.Fprintln(stdout, "Usage: agx apply --root <directory> [--bundle <bundle.json>]")
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Download, verify, and atomically install pinned Bundle assets.")
+		fmt.Fprintln(stdout, "Download, verify, and atomically install the built-in production Bundle. Use --bundle only to explicitly override it with a local Bundle file.")
 		return exitcode.Success
 	case "init":
 		fmt.Fprintln(stdout, "Usage: agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
@@ -624,16 +724,27 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Preview a side-effect-free initialization plan. Add --apply to create deployment repositories and activate the pinned agent-plugins component.")
 		fmt.Fprintln(stdout, "Ownership is recorded for safe uninstall; remote repositories are always retained.")
 		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Prerequisites:")
+		fmt.Fprintln(stdout, "  - git and GitHub CLI (gh) are on PATH; gh is authenticated and can create repositories for <owner>.")
+		fmt.Fprintln(stdout, "  - Every selected provider CLI (codex and/or claude) is on PATH.")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Defaults:")
+		fmt.Fprintln(stdout, "  - profile: core")
+		fmt.Fprintln(stdout, "  - visibility: private")
+		fmt.Fprintln(stdout, "  - repositories: agent-control and agent-contracts")
+		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Repository model:")
 		fmt.Fprintln(stdout, "  - 2233admin/agx: the installer and lifecycle CLI.")
 		fmt.Fprintln(stdout, "  - zaurakworks/agent-plugins: the only installed Plugin source.")
 		fmt.Fprintln(stdout, "  - <owner>/agent-control: deployment-owned control-state repository created from template.")
 		fmt.Fprintln(stdout, "  - <owner>/agent-contracts: deployment-owned contract repository created from template.")
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Typical first run:")
-		fmt.Fprintln(stdout, "  agx apply --bundle bundle.json --root <new-install-dir>")
+		fmt.Fprintln(stdout, "First deployment order:")
+		fmt.Fprintln(stdout, "  agx apply --root <new-install-dir>")
 		fmt.Fprintln(stdout, "  agx init --root <new-install-dir> --github-owner <owner> --provider both")
 		fmt.Fprintln(stdout, "  agx init --root <new-install-dir> --github-owner <owner> --provider both --apply")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "A same-name repository is a collision: AGX stops before writes and never adopts or overwrites it.")
 		return exitcode.Success
 	case "status":
 		fmt.Fprintln(stdout, "Usage: agx status --root <directory> [--output human|json]")

@@ -18,8 +18,108 @@ import (
 	"testing"
 
 	"github.com/2233admin/agx/internal/bootstrap"
+	"github.com/2233admin/agx/internal/bundle"
 	installer "github.com/2233admin/agx/internal/install"
 )
+
+func TestApplyRequiresExactlyOneBundleSource(t *testing.T) {
+	tests := []struct {
+		name    string
+		options installer.Options
+	}{
+		{name: "zero inputs", options: installer.Options{Root: filepath.Join(t.TempDir(), "zero")}},
+		{name: "both inputs", options: installer.Options{BundlePath: "bundle.json", BundleData: []byte(`{}`), Root: filepath.Join(t.TempDir(), "both")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := installer.Apply(context.Background(), test.options)
+			if err == nil || !strings.HasPrefix(err.Error(), "AGX-APPLY-BUNDLE-INPUT:") {
+				t.Fatalf("Apply() error = %v, want Bundle input error", err)
+			}
+		})
+	}
+}
+
+func TestApplyAcceptsInlineBundleAndPreservesReceiptBehavior(t *testing.T) {
+	archive := makeArchive(t, "source/README.md", []byte("inline\n"), tar.TypeReg)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Write(archive)
+	}))
+	defer server.Close()
+
+	bundleData := developmentBundle(t, server.URL, archive)
+	root := filepath.Join(t.TempDir(), "installation")
+	options := installer.Options{BundleData: bundleData, Root: root, Client: server.Client()}
+	receipt, unchanged, err := installer.Apply(context.Background(), options)
+	if err != nil || unchanged {
+		t.Fatalf("Apply() receipt=%+v unchanged=%v err=%v", receipt, unchanged, err)
+	}
+	wantBundleDigest := sha256Hex(bundleData)
+	if receipt.BundleSHA256 != wantBundleDigest || receipt.OwnedFileSHA256["components/agent-plugins/README.md"] != sha256Hex([]byte("inline\n")) {
+		t.Fatalf("inline receipt = %+v", receipt)
+	}
+	state, err := installer.Status(root)
+	if err != nil || state.Phase != "configured" {
+		t.Fatalf("Status() state=%+v err=%v", state, err)
+	}
+	_, unchanged, err = installer.Apply(context.Background(), options)
+	if err != nil || !unchanged {
+		t.Fatalf("repeat inline Apply() unchanged=%v err=%v", unchanged, err)
+	}
+}
+
+func TestApplyUsesEmbeddedProductionBundleAndKeepsDownloadChecks(t *testing.T) {
+	var requestedURL string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestedURL = request.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("not the pinned release asset")),
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+	root := filepath.Join(t.TempDir(), "production")
+	_, _, err := installer.Apply(context.Background(), installer.Options{
+		BundleData: bundle.Production(),
+		Root:       root,
+		Client:     client,
+	})
+	if err == nil || !strings.Contains(err.Error(), "asset digest mismatch") {
+		t.Fatalf("Apply() error = %v, want production asset digest rejection", err)
+	}
+	wantURL := "https://github.com/2233admin/agent-plugins/releases/download/agx-bootstrap-20260816.1/agent-plugins-agx-bootstrap-20260816.1.tar.gz"
+	if requestedURL != wantURL {
+		t.Fatalf("download URL = %q, want %q", requestedURL, wantURL)
+	}
+	if _, statErr := os.Lstat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("failed production Apply() left target behind: %v", statErr)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func developmentBundle(t *testing.T, downloadURL string, archive []byte) []byte {
+	t.Helper()
+	document := fmt.Sprintf(`{
+  "schema_version":"agx.bundle/v2","bundle_id":"inline-test-bundle","mode":"development",
+  "provenance":"synthetic_test_only","development_override":true,
+  "compatibility":{"agx":"test"},
+  "sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"test","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"plugins.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q}},
+  "templates":{"version":%q,"content_sha256":%q,"references":{"agent_plugins":{"repository":"zaurakworks/agent-plugins","commit_sha":"ad07742ade0f0039ed1df1a9262e8f087117fca0"},"agent_control":{"repository":"zaurakworks/agent-control","commit_sha":"b0e6e0e8244ef518f671e2326745cd67c6d2307a"},"agent_contracts":{"repository":"zaurakworks/agent-contracts","commit_sha":"5bb8ea0b54f063b0758c294b73ea270ba69322d2"}}}
+}`,
+		downloadURL,
+		sha256Hex(archive),
+		uncompressedSHA256(t, archive),
+		bootstrap.TemplateSetVersion,
+		bootstrap.TemplateSetContentSHA256,
+	)
+	return []byte(document)
+}
 
 func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 	archive := makeArchive(t, "source/README.md", []byte("hello\n"), tar.TypeReg)

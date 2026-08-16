@@ -61,6 +61,7 @@ type State struct {
 
 type Options struct {
 	BundlePath string
+	BundleData []byte
 	Root       string
 	Client     *http.Client
 }
@@ -74,9 +75,18 @@ const (
 )
 
 func Apply(ctx context.Context, options Options) (Receipt, bool, error) {
-	data, err := os.ReadFile(options.BundlePath)
-	if err != nil {
-		return Receipt{}, false, fmt.Errorf("AGX-APPLY-BUNDLE-READ: %w", err)
+	hasBundlePath := options.BundlePath != ""
+	hasBundleData := options.BundleData != nil
+	if hasBundlePath == hasBundleData {
+		return Receipt{}, false, fmt.Errorf("AGX-APPLY-BUNDLE-INPUT: provide exactly one of BundlePath or BundleData")
+	}
+	data := options.BundleData
+	if hasBundlePath {
+		var err error
+		data, err = os.ReadFile(options.BundlePath)
+		if err != nil {
+			return Receipt{}, false, fmt.Errorf("AGX-APPLY-BUNDLE-READ: %w", err)
+		}
 	}
 	document, err := bundle.Decode(data)
 	if err != nil {
