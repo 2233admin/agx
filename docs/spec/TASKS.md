@@ -7,15 +7,14 @@
 | 1 | #3 | 仓内规格/归属基线 | ready for review | — |
 | 2 | #4 | Bundle v1 provenance Gate | production fixture ready；等待 #11 合并/回读 | #3 |
 | 2 | #5 | credential/redaction/lifecycle/platform Gate | owner 已批准；等待 #3/#9 合并 | #3 |
-| 3 | #15 | 官方 Multica CLI adapter capability matrix | blocked：本机无 `multica` CLI、无认证 Workspace/Runtime/live transcript | #3、#4、#5 |
-| 3 | #16 | live GitHub -> Multica -> Runtime 双回读验收 | blocked：等待 #15 与真实 disposable GitHub/Multica/Runtime 输入 | #3、#4、#5、#15 |
+| 3 | #12 | 官方 Multica CLI capability matrix 与 live fixture Gate | blocked：本机无 `multica` CLI、无认证 Workspace/Runtime/live transcript；必须同时取得官方机器可读 CLI 合同及 GitHub -> Multica -> Runtime 双回读证据 | #3、#4、#5 |
 | 3 | #13 | main 保护与发布 review Gate | main 已保护；等待 #14 合并/回读 | #1、#3、#4、#5 |
 | 4 | #6 | domain 与 diagnostic contract | blocked | #3、#4、#5 |
 | 5 | #7 | 安全 CLI command skeleton | blocked | #3、#5、#6 |
 
 ## 后续 live 链
 
-真实 golden path、D1 scope policy、官方 CLI transport、资源 adapter、acceptance Issue -> Task -> Runtime 双侧验收与双平台 release gate 必须按此顺序建立。Multica CLI adapter capability matrix 由 #15 跟踪；live GitHub -> Multica -> Runtime 双回读验收由 #16 跟踪；main/release 保护由 #13/#14 跟踪。它们共同依赖真实官方 CLI、认证 disposable Workspace、online Runtime 与 disposable GitHub repo；在这些输入出现前保持 `BLOCKED-LIVE-MULTICA`。
+真实 golden path、D1 scope policy、官方 CLI transport、资源 adapter、acceptance Issue -> Task -> Runtime 双侧验收与双平台 release gate 必须按此顺序建立。官方 Multica CLI capability matrix 与 live GitHub -> Multica -> Runtime 双回读验收均由唯一的 #12 Gate 跟踪；main/release 保护由 #13/#14 跟踪。它们共同依赖真实官方 CLI、认证 disposable Workspace、online Runtime 与 disposable GitHub repo；在这些输入出现前保持 `BLOCKED-LIVE-MULTICA`。
 
 ## 关闭规则
 
