@@ -19,10 +19,39 @@ func TestRunShowsStableGlobalHelp(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("Run(help) stderr = %q, want empty", stderr.String())
 	}
-	for _, command := range []string{"plan", "apply", "status", "uninstall", "version"} {
+	for _, command := range []string{"plan", "apply", "init", "status", "uninstall", "version"} {
 		if !strings.Contains(stdout.String(), command) {
 			t.Errorf("global help does not contain %q", command)
 		}
+	}
+}
+
+func TestRunShowsInitHelp(t *testing.T) {
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+
+	code := cli.Run([]string{"init", "--help"}, "0.0.0-test", stdout, stderr)
+	if code != exitcode.Success {
+		t.Fatalf("Run(init --help) exit code = %d, want %d", code, exitcode.Success)
+	}
+	for _, text := range []string{"--root", "--provider", "core|github|team|full", "safe uninstall"} {
+		if !strings.Contains(stdout.String(), text) {
+			t.Errorf("Run(init --help) stdout does not contain %q: %q", text, stdout.String())
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("Run(init --help) stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunInitRequiresRootAndProvider(t *testing.T) {
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+
+	code := cli.Run([]string{"init", "--root", "somewhere"}, "0.0.0-test", stdout, stderr)
+	if code != exitcode.Usage {
+		t.Fatalf("Run(init) exit code = %d, want %d", code, exitcode.Usage)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "AGX-USAGE-INIT") {
+		t.Fatalf("Run(init) stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 

@@ -6,7 +6,7 @@ AGX 的猫娘协调员对应安装、计划、验收和回执；她是项目身�
 
 AGXCLI (`agx`) 是面向 `agent-control` 与 `agent-plugins` Bundle 的小型部署 CLI：下载固定 Release、校验摘要、安全解包、检查状态并按所有权卸载。
 
-> 当前状态：0.1 本地部署闭环已实现。Multica 编排不属于 0.1 的发布阻塞项。
+> 当前状态：本地 Bundle 部署闭环和 Codex/Claude 初始化阶段已实现。Multica 编排不属于当前发布阻塞项。
 
 ## 目标体验
 
@@ -14,15 +14,16 @@ AGXCLI (`agx`) 是面向 `agent-control` 与 `agent-plugins` Bundle 的小型部
 
 ```text
 agx apply --bundle bundle.json --root D:\agx\installations\default
+agx init --root D:\agx\installations\default --provider codex --profile full
 ```
 
-AGX 下载 Bundle 固定的两个资产，校验 SHA-256，在同一磁盘暂存后原子落盘，并写入不含凭据的回执。安装完整时状态为 `configured`；`verified` 是保留状态，0.1 不会伪造它。
+AGX 下载 Bundle 固定的两个资产，校验 SHA-256，在同一磁盘暂存后原子落盘，并写入不含凭据的回执。随后 `init` 只从该回执定位受 AGX 管理的 `agent-plugins` 组件，将选定能力激活到 Codex/Claude，执行结构化回读并给出可直接复制的首次使用提示。安装完整时状态仍为 `configured`；`verified` 是保留状态，初始化不会伪造它。
 
 ## 产品边界
 
 AGX 负责：
 
-- `plan`、`apply`、`status`、`uninstall`、`version`
+- `plan`、`apply`、`init`、`status`、`uninstall`、`version`
 - 消费固定版本与摘要的 `agent-control` / `agent-plugins` Release artifact
 
 AGX 不负责：
@@ -30,6 +31,7 @@ AGX 不负责：
 - 日常 Task 创建、分配、调度与日志
 - Multica Task/Runtime 编排或 Multica 服务端生命周期
 - 隐式消费 sibling checkout、可变 `main` 或本地 Marketplace cache
+- 保存或管理 Codex/Claude 凭据
 
 ## 当前开发入口
 
@@ -38,6 +40,7 @@ go test ./...
 go run ./cmd/agx version
 go run ./cmd/agx help
 go run ./cmd/agx mascot
+go run ./cmd/agx init --help
 ```
 
 ## 本地 Bundle 部署
@@ -46,11 +49,30 @@ go run ./cmd/agx mascot
 
 ```powershell
 go run ./cmd/agx apply --bundle testdata/bundles/v1-production-agx-bootstrap-20260816.1.json --root D:\agx\installations\default
+go run ./cmd/agx init --root D:\agx\installations\default --provider codex --profile core
 go run ./cmd/agx status --root D:\agx\installations\default
 go run ./cmd/agx uninstall --root D:\agx\installations\default
 ```
 
-重复应用同一 Bundle 不会重复写入；不同 Bundle 不会覆盖既有安装。`uninstall` 只移除回执证明为 AGX 所有的文件，未知文件会保留。此阶段最高状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。`uninstall` 先撤销初始化回执证明由 AGX 新增的插件和 Marketplace，再移除 AGX 自有文件；预先存在的运行端对象不会被删除，若它们仍引用安装目录则安全停止并要求用户先解除引用。未知文件会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+
+## 初始化能力包
+
+`init` 必须显式指定运行端，能力包默认是 `core`：
+
+```powershell
+agx init --root D:\agx\installations\default --provider codex --profile core
+agx init --root D:\agx\installations\default --provider both --profile full
+```
+
+| 能力包 | 插件能力 |
+| --- | --- |
+| `core` | 问题求解、自我改进、知识维护、方案盘问 |
+| `github` | `core` 加 Issue、交付和 PR 工作流 |
+| `team` | `github` 加多 Agent 编排 |
+| `full` | `team` 加账户容量与会话 Token 观测 |
+
+初始化在任何写入前读取运行端的 JSON Inventory。目标 CLI 缺失、Inventory 不可读、同名 Marketplace 指向其他来源，或已有目标插件处于禁用状态时都会停止；AGX 不覆盖用户既有配置。成功后请新建一个运行端会话，让新的 Skill 清单生效。
 
 ## Preview 安装包（仅供测试）
 
@@ -94,7 +116,7 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
 - [任务与 Gate](docs/spec/TASKS.md)
 - [仓库归属决策](docs/decisions/repository-provenance.md)
 
-这些文档记录过更大的 D1 设想，仅作为历史设计材料；AGX 0.1 的发布范围以本 README 的本地 Bundle 部署闭环为准。
+这些文档记录过更大的 D1 设想，仅作为历史设计材料；已发布的 AGX 0.1 范围是本地 Bundle 部署闭环，当前分支新增的初始化能力以本 README 前述合同和 Issue #33 为准。
 
 ## 贡献流程
 

@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/contracts"
 	"github.com/2233admin/agx/internal/exitcode"
 	installer "github.com/2233admin/agx/internal/install"
+	"github.com/2233admin/agx/internal/provider"
 )
 
 type command struct {
@@ -22,6 +24,7 @@ type command struct {
 var lifecycleCommands = []command{
 	{name: "plan", description: "Show a side-effect-free Installation Plan"},
 	{name: "apply", description: "Install pinned Bundle assets"},
+	{name: "init", description: "Activate an installed Bundle for Codex or Claude"},
 	{name: "status", description: "Show the observed Installation state"},
 	{name: "uninstall", description: "Remove AGX-owned Installation resources"},
 }
@@ -51,6 +54,8 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 		return runPlan(args[1:], stdout, stderr)
 	case "apply":
 		return runApply(args[1:], stdout, stderr)
+	case "init":
+		return runInit(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
 	case "uninstall":
@@ -58,7 +63,7 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	case "task", "tasks":
 		fmt.Fprintln(stderr, "AGX-UNSUPPORTED-TASK: AGX does not create, assign, or schedule daily Tasks")
 		return exitcode.Unsupported
-	case "init", "verify", "resume", "diagnose", "support-bundle", "upgrade", "rollback":
+	case "verify", "resume", "diagnose", "support-bundle", "upgrade", "rollback":
 		fmt.Fprintf(stderr, "AGX-UNSUPPORTED-COMMAND: %q is outside the AGX 0.1 deployment surface\n", commandName)
 		return exitcode.Unsupported
 	}
@@ -70,6 +75,104 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stderr, "AGX-INVALID-INVOCATION: unknown command %q\n", commandName)
 	return exitcode.Software
+}
+
+func runInit(args []string, stdout, stderr io.Writer) int {
+	values, err := parseNamedOptions(args, map[string]bool{"--root": true, "--provider": true, "--profile": true, "--output": true})
+	if err != nil || values["--root"] == "" || values["--provider"] == "" || (values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
+		fmt.Fprintln(stderr, "AGX-USAGE-INIT: --root <directory> --provider codex|claude|both [--profile core|github|team|full] [--output human|json]")
+		return exitcode.Usage
+	}
+	profileName := values["--profile"]
+	if profileName == "" {
+		profileName = string(activation.ProfileCore)
+	}
+	profile, err := activation.ParseProfile(profileName)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Usage
+	}
+	providers, err := parseProviders(values["--provider"])
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Usage
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	receipt, unchanged, err := activation.Initialize(ctx, activation.Options{
+		Root: values["--root"], Profile: profile, Providers: providers,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Software
+	}
+	if values["--output"] == "json" {
+		result := struct {
+			Status            string                       `json:"status"`
+			Unchanged         bool                         `json:"unchanged"`
+			InstallationID    string                       `json:"installation_id"`
+			Profile           activation.Profile           `json:"profile"`
+			Providers         []activation.ProviderReceipt `json:"providers"`
+			InstallationPhase string                       `json:"installation_phase"`
+		}{
+			Status: receipt.Phase, Unchanged: unchanged, InstallationID: receipt.InstallationID,
+			Profile: receipt.Profile, Providers: receipt.Providers, InstallationPhase: "configured",
+		}
+		data, _ := json.Marshal(result)
+		fmt.Fprintln(stdout, string(data))
+		return exitcode.Success
+	}
+	if unchanged {
+		fmt.Fprintf(stdout, "AGX Installation %s is already initialized for profile %s; no changes made.\n", receipt.InstallationID, receipt.Profile)
+	} else {
+		fmt.Fprintf(stdout, "AGX Installation %s initialized for profile %s.\n", receipt.InstallationID, receipt.Profile)
+	}
+	fmt.Fprintln(stdout, "Installation phase remains configured; provider activation is not verified.")
+	printFirstUse(stdout, receipt)
+	return exitcode.Success
+}
+
+func parseProviders(value string) ([]provider.Name, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "codex":
+		return []provider.Name{provider.Codex}, nil
+	case "claude":
+		return []provider.Name{provider.Claude}, nil
+	case "both":
+		return []provider.Name{provider.Codex, provider.Claude}, nil
+	default:
+		return nil, fmt.Errorf("AGX-INIT-PROVIDER: unsupported provider %q", value)
+	}
+}
+
+func printFirstUse(stdout io.Writer, receipt activation.Receipt) {
+	fmt.Fprintln(stdout, "Start a new provider session, then try:")
+	seen := map[provider.Name]bool{}
+	for _, item := range receipt.Providers {
+		seen[item.Name] = true
+	}
+	if seen[provider.Codex] {
+		fmt.Fprintln(stdout, "  Codex:  $grilling:grilling 帮我压力测试这个方案")
+	}
+	if seen[provider.Claude] {
+		fmt.Fprintln(stdout, "  Claude: /grilling:grilling 帮我压力测试这个方案")
+	}
+	if receipt.Profile == activation.ProfileGitHub || receipt.Profile == activation.ProfileTeam || receipt.Profile == activation.ProfileFull {
+		if seen[provider.Codex] {
+			fmt.Fprintln(stdout, "  Codex:  $github-collaboration:issue-workflow 处理 GitHub Issue #123")
+		}
+		if seen[provider.Claude] {
+			fmt.Fprintln(stdout, "  Claude: /github-collaboration:issue-workflow 处理 GitHub Issue #123")
+		}
+	}
+	if receipt.Profile == activation.ProfileFull {
+		if seen[provider.Codex] {
+			fmt.Fprintln(stdout, "  Codex:  $resource-observability:resource-observability 查看当前账户额度")
+		}
+		if seen[provider.Claude] {
+			fmt.Fprintln(stdout, "  Claude: /resource-observability:resource-observability 查看当前账户额度")
+		}
+	}
 }
 
 func runApply(args []string, stdout, stderr io.Writer) int {
@@ -87,10 +190,11 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	}
 	if unchanged {
 		fmt.Fprintf(stdout, "AGX installation %s already configured (Bundle %s); no changes made.\n", receipt.InstallationID, receipt.BundleID)
-		return exitcode.Success
+	} else {
+		fmt.Fprintf(stdout, "AGX installation %s configured from Bundle %s.\n", receipt.InstallationID, receipt.BundleID)
 	}
-	fmt.Fprintf(stdout, "AGX installation %s configured from Bundle %s.\n", receipt.InstallationID, receipt.BundleID)
-	fmt.Fprintln(stdout, "Run agx verify after GitHub and Multica evidence exists; configured is not verified.")
+	fmt.Fprintln(stdout, "Next: initialize this root with agx init --root <directory> --provider codex|claude|both [--profile core|github|team|full].")
+	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 	return exitcode.Success
 }
 
@@ -105,13 +209,21 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Data
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	initialization, initializationErr := activation.Status(ctx, values["--root"], nil)
+	if initializationErr != nil {
+		fmt.Fprintln(stderr, initializationErr)
+		return exitcode.Data
+	}
 	if values["--output"] == "json" {
 		result := struct {
-			Phase          string   `json:"phase"`
-			InstallationID string   `json:"installation_id,omitempty"`
-			BundleID       string   `json:"bundle_id,omitempty"`
-			Missing        []string `json:"missing,omitempty"`
-		}{Phase: state.Phase, Missing: state.Missing}
+			Phase          string           `json:"phase"`
+			InstallationID string           `json:"installation_id,omitempty"`
+			BundleID       string           `json:"bundle_id,omitempty"`
+			Missing        []string         `json:"missing,omitempty"`
+			Initialization activation.State `json:"initialization"`
+		}{Phase: state.Phase, Missing: state.Missing, Initialization: initialization}
 		if state.Receipt != nil {
 			result.InstallationID = state.Receipt.InstallationID
 			result.BundleID = state.Receipt.BundleID
@@ -127,6 +239,13 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	for _, missing := range state.Missing {
 		fmt.Fprintf(stdout, "Missing owned file: %s\n", missing)
 	}
+	fmt.Fprintf(stdout, "Provider initialization: %s\n", initialization.Status)
+	if initialization.Profile != "" {
+		fmt.Fprintf(stdout, "Initialization profile: %s\n", initialization.Profile)
+	}
+	for _, problem := range initialization.Problems {
+		fmt.Fprintf(stdout, "Initialization problem: %s\n", problem)
+	}
 	return exitcode.Success
 }
 
@@ -136,12 +255,22 @@ func runUninstall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "AGX-USAGE-UNINSTALL: --root <directory> is required")
 		return exitcode.Usage
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	providerRemoved, err := activation.Uninitialize(ctx, values["--root"], nil)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Software
+	}
 	retained, err := installer.Uninstall(values["--root"])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Software
 	}
 	if len(retained) == 0 {
+		if providerRemoved {
+			fmt.Fprintln(stdout, "AGX-owned provider activation removed.")
+		}
 		fmt.Fprintln(stdout, "AGX-owned installation removed.")
 		return exitcode.Success
 	}
@@ -288,6 +417,11 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Download, verify, and atomically install pinned Bundle assets.")
 		return exitcode.Success
+	case "init":
+		fmt.Fprintln(stdout, "Usage: agx init --root <directory> --provider codex|claude|both [--profile core|github|team|full] [--output human|json]")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Activate the pinned agent-plugins component for selected providers and record ownership for safe uninstall.")
+		return exitcode.Success
 	case "status":
 		fmt.Fprintln(stdout, "Usage: agx status --root <directory> [--output human|json]")
 		fmt.Fprintln(stdout, "")
@@ -296,7 +430,7 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 	case "uninstall":
 		fmt.Fprintln(stdout, "Usage: agx uninstall --root <directory>")
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Remove only files recorded as AGX-owned; retain unknown files.")
+		fmt.Fprintln(stdout, "Reverse AGX-owned provider activation, then remove AGX-owned files while retaining unknown files.")
 		return exitcode.Success
 	}
 	if command, ok := lookupLifecycleCommand(commandName); ok {
