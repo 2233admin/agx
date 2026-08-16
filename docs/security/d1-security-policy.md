@@ -1,6 +1,6 @@
 # D1 安全与凭据政策（审阅草案）
 
-状态：`DRAFT_FOR_NAMED_SECURITY_OWNER_REVIEW`。本草案不关闭 #5；当前没有具名 security owner 或 release owner 的批准记录。
+状态：`APPROVED_BY_2233ADMIN_PENDING_MERGE`。`2233admin` 已获授权并以 security/release owner 身份批准本政策；#5 仍等待其依赖的 #3 基线和本政策合并。此批准不构成真实 Multica 验收证据。
 
 ## 凭据
 
@@ -22,4 +22,4 @@
 
 ## 审阅缺口
 
-具名 security owner 必须批准 credential/redaction/cleanup 规则；具名 release owner 必须批准平台标记和发布资格。fake fixture、mock adapter、旧项目测试或这份草案本身不得代替该批准，也不得代替真实 Multica 验收。
+`2233admin` 已批准 credential/redaction/cleanup 规则及平台标记/发布资格。fake fixture、mock adapter、旧项目测试或本政策本身不得代替真实 Multica 验收。

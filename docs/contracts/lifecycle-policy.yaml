@@ -1,6 +1,10 @@
 policy_version: 1
-status: draft_for_named_security_owner_review
+status: approved_by_2233admin_pending_merge
 gate_issue: 5
+approved_by: 2233admin
+approval_scope:
+  - security
+  - release
 success:
   terminal_state: verified
   requires:

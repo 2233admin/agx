@@ -1,6 +1,6 @@
 # D1 平台与发布政策（审阅草案）
 
-状态：`DRAFT_FOR_NAMED_RELEASE_OWNER_REVIEW`。当前没有真实双平台 live evidence；此文不能授权发布为 certified。
+状态：`APPROVED_BY_2233ADMIN_PENDING_MERGE`。`2233admin` 已获授权并以 release owner 身份批准本政策；当前没有真实双平台 live evidence，因此此文不能授权发布为 certified。
 
 ## 候选平台
 
