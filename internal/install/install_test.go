@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,20 @@ func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 
 func TestApplyRejectsSymlinkArchive(t *testing.T) {
 	archive := makeArchive(t, "source/link", nil, tar.TypeSymlink)
+	if err := applyTestArchive(t, archive); err == nil {
+		t.Fatal("Apply() accepted symlink archive")
+	}
+}
+
+func TestApplyRejectsArchiveWithoutOwnedFiles(t *testing.T) {
+	archive := makeArchive(t, "source/", nil, tar.TypeDir)
+	if err := applyTestArchive(t, archive); err == nil {
+		t.Fatal("Apply() accepted an archive without regular files")
+	}
+}
+
+func applyTestArchive(t *testing.T, archive []byte) error {
+	t.Helper()
 	digest := sha256.Sum256(archive)
 	digestHex := hex.EncodeToString(digest[:])
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { writer.Write(archive) }))
@@ -82,11 +97,268 @@ func TestApplyRejectsSymlinkArchive(t *testing.T) {
 	temporary := t.TempDir()
 	bundlePath := filepath.Join(temporary, "bundle.json")
 	document := fmt.Sprintf(`{"schema_version":"agx.bundle/v1","bundle_id":"bad-bundle","mode":"development","provenance":"synthetic_test_only","development_override":true,"compatibility":{"agx":"x","multica_cli":"x"},"artifacts":{"agent_control":{"repository":"2233admin/agent-control","release_tag":"x","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_name":"a.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"agent_plugins":{"repository":"2233admin/agent-plugins","release_tag":"x","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"b.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}}`, server.URL, digestHex, server.URL, digestHex)
-	os.WriteFile(bundlePath, []byte(document), 0o600)
-	_, _, err := installer.Apply(context.Background(), installer.Options{BundlePath: bundlePath, Root: filepath.Join(temporary, "install"), Client: server.Client()})
-	if err == nil {
-		t.Fatal("Apply() accepted symlink archive")
+	if err := os.WriteFile(bundlePath, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	_, _, err := installer.Apply(context.Background(), installer.Options{BundlePath: bundlePath, Root: filepath.Join(temporary, "install"), Client: server.Client()})
+	return err
+}
+
+func TestStatusRejectsInvalidReceiptContracts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*installer.Receipt)
+	}{
+		{
+			name: "phase is not configured",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Phase = "verified"
+			},
+		},
+		{
+			name: "bundle SHA256 is empty",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.BundleSHA256 = ""
+			},
+		},
+		{
+			name: "bundle SHA256 is not 64 hexadecimal characters",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.BundleSHA256 = string(bytes.Repeat([]byte{'z'}, 64))
+			},
+		},
+		{
+			name: "component is missing",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components = receipt.Components[:1]
+			},
+		},
+		{
+			name: "component is duplicated",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components[1] = receipt.Components[0]
+			},
+		},
+		{
+			name: "component is unknown",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components[0].Name = "agent-other"
+			},
+		},
+		{
+			name: "component path is not fixed",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components[0].Path = "sibling/agent-control"
+			},
+		},
+		{
+			name: "repository is empty",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components[0].Repository = " "
+			},
+		},
+		{
+			name: "repository basename mismatches component",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components[0].Repository = "zaurakworks/agent-plugins"
+			},
+		},
+		{
+			name: "commit SHA is not 40 hexadecimal characters",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components[0].CommitSHA = "not-a-commit"
+			},
+		},
+		{
+			name: "asset SHA256 is not 64 hexadecimal characters",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.Components[0].AssetSHA256 = "not-a-digest"
+			},
+		},
+		{
+			name: "agent-control has no owned file",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFiles = receipt.OwnedFiles[1:]
+			},
+		},
+		{
+			name: "agent-plugins has no owned file",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFiles = receipt.OwnedFiles[:1]
+			},
+		},
+		{
+			name: "owned files are empty",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFiles = nil
+			},
+		},
+		{
+			name: "owned file is duplicated",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFiles = append(receipt.OwnedFiles, receipt.OwnedFiles[0])
+			},
+		},
+		{
+			name: "owned file is outside known components",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFiles = append(receipt.OwnedFiles, "user-note.txt")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			receipt := validReceipt()
+			test.mutate(&receipt)
+			root := writeTestInstallation(t, receipt)
+			if _, err := installer.Status(root); err == nil {
+				t.Fatal("Status() accepted an invalid receipt contract")
+			}
+		})
+	}
+}
+
+func TestStatusAcceptsComponentRepositoryBasenamesAcrossOwners(t *testing.T) {
+	root := writeTestInstallation(t, validReceipt())
+	state, err := installer.Status(root)
+	if err != nil || state.Phase != "configured" {
+		t.Fatalf("Status() state=%+v err=%v", state, err)
+	}
+}
+
+func TestStatusRequiresOwnedRegularFiles(t *testing.T) {
+	receipt := validReceipt()
+	root := writeTestInstallation(t, receipt)
+	target := filepath.Join(root, "components", "agent-control", "README.md")
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := installer.Status(root)
+	if err != nil || state.Phase != "drifted" || len(state.Missing) != 1 || state.Missing[0] != receipt.OwnedFiles[0] {
+		t.Fatalf("Status() state=%+v err=%v", state, err)
+	}
+}
+
+func TestStatusRejectsSymlinkedComponentWithoutFollowingIt(t *testing.T) {
+	receipt := validReceipt()
+	root := writeTestInstallation(t, receipt)
+	component := filepath.Join(root, "components", "agent-control")
+	sibling := filepath.Join(filepath.Dir(root), "sibling-agent-control")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	siblingFile := filepath.Join(sibling, "README.md")
+	if err := os.WriteFile(siblingFile, []byte("sibling checkout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(component); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sibling, component); err != nil {
+		t.Skipf("directory symlinks are unavailable on this platform: %v", err)
+	}
+
+	state, err := installer.Status(root)
+	if err != nil || state.Phase != "drifted" || len(state.Missing) != 1 || state.Missing[0] != receipt.OwnedFiles[0] {
+		t.Fatalf("Status() followed a linked component: state=%+v err=%v", state, err)
+	}
+	contents, err := os.ReadFile(siblingFile)
+	if err != nil || string(contents) != "sibling checkout\n" {
+		t.Fatalf("sibling checkout was changed: contents=%q err=%v", contents, err)
+	}
+}
+
+func TestUninstallRejectsSymlinkedComponentBeforeRemovingOwnedFiles(t *testing.T) {
+	receipt := validReceipt()
+	root := writeTestInstallation(t, receipt)
+	component := filepath.Join(root, "components", "agent-plugins")
+	sibling := filepath.Join(filepath.Dir(root), "sibling-agent-plugins")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	siblingFile := filepath.Join(sibling, "README.md")
+	if err := os.WriteFile(siblingFile, []byte("sibling checkout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(component); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sibling, component); err != nil {
+		t.Skipf("directory symlinks are unavailable on this platform: %v", err)
+	}
+
+	if _, err := installer.Uninstall(root); err == nil {
+		t.Fatal("Uninstall() followed a linked component")
+	}
+	contents, err := os.ReadFile(siblingFile)
+	if err != nil || string(contents) != "sibling checkout\n" {
+		t.Fatalf("sibling checkout was changed: contents=%q err=%v", contents, err)
+	}
+	controlFile := filepath.Join(root, filepath.FromSlash(receipt.OwnedFiles[0]))
+	if _, err := os.Stat(controlFile); err != nil {
+		t.Fatalf("owned file was removed before unsafe path detection: %v", err)
+	}
+}
+
+func validReceipt() installer.Receipt {
+	return installer.Receipt{
+		SchemaVersion:  "agx.receipt/v1",
+		InstallationID: "install-test",
+		BundleID:       "bundle-test",
+		BundleSHA256:   string(bytes.Repeat([]byte{'c'}, 64)),
+		Phase:          "configured",
+		Components: []installer.Component{
+			{
+				Name:        "agent-control",
+				Repository:  "zaurakworks/agent-control",
+				CommitSHA:   string(bytes.Repeat([]byte{'a'}, 40)),
+				AssetSHA256: string(bytes.Repeat([]byte{'c'}, 64)),
+				Path:        "components/agent-control",
+			},
+			{
+				Name:        "agent-plugins",
+				Repository:  "2233admin/agent-plugins",
+				CommitSHA:   string(bytes.Repeat([]byte{'b'}, 40)),
+				AssetSHA256: string(bytes.Repeat([]byte{'d'}, 64)),
+				Path:        "components/agent-plugins",
+			},
+		},
+		OwnedFiles: []string{
+			"components/agent-control/README.md",
+			"components/agent-plugins/README.md",
+		},
+	}
+}
+
+func writeTestInstallation(t *testing.T, receipt installer.Receipt) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "installation")
+	for _, relative := range receipt.OwnedFiles {
+		target := filepath.Join(root, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("owned\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(root, ".agx", "receipt.json")
+	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func makeArchive(t *testing.T, name string, contents []byte, entryType byte) []byte {

@@ -54,7 +54,7 @@ go run ./cmd/agx status --root D:\agx\installations\default
 go run ./cmd/agx uninstall --root D:\agx\installations\default
 ```
 
-重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。`uninstall` 先撤销初始化回执证明由 AGX 新增的插件和 Marketplace，再移除 AGX 自有文件；预先存在的运行端对象不会被删除，若它们仍引用安装目录则安全停止并要求用户先解除引用。未知文件会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle，要求用户先解除引用。未知文件和其他预存运行端对象同样会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
 
 ## 初始化能力包
 
@@ -63,7 +63,10 @@ go run ./cmd/agx uninstall --root D:\agx\installations\default
 ```powershell
 agx init --root D:\agx\installations\default --provider codex --profile core
 agx init --root D:\agx\installations\default --provider both --profile full
+agx init --root D:\agx\installations\default --provider both --profile full --output json
 ```
+
+使用 `--output json` 时，成功结果的 `first_use` 数组会按运行端提供结构化的 `provider` 与 `prompt`，便于部署脚本直接展示或传递首次使用提示。
 
 | 能力包 | 插件能力 |
 | --- | --- |
@@ -72,7 +75,7 @@ agx init --root D:\agx\installations\default --provider both --profile full
 | `team` | `github` 加多 Agent 编排 |
 | `full` | `team` 加账户容量与会话 Token 观测 |
 
-初始化在任何写入前读取运行端的 JSON Inventory。目标 CLI 缺失、Inventory 不可读、同名 Marketplace 指向其他来源，或已有目标插件处于禁用状态时都会停止；AGX 不覆盖用户既有配置。成功后请新建一个运行端会话，让新的 Skill 清单生效。
+初始化在任何写入前读取运行端的 JSON Inventory。安装回执或组件元数据不完整、组件路径包含 symlink/junction 等重解析点、目标 CLI 缺失、Inventory 不可读、同名 Marketplace 指向其他来源，或已有目标插件处于禁用状态时都会停止；AGX 不覆盖用户既有配置。成功后请新建一个运行端会话，让新的 Skill 清单生效；安装状态仍为 `configured`，不会因此成为 `verified`。
 
 ## Preview 安装包（仅供测试）
 

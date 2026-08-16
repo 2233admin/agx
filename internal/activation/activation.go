@@ -253,7 +253,10 @@ func Uninitialize(ctx context.Context, root string, runner provider.Runner) (boo
 		return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-OWNERSHIP: initialization receipt belongs to a different Installation")
 	}
 
-	// Complete every read-only ownership check before the first mutation.
+	// Complete every read-only source check before the first mutation. A
+	// pre-existing Marketplace that still references this Installation blocks
+	// Bundle removal, but it must not block cleanup of plugins AGX added through
+	// that Marketplace.
 	for _, item := range receipt.Providers {
 		inventory, err := provider.Inspect(ctx, item.Name, runner)
 		if err != nil {
@@ -262,19 +265,20 @@ func Uninitialize(ctx context.Context, root string, runner provider.Runner) (boo
 		if inventory.Marketplace.Present && !provider.SameSource(inventory.Marketplace.Source, source) {
 			return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-SOURCE: %s Marketplace source changed; provider cleanup stopped", item.Name)
 		}
-		if inventory.Marketplace.Present && !item.MarketplaceAdded {
-			return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-OWNERSHIP: %s Marketplace predates AGX initialization and still references this Installation", item.Name)
-		}
 	}
 
+	var retainedMarketplaces []string
 	for index := len(receipt.Providers) - 1; index >= 0; index-- {
 		item := receipt.Providers[index]
-		inventory, err := provider.Inspect(ctx, item.Name, runner)
-		if err != nil {
-			return false, err
-		}
 		for pluginIndex := len(item.AddedPlugins) - 1; pluginIndex >= 0; pluginIndex-- {
 			pluginName := item.AddedPlugins[pluginIndex]
+			inventory, err := provider.Inspect(ctx, item.Name, runner)
+			if err != nil {
+				return false, err
+			}
+			if inventory.Marketplace.Present && !provider.SameSource(inventory.Marketplace.Source, source) {
+				return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-SOURCE: %s Marketplace source changed during provider cleanup", item.Name)
+			}
 			if _, present := inventory.Plugin(pluginName); !present {
 				continue
 			}
@@ -282,9 +286,12 @@ func Uninitialize(ctx context.Context, root string, runner provider.Runner) (boo
 				return false, err
 			}
 		}
-		inventory, err = provider.Inspect(ctx, item.Name, runner)
+		inventory, err := provider.Inspect(ctx, item.Name, runner)
 		if err != nil {
 			return false, err
+		}
+		if inventory.Marketplace.Present && !provider.SameSource(inventory.Marketplace.Source, source) {
+			return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-SOURCE: %s Marketplace source changed during provider cleanup", item.Name)
 		}
 		if item.MarketplaceAdded && inventory.Marketplace.Present {
 			if err := provider.RemoveMarketplace(ctx, item.Name, runner); err != nil {
@@ -295,6 +302,9 @@ func Uninitialize(ctx context.Context, root string, runner provider.Runner) (boo
 		if err != nil {
 			return false, err
 		}
+		if inventory.Marketplace.Present && !provider.SameSource(inventory.Marketplace.Source, source) {
+			return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-SOURCE: %s Marketplace source changed during provider cleanup", item.Name)
+		}
 		if item.MarketplaceAdded && inventory.Marketplace.Present {
 			return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-READBACK: %s Marketplace is still present", item.Name)
 		}
@@ -303,6 +313,13 @@ func Uninitialize(ctx context.Context, root string, runner provider.Runner) (boo
 				return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-READBACK: %s plugin %q is still present", item.Name, pluginName)
 			}
 		}
+		if !item.MarketplaceAdded && inventory.Marketplace.Present {
+			retainedMarketplaces = append(retainedMarketplaces, string(item.Name))
+		}
+	}
+
+	if len(retainedMarketplaces) > 0 {
+		return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-OWNERSHIP: %s Marketplace predates AGX initialization and still references this Installation", strings.Join(retainedMarketplaces, ", "))
 	}
 
 	if err := os.Remove(receiptPath(root)); err != nil && !os.IsNotExist(err) {
@@ -433,8 +450,8 @@ func resolveInstallation(root string, requireConfigured bool) (installer.Receipt
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return installer.Receipt{}, "", fmt.Errorf("AGX-INIT-INSTALLATION: unsafe agent-plugins component path")
 		}
-		info, err := os.Stat(source)
-		if err != nil || !info.IsDir() {
+		info, err := os.Lstat(source)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsDir() {
 			return installer.Receipt{}, "", fmt.Errorf("AGX-INIT-INSTALLATION: agent-plugins component is unavailable")
 		}
 		return *state.Receipt, source, nil

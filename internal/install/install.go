@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -22,6 +23,11 @@ import (
 
 const receiptSchema = "agx.receipt/v1"
 const maxAssetBytes = 128 << 20
+
+var (
+	commitSHAPattern = regexp.MustCompile(`(?i)^[0-9a-f]{40}$`)
+	sha256Pattern    = regexp.MustCompile(`(?i)^[0-9a-f]{64}$`)
+)
 
 type Component struct {
 	Name        string `json:"name"`
@@ -52,6 +58,14 @@ type Options struct {
 	Root       string
 	Client     *http.Client
 }
+
+type ownedFileState uint8
+
+const (
+	ownedFileMissing ownedFileState = iota
+	ownedFileRegular
+	ownedFileUnsafe
+)
 
 func Apply(ctx context.Context, options Options) (Receipt, bool, error) {
 	data, err := os.ReadFile(options.BundlePath)
@@ -124,6 +138,9 @@ func Apply(ctx context.Context, options Options) (Receipt, bool, error) {
 		if err != nil {
 			return Receipt{}, false, fmt.Errorf("AGX-APPLY-ARCHIVE: %s: %w", item.name, err)
 		}
+		if len(files) == 0 {
+			return Receipt{}, false, fmt.Errorf("AGX-APPLY-ARCHIVE: %s: archive contains no regular files", item.name)
+		}
 		receipt.OwnedFiles = append(receipt.OwnedFiles, files...)
 		receipt.Components = append(receipt.Components, Component{
 			Name: item.name, Repository: item.artifact.Repository, CommitSHA: item.artifact.CommitSHA,
@@ -156,12 +173,8 @@ func Status(rootPath string) (State, error) {
 	}
 	state := State{Phase: "configured", Receipt: &receipt}
 	for _, relative := range receipt.OwnedFiles {
-		absolute, err := ownedPath(root, relative)
-		if err != nil {
-			return State{}, err
-		}
-		info, err := os.Stat(absolute)
-		if err != nil || !info.Mode().IsRegular() {
+		fileState, err := inspectOwnedFile(root, relative)
+		if err != nil || fileState != ownedFileRegular {
 			state.Missing = append(state.Missing, relative)
 		}
 	}
@@ -180,13 +193,42 @@ func Uninstall(rootPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	type removal struct {
+		relative string
+		absolute string
+	}
+	removals := make([]removal, 0, len(receipt.OwnedFiles))
 	for _, relative := range receipt.OwnedFiles {
 		absolute, err := ownedPath(root, relative)
 		if err != nil {
 			return nil, err
 		}
-		if err := os.Remove(absolute); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: %s: %w", relative, err)
+		fileState, err := inspectOwnedFile(root, relative)
+		if err != nil {
+			return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: %s: %w", relative, err)
+		}
+		switch fileState {
+		case ownedFileMissing:
+			continue
+		case ownedFileUnsafe:
+			return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: owned path %q is not a regular file under real directories", relative)
+		case ownedFileRegular:
+			removals = append(removals, removal{relative: relative, absolute: absolute})
+		}
+	}
+	for _, item := range removals {
+		fileState, err := inspectOwnedFile(root, item.relative)
+		if err != nil {
+			return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: %s: %w", item.relative, err)
+		}
+		if fileState == ownedFileMissing {
+			continue
+		}
+		if fileState != ownedFileRegular {
+			return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: owned path %q changed before removal", item.relative)
+		}
+		if err := os.Remove(item.absolute); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: %s: %w", item.relative, err)
 		}
 	}
 	_ = os.Remove(filepath.Join(root, ".agx", "receipt.json"))
@@ -332,6 +374,56 @@ func ownedPath(root, relative string) (string, error) {
 	return absolute, nil
 }
 
+// inspectOwnedFile checks every path segment without following links. An
+// intermediate segment must be a real directory, and an existing target must
+// be a regular file. On Windows, junctions and other name-surrogate reparse
+// points are reported by Lstat as symlinks or irregular files, so neither can
+// satisfy the directory requirement.
+func inspectOwnedFile(root, relative string) (ownedFileState, error) {
+	absolute, err := ownedPath(root, relative)
+	if err != nil {
+		return ownedFileUnsafe, err
+	}
+	back, err := filepath.Rel(root, absolute)
+	if err != nil || back == "." {
+		return ownedFileUnsafe, fmt.Errorf("AGX-RECEIPT-PATH: unsafe owned path %q", relative)
+	}
+
+	info, err := os.Lstat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ownedFileMissing, nil
+		}
+		return ownedFileUnsafe, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return ownedFileUnsafe, nil
+	}
+
+	current := root
+	parts := strings.Split(back, string(filepath.Separator))
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, err = os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return ownedFileMissing, nil
+			}
+			return ownedFileUnsafe, err
+		}
+		if index == len(parts)-1 {
+			if info.Mode().IsRegular() {
+				return ownedFileRegular, nil
+			}
+			return ownedFileUnsafe, nil
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return ownedFileUnsafe, nil
+		}
+	}
+	return ownedFileUnsafe, nil
+}
+
 func writeReceipt(root string, receipt Receipt) error {
 	directory := filepath.Join(root, ".agx")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -356,16 +448,69 @@ func readReceipt(root string) (Receipt, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	var receipt Receipt
-	if err := decoder.Decode(&receipt); err != nil || receipt.SchemaVersion != receiptSchema || receipt.InstallationID == "" || receipt.BundleID == "" {
+	if err := decoder.Decode(&receipt); err != nil || receipt.SchemaVersion != receiptSchema || receipt.InstallationID == "" || receipt.BundleID == "" || receipt.Phase != "configured" {
 		return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: invalid receipt")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: trailing receipt data")
 	}
+	if !sha256Pattern.MatchString(receipt.BundleSHA256) || len(receipt.OwnedFiles) == 0 {
+		return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: invalid receipt")
+	}
+	componentOwnedFiles := map[string]int{
+		"agent-control": 0,
+		"agent-plugins": 0,
+	}
+	seenOwnedFiles := make(map[string]struct{}, len(receipt.OwnedFiles))
 	for _, relative := range receipt.OwnedFiles {
-		if _, err := ownedPath(root, relative); err != nil {
+		absolute, err := ownedPath(root, relative)
+		if err != nil {
 			return Receipt{}, err
+		}
+		canonical, err := filepath.Rel(root, absolute)
+		if err != nil {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-PATH: unsafe owned path %q", relative)
+		}
+		canonical = filepath.ToSlash(canonical)
+		if _, duplicate := seenOwnedFiles[canonical]; duplicate {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: duplicate owned path")
+		}
+		seenOwnedFiles[canonical] = struct{}{}
+		matchedComponent := false
+		for name := range componentOwnedFiles {
+			if strings.HasPrefix(canonical, "components/"+name+"/") {
+				componentOwnedFiles[name]++
+				matchedComponent = true
+			}
+		}
+		if !matchedComponent {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: owned path is outside known components")
+		}
+	}
+
+	if len(receipt.Components) != len(componentOwnedFiles) {
+		return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: invalid component contract")
+	}
+	seen := make(map[string]struct{}, len(receipt.Components))
+	for _, component := range receipt.Components {
+		expectedPath, known := map[string]string{
+			"agent-control": "components/agent-control",
+			"agent-plugins": "components/agent-plugins",
+		}[component.Name]
+		if !known {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: invalid component contract")
+		}
+		if _, duplicate := seen[component.Name]; duplicate {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: invalid component contract")
+		}
+		seen[component.Name] = struct{}{}
+		repository := strings.TrimSpace(component.Repository)
+		repositoryBase := path.Base(strings.TrimSuffix(repository, "/"))
+		if component.Path != expectedPath || repository == "" || repositoryBase != component.Name ||
+			!commitSHAPattern.MatchString(component.CommitSHA) || !sha256Pattern.MatchString(component.AssetSHA256) ||
+			componentOwnedFiles[component.Name] == 0 {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: invalid component contract")
 		}
 	}
 	return receipt, nil

@@ -107,17 +107,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		return exitcode.Software
 	}
 	if values["--output"] == "json" {
-		result := struct {
-			Status            string                       `json:"status"`
-			Unchanged         bool                         `json:"unchanged"`
-			InstallationID    string                       `json:"installation_id"`
-			Profile           activation.Profile           `json:"profile"`
-			Providers         []activation.ProviderReceipt `json:"providers"`
-			InstallationPhase string                       `json:"installation_phase"`
-		}{
-			Status: receipt.Phase, Unchanged: unchanged, InstallationID: receipt.InstallationID,
-			Profile: receipt.Profile, Providers: receipt.Providers, InstallationPhase: "configured",
-		}
+		result := newInitResult(receipt, unchanged)
 		data, _ := json.Marshal(result)
 		fmt.Fprintln(stdout, string(data))
 		return exitcode.Success
@@ -130,6 +120,33 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "Installation phase remains configured; provider activation is not verified.")
 	printFirstUse(stdout, receipt)
 	return exitcode.Success
+}
+
+type initResult struct {
+	Status            string                       `json:"status"`
+	Unchanged         bool                         `json:"unchanged"`
+	InstallationID    string                       `json:"installation_id"`
+	Profile           activation.Profile           `json:"profile"`
+	Providers         []activation.ProviderReceipt `json:"providers"`
+	InstallationPhase string                       `json:"installation_phase"`
+	FirstUse          []firstUsePrompt             `json:"first_use"`
+}
+
+type firstUsePrompt struct {
+	Provider provider.Name `json:"provider"`
+	Prompt   string        `json:"prompt"`
+}
+
+func newInitResult(receipt activation.Receipt, unchanged bool) initResult {
+	return initResult{
+		Status:            receipt.Phase,
+		Unchanged:         unchanged,
+		InstallationID:    receipt.InstallationID,
+		Profile:           receipt.Profile,
+		Providers:         receipt.Providers,
+		InstallationPhase: "configured",
+		FirstUse:          firstUsePrompts(receipt),
+	}
 }
 
 func parseProviders(value string) ([]provider.Name, error) {
@@ -147,31 +164,50 @@ func parseProviders(value string) ([]provider.Name, error) {
 
 func printFirstUse(stdout io.Writer, receipt activation.Receipt) {
 	fmt.Fprintln(stdout, "Start a new provider session, then try:")
+	for _, item := range firstUsePrompts(receipt) {
+		fmt.Fprintf(stdout, "  %-7s %s\n", providerDisplayName(item.Provider)+":", item.Prompt)
+	}
+}
+
+func firstUsePrompts(receipt activation.Receipt) []firstUsePrompt {
 	seen := map[provider.Name]bool{}
 	for _, item := range receipt.Providers {
 		seen[item.Name] = true
 	}
+	prompts := make([]firstUsePrompt, 0, 6)
 	if seen[provider.Codex] {
-		fmt.Fprintln(stdout, "  Codex:  $grilling:grilling 帮我压力测试这个方案")
+		prompts = append(prompts, firstUsePrompt{Provider: provider.Codex, Prompt: "$grilling:grilling 帮我压力测试这个方案"})
 	}
 	if seen[provider.Claude] {
-		fmt.Fprintln(stdout, "  Claude: /grilling:grilling 帮我压力测试这个方案")
+		prompts = append(prompts, firstUsePrompt{Provider: provider.Claude, Prompt: "/grilling:grilling 帮我压力测试这个方案"})
 	}
 	if receipt.Profile == activation.ProfileGitHub || receipt.Profile == activation.ProfileTeam || receipt.Profile == activation.ProfileFull {
 		if seen[provider.Codex] {
-			fmt.Fprintln(stdout, "  Codex:  $github-collaboration:issue-workflow 处理 GitHub Issue #123")
+			prompts = append(prompts, firstUsePrompt{Provider: provider.Codex, Prompt: "$github-collaboration:issue-workflow 处理 GitHub Issue #123"})
 		}
 		if seen[provider.Claude] {
-			fmt.Fprintln(stdout, "  Claude: /github-collaboration:issue-workflow 处理 GitHub Issue #123")
+			prompts = append(prompts, firstUsePrompt{Provider: provider.Claude, Prompt: "/github-collaboration:issue-workflow 处理 GitHub Issue #123"})
 		}
 	}
 	if receipt.Profile == activation.ProfileFull {
 		if seen[provider.Codex] {
-			fmt.Fprintln(stdout, "  Codex:  $resource-observability:resource-observability 查看当前账户额度")
+			prompts = append(prompts, firstUsePrompt{Provider: provider.Codex, Prompt: "$resource-observability:resource-observability 查看当前账户额度"})
 		}
 		if seen[provider.Claude] {
-			fmt.Fprintln(stdout, "  Claude: /resource-observability:resource-observability 查看当前账户额度")
+			prompts = append(prompts, firstUsePrompt{Provider: provider.Claude, Prompt: "/resource-observability:resource-observability 查看当前账户额度"})
 		}
+	}
+	return prompts
+}
+
+func providerDisplayName(name provider.Name) string {
+	switch name {
+	case provider.Codex:
+		return "Codex"
+	case provider.Claude:
+		return "Claude"
+	default:
+		return string(name)
 	}
 }
 
@@ -193,9 +229,13 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stdout, "AGX installation %s configured from Bundle %s.\n", receipt.InstallationID, receipt.BundleID)
 	}
+	printApplyNextStep(stdout)
+	return exitcode.Success
+}
+
+func printApplyNextStep(stdout io.Writer) {
 	fmt.Fprintln(stdout, "Next: initialize this root with agx init --root <directory> --provider codex|claude|both [--profile core|github|team|full].")
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
-	return exitcode.Success
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
