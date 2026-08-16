@@ -55,8 +55,27 @@
       "then": {
         "properties": {
           "provenance": {"const": "github_release"},
-          "development_override": {"const": false}
-        }
+          "development_override": {"const": false},
+          "artifacts": {
+            "properties": {
+              "agent_control": {
+                "properties": {
+                  "download_url": {
+                    "pattern": "^https://github\\.com/2233admin/agent-control/releases/download/[^/]+/[^/]+\\.tar\\.gz$"
+                  }
+                }
+              },
+              "agent_plugins": {
+                "properties": {
+                  "download_url": {
+                    "pattern": "^https://github\\.com/2233admin/agent-plugins/releases/download/[^/]+/[^/]+\\.tar\\.gz$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": ["development_override"]
       }
     },
     {

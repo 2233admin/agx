@@ -8,11 +8,11 @@
 
 - GitHub Release tag；
 - 该 Release 对应的 40 位 commit SHA；
-- 资产名和 HTTPS 下载 URL；
+- 资产名和受信 fork 的 GitHub Release HTTPS 下载 URL；
 - asset SHA-256 与解包后 content SHA-256；
 - AGX 和官方 Multica CLI 的兼容范围。
 
-生产模式只接受 `github_release` provenance，拒绝 sibling checkout、可变 branch/tag、内部目录和本地 Marketplace cache。任何 schema、repository、commit、asset、digest 或兼容性不匹配都必须在 auth-dependent mutation 之前停止。
+生产模式只接受 `github_release` provenance，且 schema 必须把 artifact URL 限定到受信 fork 的 GitHub Release 下载路径。生产拒绝 sibling checkout、可变 branch/tag、内部目录和本地 Marketplace cache。任何 schema、repository、commit、asset、digest 或兼容性不匹配都必须在 auth-dependent mutation 之前停止。
 
 ## 开发与 fixture
 
