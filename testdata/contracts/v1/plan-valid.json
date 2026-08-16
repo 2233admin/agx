@@ -1,0 +1,59 @@
+{
+  "schema_version": "agx/contracts/v1",
+  "contract": {
+    "desired": {
+      "installation_id": "install-demo",
+      "bundle_id": "bundle-demo",
+      "desired_hash": "sha256:demo",
+      "ownership": "user",
+      "idempotency": "safe",
+      "risk": "reversible"
+    },
+    "observed": {
+      "installation_id": "install-demo",
+      "phase": "planned",
+      "verification": {
+        "github": {
+          "source": "",
+          "installation_id": "",
+          "evidence_id": ""
+        },
+        "multica": {
+          "source": "",
+          "installation_id": "",
+          "evidence_id": ""
+        }
+      }
+    },
+    "plan": {
+      "installation_id": "install-demo",
+      "desired_hash": "sha256:demo",
+      "steps": [
+        {
+          "id": "configure-demo",
+          "kind": "configure",
+          "risk": "reversible",
+          "compensation": "rollback"
+        }
+      ]
+    },
+    "step_results": [],
+    "diagnostics": [],
+    "receipt": {
+      "installation_id": "install-demo",
+      "phase": "planned",
+      "verification": {
+        "github": {
+          "source": "",
+          "installation_id": "",
+          "evidence_id": ""
+        },
+        "multica": {
+          "source": "",
+          "installation_id": "",
+          "evidence_id": ""
+        }
+      }
+    }
+  }
+}
