@@ -4,9 +4,9 @@
 
 | 顺序 | Issue | 类型 | 当前状态 | 依赖 |
 | --- | --- | --- | --- | --- |
-| 1 | #3 | 仓内规格/归属基线 | in progress | — |
-| 2 | #4 | Bundle v1 provenance Gate | blocked：上游 release metadata/owner | #3 |
-| 2 | #5 | credential/redaction/lifecycle/platform Gate | blocked：具名 security/release owner | #3 |
+| 1 | #3 | 仓内规格/归属基线 | ready for review | — |
+| 2 | #4 | Bundle v1 provenance Gate | production fixture ready；等待 #11 合并/回读 | #3 |
+| 2 | #5 | credential/redaction/lifecycle/platform Gate | owner 已批准；等待 #3/#9 合并 | #3 |
 | 3 | #6 | domain 与 diagnostic contract | blocked | #3、#4、#5 |
 | 4 | #7 | 安全 CLI command skeleton | blocked | #3、#5、#6 |
 
