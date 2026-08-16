@@ -12,14 +12,18 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/2233admin/agx/internal/bootstrap"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/provider"
+	"github.com/2233admin/agx/internal/repository"
 )
 
 const (
-	receiptSchema      = "agx.initialization/v1"
+	receiptSchema      = "agx.initialization/v2"
 	initializationFile = "initialization.json"
 	PhaseInitialized   = "initialized"
+	PhaseProvisioning  = "provisioning"
+	PhaseNeedsResume   = "needs_resume"
 	PhaseManualCleanup = "needs_manual_cleanup"
 	StatusAbsent       = "absent"
 	StatusDrifted      = "drifted"
@@ -75,25 +79,76 @@ type ProviderReceipt struct {
 }
 
 type Receipt struct {
-	SchemaVersion  string            `json:"schema_version"`
-	InstallationID string            `json:"installation_id"`
-	Phase          string            `json:"phase"`
-	Profile        Profile           `json:"profile"`
-	Providers      []ProviderReceipt `json:"providers"`
+	SchemaVersion         string                `json:"schema_version"`
+	InstallationID        string                `json:"installation_id"`
+	Phase                 string                `json:"phase"`
+	GitHubOwner           string                `json:"github_owner,omitempty"`
+	ControlRepository     string                `json:"control_repository,omitempty"`
+	ContractsRepository   string                `json:"contracts_repository,omitempty"`
+	Visibility            repository.Visibility `json:"visibility,omitempty"`
+	TemplateVersion       string                `json:"template_version,omitempty"`
+	TemplateContentSHA256 string                `json:"template_content_sha256,omitempty"`
+	Profile               Profile               `json:"profile"`
+	Repositories          []repository.Receipt  `json:"repositories,omitempty"`
+	Providers             []ProviderReceipt     `json:"providers"`
 }
 
 type State struct {
-	Status    string          `json:"status"`
-	Profile   Profile         `json:"profile,omitempty"`
-	Providers []provider.Name `json:"providers,omitempty"`
-	Problems  []string        `json:"problems,omitempty"`
+	Status       string          `json:"status"`
+	Profile      Profile         `json:"profile,omitempty"`
+	Providers    []provider.Name `json:"providers,omitempty"`
+	Repositories []string        `json:"repositories,omitempty"`
+	Problems     []string        `json:"problems,omitempty"`
 }
 
 type Options struct {
-	Root      string
-	Profile   Profile
-	Providers []provider.Name
-	Runner    provider.Runner
+	Root                string
+	GitHubOwner         string
+	ControlRepository   string
+	ContractsRepository string
+	Visibility          repository.Visibility
+	Profile             Profile
+	Providers           []provider.Name
+	Runner              provider.Runner
+	RepositoryRunner    repository.Runner
+}
+
+type PluginPlan struct {
+	Name   string `json:"name"`
+	Action string `json:"action"`
+}
+
+type ProviderPlan struct {
+	Name              provider.Name `json:"name"`
+	MarketplaceAction string        `json:"marketplace_action"`
+	Plugins           []PluginPlan  `json:"plugins"`
+}
+
+type RepositoryPlan struct {
+	Kind            bootstrap.Kind        `json:"kind"`
+	Owner           string                `json:"owner"`
+	Name            string                `json:"name"`
+	Visibility      repository.Visibility `json:"visibility"`
+	Action          string                `json:"action"`
+	TemplateVersion string                `json:"template_version"`
+	TemplateDigest  string                `json:"template_digest"`
+}
+
+type InitializationPlan struct {
+	InstallationID        string           `json:"installation_id"`
+	TemplateVersion       string           `json:"template_version"`
+	TemplateContentSHA256 string           `json:"template_content_sha256"`
+	PluginSource          string           `json:"plugin_source"`
+	Profile               Profile          `json:"profile"`
+	Providers             []ProviderPlan   `json:"providers"`
+	Repositories          []RepositoryPlan `json:"repositories"`
+}
+
+type UninitializeResult struct {
+	Changed              bool                 `json:"changed"`
+	ReceiptRemoved       bool                 `json:"receipt_removed"`
+	RetainedRepositories []repository.Receipt `json:"retained_repositories"`
+	RetainedMarketplaces []provider.Name      `json:"retained_marketplaces,omitempty"`
 }
 
 type target struct {
@@ -103,7 +158,394 @@ type target struct {
 	toInstall []string
 }
 
+// Plan performs every installation, repository, and provider preflight without
+// writing local or external state.
+func Plan(ctx context.Context, options Options) (InitializationPlan, error) {
+	prepared, err := prepareDeployment(ctx, options)
+	if err != nil {
+		return InitializationPlan{}, err
+	}
+	plan := InitializationPlan{
+		InstallationID:        prepared.installation.InstallationID,
+		TemplateVersion:       bootstrap.TemplateSetVersion,
+		TemplateContentSHA256: bootstrap.TemplateSetContentSHA256,
+		PluginSource:          prepared.pluginRepository,
+		Profile:               prepared.options.Profile,
+	}
+	recorded := map[string]bool{}
+	for _, item := range prepared.existing.Repositories {
+		recorded[strings.ToLower(item.NameWithOwner)] = true
+	}
+	for index, item := range prepared.repositoryTargets {
+		kind := bootstrap.KindAgentControl
+		if index == 1 {
+			kind = bootstrap.KindAgentContracts
+		}
+		action := "create"
+		if recorded[strings.ToLower(item.Owner+"/"+item.Name)] {
+			action = "verify"
+		}
+		plan.Repositories = append(plan.Repositories, RepositoryPlan{
+			Kind: kind, Owner: item.Owner, Name: item.Name, Visibility: item.Visibility,
+			Action: action, TemplateVersion: item.Seed.Version, TemplateDigest: item.Seed.Digest,
+		})
+	}
+	for _, item := range prepared.providerTargets {
+		providerPlan := ProviderPlan{Name: item.name, MarketplaceAction: "keep"}
+		if item.receipt.MarketplaceAdded {
+			providerPlan.MarketplaceAction = "add"
+		}
+		for _, pluginName := range item.receipt.SelectedPlugins {
+			action := "keep"
+			if contains(item.toInstall, pluginName) {
+				action = "install"
+			}
+			providerPlan.Plugins = append(providerPlan.Plugins, PluginPlan{Name: pluginName, Action: action})
+		}
+		plan.Providers = append(plan.Providers, providerPlan)
+	}
+	return plan, nil
+}
+
 func Initialize(ctx context.Context, options Options) (Receipt, bool, error) {
+	if strings.TrimSpace(options.GitHubOwner) != "" {
+		return initializeDeployment(ctx, options)
+	}
+	// Internal compatibility for provider lifecycle tests and existing local
+	// callers. The public CLI always requires an explicit GitHub owner and uses
+	// the deployment path above.
+	return initializeProvidersOnly(ctx, options)
+}
+
+type preparedDeployment struct {
+	installation      installer.Receipt
+	source            string
+	pluginRepository  string
+	options           Options
+	repositoryTargets []repository.Target
+	providerTargets   []target
+	existing          Receipt
+	present           bool
+}
+
+func prepareDeployment(ctx context.Context, options Options) (preparedDeployment, error) {
+	options.GitHubOwner = strings.TrimSpace(options.GitHubOwner)
+	if options.GitHubOwner == "" {
+		return preparedDeployment{}, fmt.Errorf("AGX-INIT-GITHUB-OWNER: --github-owner is required")
+	}
+	if options.ControlRepository == "" {
+		options.ControlRepository = "agent-control"
+	}
+	if options.ContractsRepository == "" {
+		options.ContractsRepository = "agent-contracts"
+	}
+	if options.Visibility == "" {
+		options.Visibility = repository.VisibilityPrivate
+	}
+	selected, err := Plugins(options.Profile)
+	if err != nil {
+		return preparedDeployment{}, err
+	}
+	providers, err := normalizeProviders(options.Providers)
+	if err != nil {
+		return preparedDeployment{}, err
+	}
+	options.Providers = providers
+	installation, source, err := resolveInstallation(options.Root, true)
+	if err != nil {
+		return preparedDeployment{}, err
+	}
+	if installation.TemplateVersion != bootstrap.TemplateSetVersion || installation.TemplateContentSHA256 != bootstrap.TemplateSetContentSHA256 {
+		return preparedDeployment{}, fmt.Errorf("AGX-INIT-TEMPLATE-DRIFT: installed template metadata does not match this AGX binary")
+	}
+	pluginRepository := ""
+	for _, component := range installation.Components {
+		if component.Name == "agent-plugins" {
+			pluginRepository = component.Repository
+		}
+	}
+	if pluginRepository == "" {
+		return preparedDeployment{}, fmt.Errorf("AGX-INIT-INSTALLATION: agent-plugins upstream repository is missing")
+	}
+	repositoryTargets, err := buildRepositoryTargets(options, pluginRepository)
+	if err != nil {
+		return preparedDeployment{}, err
+	}
+	existing, present, err := readReceipt(options.Root)
+	if err != nil {
+		return preparedDeployment{}, err
+	}
+	if present {
+		if err := validateDeploymentIdentity(existing, installation, options); err != nil {
+			return preparedDeployment{}, err
+		}
+		if existing.Phase == PhaseManualCleanup {
+			return preparedDeployment{}, fmt.Errorf("AGX-INIT-MANUAL-CLEANUP: unresolved provider changes require cleanup before initialization")
+		}
+		verified := make([]repository.Receipt, 0, len(existing.Repositories))
+		for _, item := range existing.Repositories {
+			if err := repository.Verify(ctx, item, options.RepositoryRunner); err != nil {
+				// An uncertain mutation followed by a conclusive absent readback is
+				// safe to retry. Other failures remain fail-closed.
+				if item.Verification == repository.VerificationUncertain && strings.Contains(err.Error(), " is absent") {
+					continue
+				}
+				return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: %w", err)
+			}
+			verified = append(verified, item)
+		}
+		existing.Repositories = verified
+	}
+
+	recorded := map[string]bool{}
+	for _, item := range existing.Repositories {
+		recorded[strings.ToLower(item.NameWithOwner)] = true
+	}
+	var missing []repository.Target
+	for _, item := range repositoryTargets {
+		if !recorded[strings.ToLower(item.Owner+"/"+item.Name)] {
+			missing = append(missing, item)
+		}
+	}
+	if len(missing) > 0 {
+		if err := repository.Preflight(ctx, missing, options.RepositoryRunner); err != nil {
+			return preparedDeployment{}, err
+		}
+	}
+	providerRunner := options.Runner
+	if providerRunner == nil {
+		providerRunner = provider.OSRunner{}
+	}
+	providerTargets, err := prepareProviderTargets(ctx, selected, providers, source, providerRunner)
+	if err != nil {
+		return preparedDeployment{}, err
+	}
+	options.Runner = providerRunner
+	return preparedDeployment{
+		installation: installation, source: source, pluginRepository: pluginRepository, options: options,
+		repositoryTargets: repositoryTargets, providerTargets: providerTargets, existing: existing, present: present,
+	}, nil
+}
+
+func buildRepositoryTargets(options Options, pluginRepository string) ([]repository.Target, error) {
+	definitions := []struct {
+		kind        bootstrap.Kind
+		name        string
+		description string
+	}{
+		{bootstrap.KindAgentControl, options.ControlRepository, "AGX deployment control repository"},
+		{bootstrap.KindAgentContracts, options.ContractsRepository, "AGX deployment contract repository"},
+	}
+	targets := make([]repository.Target, 0, len(definitions))
+	for _, definition := range definitions {
+		rendered, err := bootstrap.Render(definition.kind, bootstrap.Params{
+			Owner: options.GitHubOwner, Repository: definition.name, PluginSource: pluginRepository,
+		})
+		if err != nil {
+			return nil, err
+		}
+		files := make([]repository.File, 0, len(rendered.Files))
+		for _, file := range rendered.Files {
+			files = append(files, repository.File{Path: file.Path, Content: append([]byte(nil), file.Content...)})
+		}
+		targets = append(targets, repository.Target{
+			Owner: options.GitHubOwner, Name: definition.name, Description: definition.description,
+			Visibility: options.Visibility,
+			Seed:       repository.Seed{Version: rendered.Version, Digest: rendered.Digest, Files: files},
+		})
+	}
+	return targets, nil
+}
+
+func validateDeploymentIdentity(receipt Receipt, installation installer.Receipt, options Options) error {
+	if receipt.InstallationID != installation.InstallationID || receipt.GitHubOwner != options.GitHubOwner ||
+		receipt.ControlRepository != options.ControlRepository || receipt.ContractsRepository != options.ContractsRepository ||
+		receipt.Visibility != options.Visibility || receipt.TemplateVersion != bootstrap.TemplateSetVersion ||
+		receipt.TemplateContentSHA256 != bootstrap.TemplateSetContentSHA256 || receipt.Profile != options.Profile ||
+		!sameProviders(receipt.Providers, options.Providers) && len(receipt.Providers) > 0 {
+		return fmt.Errorf("AGX-INIT-CONFLICT: existing initialization receipt has different deployment parameters")
+	}
+	return nil
+}
+
+func initializeDeployment(ctx context.Context, options Options) (Receipt, bool, error) {
+	prepared, err := prepareDeployment(ctx, options)
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	receipt := prepared.existing
+	if prepared.present && receipt.Phase == PhaseInitialized {
+		if problems := verifyReceipt(ctx, receipt, prepared.source, prepared.options.Runner); len(problems) > 0 {
+			return Receipt{}, false, fmt.Errorf("AGX-INIT-DRIFT: %s", strings.Join(problems, "; "))
+		}
+		return receipt, true, nil
+	}
+	if !prepared.present {
+		receipt = Receipt{
+			SchemaVersion: receiptSchema, InstallationID: prepared.installation.InstallationID,
+			Phase: PhaseProvisioning, GitHubOwner: prepared.options.GitHubOwner,
+			ControlRepository: prepared.options.ControlRepository, ContractsRepository: prepared.options.ContractsRepository,
+			Visibility: prepared.options.Visibility, TemplateVersion: bootstrap.TemplateSetVersion,
+			TemplateContentSHA256: bootstrap.TemplateSetContentSHA256, Profile: prepared.options.Profile,
+		}
+		if err := writeReceipt(prepared.options.Root, receipt); err != nil {
+			return Receipt{}, false, err
+		}
+	}
+	recorded := map[string]bool{}
+	for _, item := range receipt.Repositories {
+		recorded[strings.ToLower(item.NameWithOwner)] = true
+	}
+	for _, item := range prepared.repositoryTargets {
+		if recorded[strings.ToLower(item.Owner+"/"+item.Name)] {
+			continue
+		}
+		created, createErr := repository.Create(ctx, item, prepared.options.RepositoryRunner)
+		if created.NameWithOwner != "" {
+			receipt.Repositories = append(receipt.Repositories, created)
+		}
+		if createErr != nil {
+			receipt.Phase = PhaseNeedsResume
+			if writeErr := writeReceipt(prepared.options.Root, receipt); writeErr != nil {
+				return Receipt{}, false, fmt.Errorf("%v; recovery receipt failed: %w", createErr, writeErr)
+			}
+			return receipt, false, createErr
+		}
+		if err := writeReceipt(prepared.options.Root, receipt); err != nil {
+			return receipt, false, err
+		}
+	}
+	// Repository creation may take long enough for provider inventory to change.
+	// Recheck it immediately before the first provider mutation.
+	selected, _ := Plugins(prepared.options.Profile)
+	providerTargets, providerPreflightErr := prepareProviderTargets(
+		ctx, selected, prepared.options.Providers, prepared.source, prepared.options.Runner,
+	)
+	if providerPreflightErr != nil {
+		receipt.Phase = PhaseNeedsResume
+		if writeErr := writeReceipt(prepared.options.Root, receipt); writeErr != nil {
+			return Receipt{}, false, fmt.Errorf("%v; recovery receipt failed: %w", providerPreflightErr, writeErr)
+		}
+		return receipt, false, providerPreflightErr
+	}
+	mergeProviderOwnership(providerTargets, receipt.Providers)
+	// Persist ownership intent before provider mutation. An interrupted command
+	// can then be reconciled or safely uninitialized without guessing which
+	// objects AGX intended to add.
+	receipt.Providers = make([]ProviderReceipt, 0, len(providerTargets))
+	for index := range providerTargets {
+		item := &providerTargets[index]
+		for _, pluginName := range item.toInstall {
+			if !contains(item.receipt.AddedPlugins, pluginName) {
+				item.receipt.AddedPlugins = append(item.receipt.AddedPlugins, pluginName)
+			}
+		}
+		receipt.Providers = append(receipt.Providers, item.receipt)
+	}
+	receipt.Phase = PhaseProvisioning
+	if err := writeReceipt(prepared.options.Root, receipt); err != nil {
+		return Receipt{}, false, err
+	}
+	providerReceipts, activationErr := activateDeploymentProviders(ctx, providerTargets, prepared.source, prepared.options.Runner)
+	if activationErr != nil {
+		receipt.Providers = providerReceipts
+		cleanupErr := compensate(ctx, providerReceipts, prepared.source, prepared.options.Runner)
+		if cleanupErr == nil {
+			receipt.Providers = nil
+			receipt.Phase = PhaseNeedsResume
+		} else {
+			receipt.Phase = PhaseManualCleanup
+			activationErr = fmt.Errorf("%v; compensation failed: %v", activationErr, cleanupErr)
+		}
+		if writeErr := writeReceipt(prepared.options.Root, receipt); writeErr != nil {
+			return Receipt{}, false, fmt.Errorf("%v; recovery receipt failed: %w", activationErr, writeErr)
+		}
+		return receipt, false, activationErr
+	}
+	receipt.Providers = providerReceipts
+	if problems := verifyReceipt(ctx, receipt, prepared.source, prepared.options.Runner); len(problems) > 0 {
+		readbackErr := fmt.Errorf("AGX-INIT-READBACK: %s", strings.Join(problems, "; "))
+		if cleanupErr := compensate(ctx, providerReceipts, prepared.source, prepared.options.Runner); cleanupErr == nil {
+			receipt.Providers = nil
+			receipt.Phase = PhaseNeedsResume
+		} else {
+			receipt.Phase = PhaseManualCleanup
+			readbackErr = fmt.Errorf("%v; compensation failed: %v", readbackErr, cleanupErr)
+		}
+		if err := writeReceipt(prepared.options.Root, receipt); err != nil {
+			return Receipt{}, false, err
+		}
+		return receipt, false, readbackErr
+	}
+	receipt.Phase = PhaseInitialized
+	if err := writeReceipt(prepared.options.Root, receipt); err != nil {
+		return Receipt{}, false, err
+	}
+	return receipt, false, nil
+}
+
+func prepareProviderTargets(ctx context.Context, selected []string, providers []provider.Name, source string, runner provider.Runner) ([]target, error) {
+	targets := make([]target, 0, len(providers))
+	for _, name := range providers {
+		inventory, err := provider.Inspect(ctx, name, runner)
+		if err != nil {
+			return nil, err
+		}
+		if inventory.Marketplace.Present && !provider.SameSource(inventory.Marketplace.Source, source) {
+			return nil, fmt.Errorf("AGX-INIT-SOURCE-CONFLICT: %s Marketplace %q is already bound to a different source", name, provider.MarketplaceName)
+		}
+		item := target{name: name, before: inventory, receipt: ProviderReceipt{
+			Name: name, MarketplaceAdded: !inventory.Marketplace.Present, SelectedPlugins: append([]string(nil), selected...),
+		}}
+		for _, pluginName := range selected {
+			plugin, present := inventory.Plugin(pluginName)
+			if present && !plugin.Enabled {
+				return nil, fmt.Errorf("AGX-INIT-PLUGIN-DISABLED: %s plugin %q already exists but is disabled", name, pluginName)
+			}
+			if !present {
+				item.toInstall = append(item.toInstall, pluginName)
+			}
+		}
+		targets = append(targets, item)
+	}
+	return targets, nil
+}
+
+func activateDeploymentProviders(ctx context.Context, targets []target, source string, runner provider.Runner) ([]ProviderReceipt, error) {
+	var receipts []ProviderReceipt
+	for index := range targets {
+		item := &targets[index]
+		if item.receipt.MarketplaceAdded && !item.before.Marketplace.Present {
+			if err := provider.AddMarketplace(ctx, item.name, source, runner); err != nil {
+				return candidateReceipts(targets, index, ""), err
+			}
+		}
+		for _, pluginName := range item.toInstall {
+			if err := provider.InstallPlugin(ctx, item.name, pluginName, runner); err != nil {
+				return candidateReceipts(targets, index, pluginName), err
+			}
+			if !contains(item.receipt.AddedPlugins, pluginName) {
+				item.receipt.AddedPlugins = append(item.receipt.AddedPlugins, pluginName)
+			}
+		}
+		receipts = append(receipts, item.receipt)
+	}
+	return receipts, nil
+}
+
+func mergeProviderOwnership(targets []target, existing []ProviderReceipt) {
+	byName := make(map[provider.Name]ProviderReceipt, len(existing))
+	for _, item := range existing {
+		byName[item.Name] = item
+	}
+	for index := range targets {
+		if item, present := byName[targets[index].name]; present {
+			targets[index].receipt = item
+		}
+	}
+}
+
+func initializeProvidersOnly(ctx context.Context, options Options) (Receipt, bool, error) {
 	runner := options.Runner
 	if runner == nil {
 		runner = provider.OSRunner{}
@@ -201,7 +643,7 @@ func Initialize(ctx context.Context, options Options) (Receipt, bool, error) {
 	return receipt, false, nil
 }
 
-func Status(ctx context.Context, root string, runner provider.Runner) (State, error) {
+func Status(ctx context.Context, root string, runner provider.Runner, repositoryRunners ...repository.Runner) (State, error) {
 	receipt, present, err := readReceipt(root)
 	if err != nil {
 		return State{}, err
@@ -213,7 +655,20 @@ func Status(ctx context.Context, root string, runner provider.Runner) (State, er
 	for _, item := range receipt.Providers {
 		state.Providers = append(state.Providers, item.Name)
 	}
+	var repositoryRunner repository.Runner
+	if len(repositoryRunners) > 0 {
+		repositoryRunner = repositoryRunners[0]
+	}
+	for _, item := range receipt.Repositories {
+		state.Repositories = append(state.Repositories, item.NameWithOwner)
+		if err := repository.Verify(ctx, item, repositoryRunner); err != nil {
+			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
+		}
+	}
 	if receipt.Phase == PhaseManualCleanup {
+		if len(state.Problems) > 0 {
+			state.Status = StatusDrifted
+		}
 		return state, nil
 	}
 	installation, source, err := resolveInstallation(root, false)
@@ -230,11 +685,62 @@ func Status(ctx context.Context, root string, runner provider.Runner) (State, er
 	if runner == nil {
 		runner = provider.OSRunner{}
 	}
-	state.Problems = verifyReceipt(ctx, receipt, source, runner)
+	state.Problems = append(state.Problems, verifyReceipt(ctx, receipt, source, runner)...)
 	if len(state.Problems) > 0 {
 		state.Status = StatusDrifted
 	}
 	return state, nil
+}
+
+// UninitializeDetailed reverses only AGX-owned provider mutations and reports
+// the deployment repositories that are deliberately retained. The legacy
+// Uninitialize wrapper below remains for internal callers that only need a
+// changed boolean.
+func UninitializeDetailed(ctx context.Context, root string, runner provider.Runner) (UninitializeResult, error) {
+	receipt, present, err := readReceipt(root)
+	if err != nil || !present {
+		return UninitializeResult{}, err
+	}
+	result := UninitializeResult{RetainedRepositories: append([]repository.Receipt(nil), receipt.Repositories...)}
+	providerRunner := runner
+	if providerRunner == nil {
+		providerRunner = provider.OSRunner{}
+	}
+	_, source, sourceErr := resolveInstallation(root, false)
+	beforeCount, _, beforeOK := inspectOwnedProviderState(ctx, receipt, source, providerRunner, sourceErr == nil)
+	changed, err := Uninitialize(ctx, root, runner)
+	afterCount, retainedMarketplaces, afterOK := inspectOwnedProviderState(ctx, receipt, source, providerRunner, sourceErr == nil)
+	result.Changed = changed || (beforeOK && afterOK && afterCount < beforeCount)
+	result.ReceiptRemoved = changed
+	result.RetainedMarketplaces = retainedMarketplaces
+	return result, err
+}
+
+func inspectOwnedProviderState(ctx context.Context, receipt Receipt, source string, runner provider.Runner, sourceAvailable bool) (int, []provider.Name, bool) {
+	if !sourceAvailable {
+		return 0, nil, false
+	}
+	count := 0
+	var retained []provider.Name
+	for _, item := range receipt.Providers {
+		inventory, err := provider.Inspect(ctx, item.Name, runner)
+		if err != nil {
+			return 0, nil, false
+		}
+		if inventory.Marketplace.Present && provider.SameSource(inventory.Marketplace.Source, source) {
+			if item.MarketplaceAdded {
+				count++
+			} else {
+				retained = append(retained, item.Name)
+			}
+		}
+		for _, pluginName := range item.AddedPlugins {
+			if _, present := inventory.Plugin(pluginName); present {
+				count++
+			}
+		}
+	}
+	return count, retained, true
 }
 
 func Uninitialize(ctx context.Context, root string, runner provider.Runner) (bool, error) {
@@ -537,7 +1043,8 @@ func readReceipt(root string) (Receipt, bool, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: trailing data")
 	}
-	if receipt.SchemaVersion != receiptSchema || receipt.InstallationID == "" || (receipt.Phase != PhaseInitialized && receipt.Phase != PhaseManualCleanup) {
+	if receipt.SchemaVersion != receiptSchema || receipt.InstallationID == "" ||
+		(receipt.Phase != PhaseInitialized && receipt.Phase != PhaseProvisioning && receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseManualCleanup) {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: required fields are missing")
 	}
 	if err := validateReceipt(receipt); err != nil {
@@ -604,6 +1111,45 @@ func requireRealMetadataEntry(path string, info os.FileInfo, directory bool, lab
 }
 
 func validateReceipt(receipt Receipt) error {
+	deployment := receipt.GitHubOwner != "" || receipt.ControlRepository != "" || receipt.ContractsRepository != "" ||
+		receipt.Visibility != "" || receipt.TemplateVersion != "" || receipt.TemplateContentSHA256 != "" || len(receipt.Repositories) > 0
+	if deployment {
+		if receipt.GitHubOwner == "" || receipt.ControlRepository == "" || receipt.ContractsRepository == "" ||
+			(receipt.Visibility != repository.VisibilityPrivate && receipt.Visibility != repository.VisibilityPublic) ||
+			receipt.TemplateVersion != bootstrap.TemplateSetVersion || receipt.TemplateContentSHA256 != bootstrap.TemplateSetContentSHA256 ||
+			len(receipt.Repositories) > 2 {
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: deployment metadata is inconsistent")
+		}
+		expected := map[string]bool{
+			strings.ToLower(receipt.GitHubOwner + "/" + receipt.ControlRepository):   true,
+			strings.ToLower(receipt.GitHubOwner + "/" + receipt.ContractsRepository): true,
+		}
+		seen := map[string]bool{}
+		for _, item := range receipt.Repositories {
+			key := strings.ToLower(item.NameWithOwner)
+			kind := bootstrap.KindAgentControl
+			repositoryName := receipt.ControlRepository
+			if key == strings.ToLower(receipt.GitHubOwner+"/"+receipt.ContractsRepository) {
+				kind = bootstrap.KindAgentContracts
+				repositoryName = receipt.ContractsRepository
+			}
+			rendered, renderErr := bootstrap.Render(kind, bootstrap.Params{
+				Owner: receipt.GitHubOwner, Repository: repositoryName, PluginSource: bootstrap.AgentPluginsReferenceRepository,
+			})
+			if !expected[key] || seen[key] || item.Visibility != receipt.Visibility || item.InitialCommit == "" ||
+				item.URL != "https://github.com/"+item.NameWithOwner || renderErr != nil ||
+				item.TemplateVersion != rendered.Version || item.TemplateDigest != rendered.Digest ||
+				(item.Verification != repository.VerificationReadback && item.Verification != repository.VerificationUncertain) {
+				return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repository ownership evidence is inconsistent")
+			}
+			seen[key] = true
+		}
+		if receipt.Phase == PhaseInitialized && len(seen) != 2 {
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: initialized deployment must contain both repository receipts")
+		}
+	} else if len(receipt.Repositories) != 0 {
+		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repositories require deployment metadata")
+	}
 	selected, err := Plugins(receipt.Profile)
 	if err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: unsupported profile")
@@ -622,6 +1168,12 @@ func validateReceipt(receipt Receipt) error {
 			seenAdded[pluginName] = true
 		}
 	}
+	if len(providers) == 0 {
+		if deployment && (receipt.Phase == PhaseProvisioning || receipt.Phase == PhaseNeedsResume) {
+			return nil
+		}
+		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: provider list is missing")
+	}
 	normalized, err := normalizeProviders(providers)
 	if err != nil || !sameProviders(receipt.Providers, normalized) {
 		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: provider list is inconsistent")
@@ -630,6 +1182,9 @@ func validateReceipt(receipt Receipt) error {
 }
 
 func writeReceipt(root string, receipt Receipt) error {
+	if err := validateReceipt(receipt); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)

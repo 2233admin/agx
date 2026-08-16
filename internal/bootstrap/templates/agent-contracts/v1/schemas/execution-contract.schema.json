@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "@@AGX_TARGET_URL@@/schemas/execution-contract.schema.json",
+  "title": "Execution Contract",
+  "description": "Structured capture of one immutable revision of an authoritative Execution Contract Issue.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "contractId",
+    "revision",
+    "contractRef",
+    "source",
+    "parentGoal",
+    "objective",
+    "scope",
+    "successCriteria",
+    "authorities",
+    "permissions",
+    "dependencies",
+    "deliverables",
+    "stopConditions",
+    "ownerAction"
+  ],
+  "x-issue-form-required": [
+    "contractId",
+    "revision",
+    "contractRef",
+    "parentGoal",
+    "objective",
+    "scopeIn",
+    "scopeOut",
+    "successCriteria",
+    "authorities",
+    "permissionsAllowed",
+    "permissionsForbidden",
+    "dependencies",
+    "deliverables",
+    "stopConditions",
+    "ownerAction"
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "issueUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://github\\.com/[^/]+/[^/]+/issues/[1-9][0-9]*$"
+    },
+    "issueSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issueUrl", "issueNumber", "remoteVersion", "contentDigest"],
+      "properties": {
+        "issueUrl": {
+          "$ref": "#/$defs/issueUrl"
+        },
+        "issueNumber": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "remoteVersion": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "contentDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed", "forbidden"],
+      "properties": {
+        "allowed": {
+          "$ref": "#/$defs/stringList"
+        },
+        "forbidden": {
+          "$ref": "#/$defs/stringList"
+        }
+      }
+    }
+  },
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "kind": {
+      "const": "execution-contract"
+    },
+    "contractId": {
+      "type": "string",
+      "pattern": "^exec-[a-z0-9][a-z0-9-]*$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "contractRef": {
+      "type": "string",
+      "pattern": "^exec-[a-z0-9][a-z0-9-]*@[1-9][0-9]*$"
+    },
+    "source": {
+      "$ref": "#/$defs/issueSource"
+    },
+    "parentGoal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractId", "relationship", "issueUrl"],
+      "properties": {
+        "contractId": {
+          "type": "string",
+          "pattern": "^goal-[a-z0-9][a-z0-9-]*$"
+        },
+        "relationship": {
+          "const": "github-sub-issue"
+        },
+        "issueUrl": {
+          "$ref": "#/$defs/issueUrl"
+        }
+      }
+    },
+    "objective": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["included", "excluded"],
+      "properties": {
+        "included": {
+          "$ref": "#/$defs/stringList"
+        },
+        "excluded": {
+          "$ref": "#/$defs/stringList"
+        }
+      }
+    },
+    "successCriteria": {
+      "$ref": "#/$defs/stringList"
+    },
+    "authorities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "permissions": {
+      "$ref": "#/$defs/permissions"
+    },
+    "dependencies": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "deliverables": {
+      "$ref": "#/$defs/stringList"
+    },
+    "stopConditions": {
+      "$ref": "#/$defs/stringList"
+    },
+    "ownerAction": {
+      "$ref": "#/$defs/nonEmptyString"
+    }
+  }
+}

@@ -1,0 +1,64 @@
+name: 诉求
+description: 记录需长期改变的原始诉求或能力缺口
+title: "诉求："
+labels:
+  - "类型/诉求"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        标题必须保留「诉求：」前缀，并补成要改变的现实结果。本表单已预挂「类型/诉求」；创建后请立即补挂下方选择的唯一「领域/*」 label。
+
+        > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 主要领域
+      description: 选择一项；创建后将同名「领域/*」 label 补挂到 Issue。
+      options:
+        - "领域/总目标"
+        - "领域/知识"
+        - "领域/长程工作"
+        - "领域/思考方法"
+        - "领域/协同协作"
+        - "领域/资源运营"
+        - "领域/横向"
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: 来源与上层关系
+      description: 写明负责人的原始表达、当前权威与主要父级；引用其他 Issue 时使用「关联 #N」。
+    validations:
+      required: true
+  - type: textarea
+    id: need
+    attributes:
+      label: 原始诉求与当前症状
+      description: 分开写现实中希望改变什么，以及当前哪些症状证明它尚未满足。
+    validations:
+      required: true
+  - type: textarea
+    id: signals
+    attributes:
+      label: 满足信号与证据等级
+      description: 写明可观察信号，并区分实现、当前交付验收、样本有效、产品采用和长期依赖。
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: 边界、权限与未决定事项
+      description: 列出明确不做、当前实施授权、必须升级的产品取舍和重新评估条件。
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我会在创建后补挂上方选择的唯一领域 label。
+          required: true
+        - label: 我已遵守关联引用写法，没有使用 GitHub 关闭关键词或其否定式。
+          required: true

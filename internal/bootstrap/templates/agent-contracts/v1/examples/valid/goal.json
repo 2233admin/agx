@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "goal",
+  "contractId": "goal-@@AGX_REPOSITORY@@-001",
+  "source": {
+    "issueUrl": "@@AGX_TARGET_URL@@/issues/1",
+    "issueNumber": 1,
+    "remoteVersion": "2026-08-16T14:03:04Z",
+    "contentDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "objective": "Establish a repository where GitHub Issues drive project-local execution contracts.",
+  "successCriteria": [
+    "A fresh session can recover an execution contract from its Issue and parent Goal.",
+    "No user-level agent configuration is required."
+  ],
+  "authorities": [
+    "@@AGX_TARGET_URL@@/issues/1"
+  ],
+  "permissions": {
+    "allowed": [
+      "Write project-local files and authorized GitHub records in @@AGX_TARGET_SLUG@@."
+    ],
+    "forbidden": [
+      "Modify user-level agent configuration or another repository."
+    ]
+  },
+  "dependencies": [],
+  "deliverables": [
+    "Project-local contract schemas and validation tooling."
+  ],
+  "stopConditions": [
+    "A required change exceeds the permissions recorded by the Goal."
+  ],
+  "ownerAction": "The repository maintainer reviews the next bounded Execution Contract."
+}

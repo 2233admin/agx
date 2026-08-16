@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "execution-contract",
+  "contractId": "exec-@@AGX_REPOSITORY@@-foundation-001",
+  "revision": 1,
+  "contractRef": "exec-@@AGX_REPOSITORY@@-foundation-001@1",
+  "source": {
+    "issueUrl": "@@AGX_TARGET_URL@@/issues/2",
+    "issueNumber": 2,
+    "remoteVersion": "2026-08-16T14:04:17Z",
+    "contentDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "parentGoal": {
+    "contractId": "goal-@@AGX_REPOSITORY@@-001",
+    "relationship": "github-sub-issue",
+    "issueUrl": "@@AGX_TARGET_URL@@/issues/1"
+  },
+  "objective": "Create the first project-local execution-contract foundation.",
+  "scope": {
+    "included": [
+      "Project rules, Issue Forms, schemas, examples, validation tooling, and CI."
+    ],
+    "excluded": [
+      "Runner daemons, webhooks, databases, and global installation."
+    ]
+  },
+  "successCriteria": [
+    "The repository formats and examples are deterministically validated without third-party packages.",
+    "GitHub remains the active contract authority."
+  ],
+  "authorities": [
+    "@@AGX_TARGET_URL@@/issues/2",
+    "@@AGX_TARGET_URL@@/issues/1"
+  ],
+  "permissions": {
+    "allowed": [
+      "Write and push a dedicated branch in @@AGX_TARGET_SLUG@@."
+    ],
+    "forbidden": [
+      "Merge the pull request or modify user-level configuration."
+    ]
+  },
+  "dependencies": [
+    "The public repository and Issues 1 and 2 exist."
+  ],
+  "deliverables": [
+    "A Draft pull request containing the complete foundation."
+  ],
+  "stopConditions": [
+    "The authoritative Issue changes materially during execution."
+  ],
+  "ownerAction": "The implementer delivers the foundation through a Draft pull request."
+}

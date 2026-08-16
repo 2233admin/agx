@@ -4,7 +4,8 @@
 - Every product change must have a bounded Issue contract with acceptance criteria. Closely related completed work may be integrated in one PR.
 - Preserve the boundary: AGX is an installation/deployment/lifecycle CLI, not a daily task scheduler.
 - Multica integration is optional and outside the AGX 0.1 release. Any future adapter must use a versioned official CLI and structured output only.
-- Consume `agent-control` and `agent-plugins` through immutable Release artifacts and verified digests in production.
+- Consume only `agent-plugins` through an immutable Release artifact and verified digests in production.
+- Create deployment-owned `agent-control` and `agent-contracts` repositories from AGX's versioned, digest-pinned bootstrap templates. Never copy their upstream Git history, live Issues, receipts, credentials, user paths, or current work state into a deployment.
 - Never emit the reserved `verified` state without matching external evidence. A locally intact Bundle installation is reported as `configured`.
 - Keep credentials out of config, logs, plans, receipts, fixtures, and support bundles.
 - Use Go for persistent implementation. Run `go test ./...` before delivery.

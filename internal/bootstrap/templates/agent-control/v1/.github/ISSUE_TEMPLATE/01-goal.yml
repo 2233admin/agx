@@ -1,0 +1,68 @@
+name: 目标
+description: 记录长期常开的总目标或上层目标
+title: "目标："
+labels:
+  - "类型/目标"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        标题必须保留「目标：」前缀，并补成能表达预期现实变化的完整短语。本表单已预挂「类型/目标」；创建后请立即补挂下方选择的唯一「领域/*」 label。
+
+        > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 主要领域
+      description: 选择一项；创建后将同名「领域/*」 label 补挂到 Issue。
+      options:
+        - "领域/总目标"
+        - "领域/知识"
+        - "领域/长程工作"
+        - "领域/思考方法"
+        - "领域/协同协作"
+        - "领域/资源运营"
+        - "领域/横向"
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: 来源与权威
+      description: 写明负责人已确认的来源、当前权威或上层目标；引用其他 Issue 时使用「关联 #N」。
+      placeholder: |
+        - 来源：
+        - 当前权威：
+        - 上层关系：
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 当前问题
+      description: 说明现实中哪个长期状态不理想，为什么值得改变。
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 目标与可观察信号
+      description: 写明期望的现实变化、长期满足信号，以及什么证据不足以宣告满足。
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: 边界与人的决定点
+      description: 列出明确不做、必须升级给负责人的取舍，以及停止或重新规划条件。
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我会在创建后补挂上方选择的唯一领域 label。
+          required: true
+        - label: 我已遵守关联引用写法，没有使用 GitHub 关闭关键词或其否定式。
+          required: true

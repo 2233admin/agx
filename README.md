@@ -4,33 +4,37 @@
 
 AGX 的猫娘协调员对应安装、计划、验收和回执；她是项目身份，不代表目标环境已通过 `verified`。其余画幅与 GitHub 文档落点见 [OC kit](assets/oc/README.md)。
 
-AGXCLI (`agx`) 是面向 `agent-control` 与 `agent-plugins` Bundle 的小型部署 CLI：下载固定 Release、校验摘要、安全解包、检查状态并按所有权卸载。
+AGXCLI (`agx`) 是小型部署 CLI：它安装固定版本的 `agent-plugins`，再从内置的版本化模板创建部署专属的 `agent-control` 与 `agent-contracts` GitHub 仓库，激活 Codex/Claude，并用本地回执管理恢复、状态和安全卸载。
 
 > 当前状态：本地 Bundle 部署闭环和 Codex/Claude 初始化阶段已实现。Multica 编排不属于当前发布阻塞项。
 
 ## 目标体验
 
-用户下载一个独立可执行文件，然后运行：
+用户下载一个独立可执行文件，先安装插件发行包，再预演初始化：
 
 ```text
 agx apply --bundle bundle.json --root D:\agx\installations\default
-agx init --root D:\agx\installations\default --provider codex --profile full
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --apply
 ```
 
-AGX 下载 Bundle 固定的两个资产，校验 SHA-256，在同一磁盘暂存后原子落盘，并写入不含凭据的回执。随后 `init` 只从该回执定位受 AGX 管理的 `agent-plugins` 组件，将选定能力激活到 Codex/Claude，执行结构化回读并给出可直接复制的首次使用提示。安装完整时状态仍为 `configured`；`verified` 是保留状态，初始化不会伪造它。
+第一条 `init` 只执行 GitHub、模板、安装和 provider 的只读 preflight，并打印将要创建的仓库与激活对象；只有带 `--apply` 才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control` 和 `octo-lab/agent-contracts`，每创建一个仓库就持久化一次恢复回执，然后从已安装的 `agent-plugins` 激活选定能力并结构化回读。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
 ## 产品边界
 
 AGX 负责：
 
 - `plan`、`apply`、`init`、`status`、`uninstall`、`version`
-- 消费固定版本与摘要的 `agent-control` / `agent-plugins` Release artifact
+- 消费固定版本与摘要的唯一 `agent-plugins` Release artifact
+- 从版本化、摘要固定的干净模板创建部署专属 `agent-control` / `agent-contracts` 仓库
 
 AGX 不负责：
 
 - 日常 Task 创建、分配、调度与日志
 - Multica Task/Runtime 编排或 Multica 服务端生命周期
 - 隐式消费 sibling checkout、可变 `main` 或本地 Marketplace cache
+- 复制参考仓的 Git 历史、live Issues/PR、凭据、回执、用户路径或当前工作状态
+- 接管、覆盖或在失败/卸载时自动删除用户的远端仓库
 - 保存或管理 Codex/Claude 凭据
 
 ## 当前开发入口
@@ -45,28 +49,33 @@ go run ./cmd/agx init --help
 
 ## 本地 Bundle 部署
 
-当前可用的部署闭环会下载 Bundle 固定的两个 GitHub Release 资产、校验 SHA-256、安全解包并写入非敏感回执：
+当前可用的部署闭环会下载 Bundle 固定的单个 `agent-plugins` GitHub Release 资产、校验 SHA-256、安全解包并写入非敏感回执：
+
+首次 `apply` 的 `--root` 必须尚不存在；AGX 会原子创建它。不要预先创建空目录，因为无法证明归属的既有目录会被当作冲突而保留。
 
 ```powershell
-go run ./cmd/agx apply --bundle testdata/bundles/v1-production-agx-bootstrap-20260816.1.json --root D:\agx\installations\default
-go run ./cmd/agx init --root D:\agx\installations\default --provider codex --profile core
+go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-20260816.1.json --root D:\agx\installations\default
+go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
+go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --apply
 go run ./cmd/agx status --root D:\agx\installations\default
 go run ./cmd/agx uninstall --root D:\agx\installations\default
 ```
 
-重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle，要求用户先解除引用。未知文件和其他预存运行端对象同样会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。初始化中断后，重试会先验证回执记录的远端仓库及其初始提交，再只继续缺失的步骤；AGX 不把一个碰巧同名的仓库当成自己创建的仓库。
+
+`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle。两个部署仓以及任何未知文件和预存运行端对象都会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
 
 ## 初始化能力包
 
-`init` 必须显式指定运行端，能力包默认是 `core`：
+`init` 必须显式指定 GitHub owner 和运行端，能力包默认是 `core`，仓库默认私有：
 
 ```powershell
-agx init --root D:\agx\installations\default --provider codex --profile core
-agx init --root D:\agx\installations\default --provider both --profile full
-agx init --root D:\agx\installations\default --provider both --profile full --output json
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --visibility public
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --control-repo my-control --contracts-repo my-contracts --apply --output json
 ```
 
-使用 `--output json` 时，成功结果的 `first_use` 数组会按运行端提供结构化的 `provider` 与 `prompt`，便于部署脚本直接展示或传递首次使用提示。
+不带 `--apply` 的结果是只读初始化计划；带 `--apply` 的成功结果中，`repositories` 记录目标 URL、visibility、初始 commit 与模板 digest，`first_use` 数组按运行端提供结构化的 `provider` 与 `prompt`。部分成功会保留可恢复回执并返回错误，不会删除已经创建的远端仓库。
 
 | 能力包 | 插件能力 |
 | --- | --- |
@@ -75,7 +84,7 @@ agx init --root D:\agx\installations\default --provider both --profile full --ou
 | `team` | `github` 加多 Agent 编排 |
 | `full` | `team` 加账户容量与会话 Token 观测 |
 
-初始化在任何写入前读取运行端的 JSON Inventory。安装回执或组件元数据不完整、组件路径包含 symlink/junction 等重解析点、目标 CLI 缺失、Inventory 不可读、同名 Marketplace 指向其他来源，或已有目标插件处于禁用状态时都会停止；AGX 不覆盖用户既有配置。成功后请新建一个运行端会话，让新的 Skill 清单生效；安装状态仍为 `configured`，不会因此成为 `verified`。
+初始化在任何写入前验证安装回执与模板版本，检查 `git` / `gh` 登录状态、两个目标仓不存在，并读取运行端的 JSON Inventory。安装组件路径包含 symlink/junction 等重解析点、目标 CLI 缺失、Inventory 不可读、同名仓库或 Marketplace 冲突，或已有目标插件处于禁用状态时都会停止；AGX 不覆盖用户既有配置。成功后请新建一个运行端会话，让新的 Skill 清单生效；安装状态仍为 `configured`，不会因此成为 `verified`。
 
 ## Preview 安装包（仅供测试）
 
@@ -106,6 +115,7 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
 
 - [zaurakworks/agent-control](https://github.com/zaurakworks/agent-control)
 - [zaurakworks/agent-plugins](https://github.com/zaurakworks/agent-plugins)
+- [zaurakworks/agent-contracts](https://github.com/zaurakworks/agent-contracts)
 - [Multica concepts](https://multica.ai/docs/zh/concepts)
 
 本仓目前由 `2233admin` 建立，用于推进 AGXCLI。除非上游明确接受或迁移，本仓不代表 `zaurakworks` 的官方发行版。
@@ -119,7 +129,7 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
 - [任务与 Gate](docs/spec/TASKS.md)
 - [仓库归属决策](docs/decisions/repository-provenance.md)
 
-这些文档记录过更大的 D1 设想，仅作为历史设计材料；已发布的 AGX 0.1 范围是本地 Bundle 部署闭环，当前分支新增的初始化能力以本 README 前述合同和 Issue #33 为准。
+这些文档同时记录长期 D1 设想和当前安全边界；当前分支的单一插件源、模板与部署仓初始化能力以本 README 和 Issue #33 为准。
 
 ## 贡献流程
 

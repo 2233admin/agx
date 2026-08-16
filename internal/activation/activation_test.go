@@ -2,14 +2,17 @@ package activation_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/2233admin/agx/internal/activation"
+	"github.com/2233admin/agx/internal/bootstrap"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/provider"
 )
@@ -262,7 +265,7 @@ func TestInitializeRejectsUnexpectedComponentPath(t *testing.T) {
 	if err := json.Unmarshal(data, &receipt); err != nil {
 		t.Fatal(err)
 	}
-	receipt.Components[1].Path = "."
+	receipt.Components[0].Path = "."
 	data, err = json.Marshal(receipt)
 	if err != nil {
 		t.Fatal(err)
@@ -576,6 +579,26 @@ func TestUninitializeCleansOwnedPluginsBeforeBlockingOnPreexistingMarketplace(t 
 	}
 }
 
+func TestUninitializeDetailedReportsPartialProviderMutation(t *testing.T) {
+	root := makeInstallation(t)
+	runner := newRunner()
+	source := filepath.Join(root, "components", "agent-plugins")
+	runner.states[provider.Codex].marketplaceSource = source
+	if _, _, err := activation.Initialize(context.Background(), activation.Options{
+		Root: root, Profile: activation.ProfileCore, Providers: []provider.Name{provider.Codex}, Runner: runner,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := activation.UninitializeDetailed(context.Background(), root, runner)
+	if err == nil || !result.Changed || result.ReceiptRemoved || len(result.RetainedMarketplaces) != 1 ||
+		result.RetainedMarketplaces[0] != provider.Codex {
+		t.Fatalf("UninitializeDetailed() result=%+v err=%v", result, err)
+	}
+	if len(runner.states[provider.Codex].plugins) != 0 {
+		t.Fatalf("owned plugins were not removed: %+v", runner.states[provider.Codex])
+	}
+}
+
 func TestUninitializeRechecksSourceBeforeFirstMutation(t *testing.T) {
 	root := makeInstallation(t)
 	runner := newRunner()
@@ -729,29 +752,26 @@ func makeInstallation(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "installation")
 	pluginFile := filepath.Join(root, "components", "agent-plugins", "README.md")
-	controlFile := filepath.Join(root, "components", "agent-control", "README.md")
-	for _, path := range []string{pluginFile, controlFile} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("fixture\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.MkdirAll(filepath.Dir(pluginFile), 0o755); err != nil {
+		t.Fatal(err)
 	}
+	content := []byte("fixture\n")
+	if err := os.WriteFile(pluginFile, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contentDigest := fmt.Sprintf("%x", sha256.Sum256(content))
 	receipt := installer.Receipt{
-		SchemaVersion: "agx.receipt/v1", InstallationID: "install-test", BundleID: "bundle-test",
-		BundleSHA256: strings.Repeat("e", 64), Phase: "configured",
+		SchemaVersion: "agx.receipt/v2", InstallationID: "install-test", BundleID: "bundle-test",
+		BundleSHA256: strings.Repeat("e", 64), TemplateVersion: bootstrap.TemplateSetVersion,
+		TemplateContentSHA256: bootstrap.TemplateSetContentSHA256, Phase: "configured",
 		Components: []installer.Component{
 			{
-				Name: "agent-control", Repository: "2233admin/agent-control", CommitSHA: strings.Repeat("a", 40),
-				AssetSHA256: strings.Repeat("c", 64), Path: "components/agent-control",
-			},
-			{
-				Name: "agent-plugins", Repository: "2233admin/agent-plugins", CommitSHA: strings.Repeat("b", 40),
+				Name: "agent-plugins", Repository: "zaurakworks/agent-plugins", DistributionRepository: "2233admin/agent-plugins", CommitSHA: strings.Repeat("b", 40),
 				AssetSHA256: strings.Repeat("d", 64), Path: "components/agent-plugins",
 			},
 		},
-		OwnedFiles: []string{"components/agent-control/README.md", "components/agent-plugins/README.md"},
+		OwnedFiles:      []string{"components/agent-plugins/README.md"},
+		OwnedFileSHA256: map[string]string{"components/agent-plugins/README.md": contentDigest},
 	}
 	data, err := json.Marshal(receipt)
 	if err != nil {

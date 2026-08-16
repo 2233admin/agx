@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "@@AGX_TARGET_URL@@/schemas/receipt.schema.json",
+  "title": "Execution Receipt",
+  "description": "A delivery or blocker report bound to an exact Execution Contract snapshot; it does not assert acceptance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "receiptId",
+    "contract",
+    "outcome",
+    "summary",
+    "artifacts",
+    "verification",
+    "globalWrites",
+    "remainingUnknowns",
+    "submittedAt"
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "issueUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://github\\.com/[^/]+/[^/]+/issues/[1-9][0-9]*$"
+    }
+  },
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "kind": {
+      "const": "receipt"
+    },
+    "receiptId": {
+      "type": "string",
+      "pattern": "^receipt-[a-z0-9][a-z0-9-]*$"
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractId",
+        "revision",
+        "contractRef",
+        "issueUrl",
+        "issueNumber",
+        "remoteVersion",
+        "contentDigest"
+      ],
+      "properties": {
+        "contractId": {
+          "type": "string",
+          "pattern": "^exec-[a-z0-9][a-z0-9-]*$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contractRef": {
+          "type": "string",
+          "pattern": "^exec-[a-z0-9][a-z0-9-]*@[1-9][0-9]*$"
+        },
+        "issueUrl": {
+          "$ref": "#/$defs/issueUrl"
+        },
+        "issueNumber": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "remoteVersion": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "contentDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["delivered", "blocked"]
+    },
+    "summary": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "url"],
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "result"],
+        "properties": {
+          "command": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "result": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
+    "globalWrites": {
+      "$ref": "#/$defs/stringList"
+    },
+    "remainingUnknowns": {
+      "$ref": "#/$defs/stringList"
+    },
+    "submittedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

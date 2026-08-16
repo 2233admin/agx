@@ -50,7 +50,10 @@ func TestWriteReceiptRejectsLinkedMetadataDirectory(t *testing.T) {
 	if err := os.Symlink(sibling, metadata); err != nil {
 		t.Skipf("directory symlinks are unavailable on this platform: %v", err)
 	}
-	receipt := Receipt{SchemaVersion: receiptSchema, InstallationID: "install-test", Phase: PhaseInitialized, Profile: ProfileCore}
+	receipt := Receipt{
+		SchemaVersion: receiptSchema, InstallationID: "install-test", Phase: PhaseInitialized, Profile: ProfileCore,
+		Providers: []ProviderReceipt{{Name: "codex", SelectedPlugins: append([]string(nil), corePlugins...)}},
+	}
 	if err := writeReceipt(root, receipt); err == nil || !strings.Contains(err.Error(), "AGX-INIT-RECEIPT-WRITE") {
 		t.Fatalf("writeReceipt() err=%v", err)
 	}

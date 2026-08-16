@@ -1,0 +1,118 @@
+# contract-schema: schemas/execution-contract.schema.json
+name: 执行合同
+description: 针对父目标授权一次边界明确的执行。
+title: "执行合同："
+body:
+  - type: markdown
+    attributes:
+      value: |
+        创建后，必须把本议题注册为父目标的 GitHub 子议题；仅有文本链接并不充分。执行必须绑定本议题精确的合同 ID 与修订版本。GitHub 议题始终是本次合同的事实源；本地执行包和拉取请求不代表验收。
+  - type: input
+    id: contractId
+    attributes:
+      label: 合同 ID
+      description: 以 exec- 开头的稳定 ID，例如 exec-@@AGX_REPOSITORY@@-foundation-001。
+      placeholder: exec-example-001
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: 修订版本
+      description: 正整数。合同发生实质变化时，必须明确产生新的修订版本。
+      placeholder: "1"
+    validations:
+      required: true
+  - type: input
+    id: contractRef
+    attributes:
+      label: 不可变合同引用
+      description: 本次执行精确的 contractId@revision 绑定。
+      placeholder: exec-example-001@1
+    validations:
+      required: true
+  - type: input
+    id: parentGoal
+    attributes:
+      label: 父目标
+      description: 通过 GitHub 原生子议题关系与本议题关联的父目标合同议题 URL。
+      placeholder: https://github.com/owner/repository/issues/1
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: 当前目标
+      description: 说明本次执行边界明确的结果。
+    validations:
+      required: true
+  - type: textarea
+    id: scopeIn
+    attributes:
+      label: 范围内
+      description: 列出明确包含的系统、仓库、路径和操作。
+    validations:
+      required: true
+  - type: textarea
+    id: scopeOut
+    attributes:
+      label: 范围外
+      description: 明确列出排除项和非目标。
+    validations:
+      required: true
+  - type: textarea
+    id: successCriteria
+    attributes:
+      label: 完成标准
+      description: 每行列出一项可以独立观察的标准。
+    validations:
+      required: true
+  - type: textarea
+    id: authorities
+    attributes:
+      label: 合同状态依据与只读来源
+      description: 列出控制本合同状态的父目标和本议题，以及明确纳入的只读 URL，并说明各自角色。
+    validations:
+      required: true
+  - type: textarea
+    id: permissionsAllowed
+    attributes:
+      label: 允许的动作与写入
+      description: 枚举获准使用的仓库、路径、远端操作和资源。
+    validations:
+      required: true
+  - type: textarea
+    id: permissionsForbidden
+    attributes:
+      label: 禁止的动作与写入
+      description: 枚举明确排除的动作，包括全局和跨仓库边界。
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依赖
+      description: 列出作为前提的议题、决定或产物及其所需状态。没有依赖时填写“无”。
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: 交付物
+      description: 列出精确文件、远端记录、分支或拉取请求要求以及回执预期。
+    validations:
+      required: true
+  - type: textarea
+    id: stopConditions
+    attributes:
+      label: 停止条件
+      description: 包括合同状态依据漂移、权限缺口和本次执行特有的阻塞条件。
+    validations:
+      required: true
+  - type: textarea
+    id: ownerAction
+    attributes:
+      label: 当前负责人动作
+      description: 指明负责者和唯一下一步动作。交接前必须更新本字段或在合同议题留下获准修订评论。
+    validations:
+      required: true

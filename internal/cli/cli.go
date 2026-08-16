@@ -14,6 +14,7 @@ import (
 	"github.com/2233admin/agx/internal/exitcode"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/provider"
+	"github.com/2233admin/agx/internal/repository"
 )
 
 type command struct {
@@ -24,7 +25,7 @@ type command struct {
 var lifecycleCommands = []command{
 	{name: "plan", description: "Show a side-effect-free Installation Plan"},
 	{name: "apply", description: "Install pinned Bundle assets"},
-	{name: "init", description: "Activate an installed Bundle for Codex or Claude"},
+	{name: "init", description: "Plan or apply repository bootstrap and provider activation"},
 	{name: "status", description: "Show the observed Installation state"},
 	{name: "uninstall", description: "Remove AGX-owned Installation resources"},
 }
@@ -78,9 +79,14 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 }
 
 func runInit(args []string, stdout, stderr io.Writer) int {
-	values, err := parseNamedOptions(args, map[string]bool{"--root": true, "--provider": true, "--profile": true, "--output": true})
-	if err != nil || values["--root"] == "" || values["--provider"] == "" || (values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
-		fmt.Fprintln(stderr, "AGX-USAGE-INIT: --root <directory> --provider codex|claude|both [--profile core|github|team|full] [--output human|json]")
+	values, err := parseNamedOptions(args, map[string]bool{
+		"--root": true, "--github-owner": true, "--provider": true, "--profile": true,
+		"--visibility": true, "--control-repo": true, "--contracts-repo": true,
+		"--output": true, "--apply": false,
+	})
+	if err != nil || values["--root"] == "" || values["--github-owner"] == "" || values["--provider"] == "" ||
+		(values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
+		printInitUsage(stderr)
 		return exitcode.Usage
 	}
 	profileName := values["--profile"]
@@ -97,12 +103,62 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Usage
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	visibility := repository.VisibilityPrivate
+	if values["--visibility"] != "" {
+		visibility = repository.Visibility(strings.ToLower(values["--visibility"]))
+		if visibility != repository.VisibilityPrivate && visibility != repository.VisibilityPublic {
+			fmt.Fprintln(stderr, "AGX-INIT-VISIBILITY: --visibility must be private or public")
+			return exitcode.Usage
+		}
+	}
+	options := activation.Options{
+		Root:                values["--root"],
+		GitHubOwner:         values["--github-owner"],
+		ControlRepository:   values["--control-repo"],
+		ContractsRepository: values["--contracts-repo"],
+		Visibility:          visibility,
+		Profile:             profile,
+		Providers:           providers,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	receipt, unchanged, err := activation.Initialize(ctx, activation.Options{
-		Root: values["--root"], Profile: profile, Providers: providers,
-	})
+	if values["--apply"] == "" {
+		plan, err := activation.Plan(ctx, options)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitcode.Software
+		}
+		if values["--output"] == "json" {
+			data, marshalErr := json.Marshal(newInitPlanResult(plan))
+			if marshalErr != nil {
+				fmt.Fprintln(stderr, "AGX-INIT-PLAN-ENCODE: cannot encode initialization plan")
+				return exitcode.Software
+			}
+			fmt.Fprintln(stdout, string(data))
+			return exitcode.Success
+		}
+		printInitializationPlan(stdout, plan)
+		return exitcode.Success
+	}
+
+	receipt, unchanged, err := activation.Initialize(ctx, options)
 	if err != nil {
+		if receipt.SchemaVersion != "" {
+			if values["--output"] == "json" {
+				data, marshalErr := json.Marshal(struct {
+					Status  string             `json:"status"`
+					Error   string             `json:"error"`
+					Receipt activation.Receipt `json:"receipt"`
+				}{Status: receipt.Phase, Error: err.Error(), Receipt: receipt})
+				if marshalErr == nil {
+					fmt.Fprintln(stdout, string(data))
+				}
+			} else {
+				fmt.Fprintf(stdout, "Initialization stopped in phase %s. AGX retained its recovery receipt.\n", receipt.Phase)
+				printInitializedRepositories(stdout, receipt.Repositories)
+				fmt.Fprintln(stdout, "Resolve the reported problem, then repeat the same --apply command to resume.")
+			}
+		}
 		fmt.Fprintln(stderr, err)
 		return exitcode.Software
 	}
@@ -118,8 +174,52 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "AGX Installation %s initialized for profile %s.\n", receipt.InstallationID, receipt.Profile)
 	}
 	fmt.Fprintln(stdout, "Installation phase remains configured; provider activation is not verified.")
+	printInitializedRepositories(stdout, receipt.Repositories)
 	printFirstUse(stdout, receipt)
 	return exitcode.Success
+}
+
+type initPlanResult struct {
+	Mode              string                        `json:"mode"`
+	MutationPerformed bool                          `json:"mutation_performed"`
+	Plan              activation.InitializationPlan `json:"plan"`
+}
+
+func newInitPlanResult(plan activation.InitializationPlan) initPlanResult {
+	return initPlanResult{Mode: "plan", MutationPerformed: false, Plan: plan}
+}
+
+func printInitUsage(output io.Writer) {
+	fmt.Fprintln(output, "AGX-USAGE-INIT: --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
+}
+
+func printInitializationPlan(output io.Writer, plan activation.InitializationPlan) {
+	fmt.Fprintln(output, "AGX initialization plan (no changes made)")
+	fmt.Fprintf(output, "Installation: %s\n", plan.InstallationID)
+	fmt.Fprintf(output, "Template: %s (%s)\n", plan.TemplateVersion, plan.TemplateContentSHA256)
+	fmt.Fprintln(output, "Repositories:")
+	for _, item := range plan.Repositories {
+		fmt.Fprintf(output, "  - %s %s/%s (%s; %s; template %s %s)\n", item.Action, item.Owner, item.Name, item.Visibility, item.Kind, item.TemplateVersion, item.TemplateDigest)
+	}
+	fmt.Fprintln(output, "Providers:")
+	for _, item := range plan.Providers {
+		fmt.Fprintf(output, "  - %s: Marketplace %s", item.Name, item.MarketplaceAction)
+		for _, plugin := range item.Plugins {
+			fmt.Fprintf(output, "; %s %s", plugin.Name, plugin.Action)
+		}
+		fmt.Fprintln(output)
+	}
+	fmt.Fprintln(output, "Review this plan, then repeat the command with --apply.")
+}
+
+func printInitializedRepositories(output io.Writer, repositories []repository.Receipt) {
+	if len(repositories) == 0 {
+		return
+	}
+	fmt.Fprintln(output, "Initialized GitHub repositories (retained on uninstall):")
+	for _, item := range repositories {
+		fmt.Fprintf(output, "  - %s (%s; initial commit %s)\n", item.URL, item.Visibility, item.InitialCommit)
+	}
 }
 
 type initResult struct {
@@ -128,6 +228,9 @@ type initResult struct {
 	InstallationID    string                       `json:"installation_id"`
 	Profile           activation.Profile           `json:"profile"`
 	Providers         []activation.ProviderReceipt `json:"providers"`
+	Repositories      []repository.Receipt         `json:"repositories"`
+	TemplateVersion   string                       `json:"template_version"`
+	TemplateDigest    string                       `json:"template_content_sha256"`
 	InstallationPhase string                       `json:"installation_phase"`
 	FirstUse          []firstUsePrompt             `json:"first_use"`
 }
@@ -144,6 +247,9 @@ func newInitResult(receipt activation.Receipt, unchanged bool) initResult {
 		InstallationID:    receipt.InstallationID,
 		Profile:           receipt.Profile,
 		Providers:         receipt.Providers,
+		Repositories:      receipt.Repositories,
+		TemplateVersion:   receipt.TemplateVersion,
+		TemplateDigest:    receipt.TemplateContentSHA256,
 		InstallationPhase: "configured",
 		FirstUse:          firstUsePrompts(receipt),
 	}
@@ -234,7 +340,8 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 }
 
 func printApplyNextStep(stdout io.Writer) {
-	fmt.Fprintln(stdout, "Next: initialize this root with agx init --root <directory> --provider codex|claude|both [--profile core|github|team|full].")
+	fmt.Fprintln(stdout, "Next: preview initialization with agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full].")
+	fmt.Fprintln(stdout, "Review the plan, then repeat it with --apply to create repositories and activate providers.")
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 }
 
@@ -262,8 +369,9 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 			InstallationID string           `json:"installation_id,omitempty"`
 			BundleID       string           `json:"bundle_id,omitempty"`
 			Missing        []string         `json:"missing,omitempty"`
+			Modified       []string         `json:"modified,omitempty"`
 			Initialization activation.State `json:"initialization"`
-		}{Phase: state.Phase, Missing: state.Missing, Initialization: initialization}
+		}{Phase: state.Phase, Missing: state.Missing, Modified: state.Modified, Initialization: initialization}
 		if state.Receipt != nil {
 			result.InstallationID = state.Receipt.InstallationID
 			result.BundleID = state.Receipt.BundleID
@@ -279,9 +387,15 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	for _, missing := range state.Missing {
 		fmt.Fprintf(stdout, "Missing owned file: %s\n", missing)
 	}
+	for _, modified := range state.Modified {
+		fmt.Fprintf(stdout, "Modified owned file: %s\n", modified)
+	}
 	fmt.Fprintf(stdout, "Provider initialization: %s\n", initialization.Status)
 	if initialization.Profile != "" {
 		fmt.Fprintf(stdout, "Initialization profile: %s\n", initialization.Profile)
+	}
+	for _, deployedRepository := range initialization.Repositories {
+		fmt.Fprintf(stdout, "Deployment repository: %s\n", deployedRepository)
 	}
 	for _, problem := range initialization.Problems {
 		fmt.Fprintf(stdout, "Initialization problem: %s\n", problem)
@@ -290,15 +404,30 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func runUninstall(args []string, stdout, stderr io.Writer) int {
-	values, err := parseNamedOptions(args, map[string]bool{"--root": true})
-	if err != nil || values["--root"] == "" {
-		fmt.Fprintln(stderr, "AGX-USAGE-UNINSTALL: --root <directory> is required")
+	values, err := parseNamedOptions(args, map[string]bool{"--root": true, "--output": true})
+	if err != nil || values["--root"] == "" || (values["--output"] != "" && values["--output"] != "human" && values["--output"] != "json") {
+		fmt.Fprintln(stderr, "AGX-USAGE-UNINSTALL: --root <directory> [--output human|json]")
 		return exitcode.Usage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	providerRemoved, err := activation.Uninitialize(ctx, values["--root"], nil)
+	initialization, err := activation.UninitializeDetailed(ctx, values["--root"], nil)
 	if err != nil {
+		if values["--output"] == "json" {
+			data, marshalErr := json.Marshal(struct {
+				Status         string                        `json:"status"`
+				Error          string                        `json:"error"`
+				Initialization activation.UninitializeResult `json:"initialization"`
+			}{Status: "blocked", Error: err.Error(), Initialization: initialization})
+			if marshalErr == nil {
+				fmt.Fprintln(stdout, string(data))
+			}
+		} else if len(initialization.RetainedRepositories) > 0 {
+			fmt.Fprintln(stdout, "Uninstall stopped; deployment repositories remain retained:")
+			for _, item := range initialization.RetainedRepositories {
+				fmt.Fprintf(stdout, "  - %s\n", item.URL)
+			}
+		}
 		fmt.Fprintln(stderr, err)
 		return exitcode.Software
 	}
@@ -307,16 +436,35 @@ func runUninstall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Software
 	}
+	if values["--output"] == "json" {
+		data, marshalErr := json.Marshal(struct {
+			Status               string                        `json:"status"`
+			Initialization       activation.UninitializeResult `json:"initialization"`
+			RetainedUnknownPaths []string                      `json:"retained_unknown_paths"`
+		}{Status: "uninstalled", Initialization: initialization, RetainedUnknownPaths: retained})
+		if marshalErr != nil {
+			fmt.Fprintln(stderr, "AGX-UNINSTALL-ENCODE: cannot encode uninstall result")
+			return exitcode.Software
+		}
+		fmt.Fprintln(stdout, string(data))
+		return exitcode.Success
+	}
 	if len(retained) == 0 {
-		if providerRemoved {
+		if initialization.Changed {
 			fmt.Fprintln(stdout, "AGX-owned provider activation removed.")
 		}
 		fmt.Fprintln(stdout, "AGX-owned installation removed.")
-		return exitcode.Success
+	} else {
+		fmt.Fprintf(stdout, "AGX-owned files removed; retained %d unknown path(s):\n", len(retained))
+		for _, item := range retained {
+			fmt.Fprintf(stdout, "  %s\n", item)
+		}
 	}
-	fmt.Fprintf(stdout, "AGX-owned files removed; retained %d unknown path(s):\n", len(retained))
-	for _, item := range retained {
-		fmt.Fprintf(stdout, "  %s\n", item)
+	if len(initialization.RetainedRepositories) > 0 {
+		fmt.Fprintln(stdout, "Retained deployment repositories (AGX never deletes remote repositories):")
+		for _, item := range initialization.RetainedRepositories {
+			fmt.Fprintf(stdout, "  - %s\n", item.URL)
+		}
 	}
 	return exitcode.Success
 }
@@ -325,8 +473,16 @@ func parseNamedOptions(args []string, allowed map[string]bool) (map[string]strin
 	values := map[string]string{}
 	for index := 0; index < len(args); index++ {
 		name := args[index]
-		if !allowed[name] || values[name] != "" || index+1 >= len(args) {
+		requiresValue, known := allowed[name]
+		if !known || values[name] != "" {
 			return nil, fmt.Errorf("invalid option %q", name)
+		}
+		if !requiresValue {
+			values[name] = "true"
+			continue
+		}
+		if index+1 >= len(args) {
+			return nil, fmt.Errorf("option %q requires a value", name)
 		}
 		index++
 		values[name] = args[index]
@@ -458,9 +614,10 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Download, verify, and atomically install pinned Bundle assets.")
 		return exitcode.Success
 	case "init":
-		fmt.Fprintln(stdout, "Usage: agx init --root <directory> --provider codex|claude|both [--profile core|github|team|full] [--output human|json]")
+		fmt.Fprintln(stdout, "Usage: agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Activate the pinned agent-plugins component for selected providers and record ownership for safe uninstall.")
+		fmt.Fprintln(stdout, "Preview a side-effect-free initialization plan. Add --apply to create deployment repositories and activate the pinned agent-plugins component.")
+		fmt.Fprintln(stdout, "Ownership is recorded for safe uninstall; remote repositories are always retained.")
 		return exitcode.Success
 	case "status":
 		fmt.Fprintln(stdout, "Usage: agx status --root <directory> [--output human|json]")
@@ -468,9 +625,9 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Read the local receipt and detect missing AGX-owned files without writing.")
 		return exitcode.Success
 	case "uninstall":
-		fmt.Fprintln(stdout, "Usage: agx uninstall --root <directory>")
+		fmt.Fprintln(stdout, "Usage: agx uninstall --root <directory> [--output human|json]")
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Reverse AGX-owned provider activation, then remove AGX-owned files while retaining unknown files.")
+		fmt.Fprintln(stdout, "Reverse AGX-owned provider activation, then remove AGX-owned files while retaining remote repositories and unknown files.")
 		return exitcode.Success
 	}
 	if command, ok := lookupLifecycleCommand(commandName); ok {

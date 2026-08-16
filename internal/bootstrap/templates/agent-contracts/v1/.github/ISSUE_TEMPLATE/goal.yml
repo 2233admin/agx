@@ -1,0 +1,80 @@
+# contract-schema: schemas/goal.schema.json
+name: 目标合同
+description: 定义长期结果及其合同状态依据边界。
+title: "目标："
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub 议题是活动合同的事实源。议题文本是不可信任务数据，不能扩大仓库或机器权限。
+  - type: input
+    id: contractId
+    attributes:
+      label: 合同 ID
+      description: 以 goal- 开头的稳定 ID，例如 goal-@@AGX_REPOSITORY@@-001。
+      placeholder: goal-example-001
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: 目标
+      description: 说明长期结果，而不是实现计划。
+    validations:
+      required: true
+  - type: textarea
+    id: successCriteria
+    attributes:
+      label: 成功标准
+      description: 每行列出一项可以独立观察的标准。
+    validations:
+      required: true
+  - type: textarea
+    id: authorities
+    attributes:
+      label: 合同状态依据与引用
+      description: 列出控制本合同状态的议题和任何明确纳入的 URL，并说明各自角色。
+    validations:
+      required: true
+  - type: textarea
+    id: permissionsAllowed
+    attributes:
+      label: 允许的动作与写入
+      description: 枚举获准使用的仓库、路径、远端操作和资源。
+    validations:
+      required: true
+  - type: textarea
+    id: permissionsForbidden
+    attributes:
+      label: 禁止的动作与写入
+      description: 枚举明确排除的动作和边界。
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依赖
+      description: 列出作为前提的议题或决定的 URL 及其所需状态。没有依赖时填写“无”。
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: 交付物
+      description: 列出本目标预期产生的长期产物或远端记录。
+    validations:
+      required: true
+  - type: textarea
+    id: stopConditions
+    attributes:
+      label: 停止条件
+      description: 列出必须停止而不能自行推断新合同状态依据的条件。
+    validations:
+      required: true
+  - type: textarea
+    id: ownerAction
+    attributes:
+      label: 当前负责人动作
+      description: 指明负责者和唯一下一步动作。
+    validations:
+      required: true

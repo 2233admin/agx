@@ -1,0 +1,71 @@
+name: 方案
+description: 形成可由负责人直接审阅和决定的完整方案合同
+title: "方案："
+labels:
+  - "类型/方案"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        标题必须保留「方案：」前缀，并说明要决定的产品或实施边界。本表单已预挂「类型/方案」；创建后请立即补挂下方选择的唯一「领域/*」 label。开头或结尾应有一段可独立支撑决定的中文总览。
+
+        > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 主要领域
+      description: 选择一项；创建后将同名「领域/*」 label 补挂到 Issue。
+      options:
+        - "领域/总目标"
+        - "领域/知识"
+        - "领域/长程工作"
+        - "领域/思考方法"
+        - "领域/协同协作"
+        - "领域/资源运营"
+        - "领域/横向"
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: 原始问题、来源与授权
+      description: 写明问题为何值得解决、当前权威与「关联 #N」，并区分方案起草权与实施授权。
+    validations:
+      required: true
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: 推荐方案与完整运行过程
+      description: 说明方案如何工作、从输入到可验收结果的全链路，以及推荐与粗粒度置信。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案、比较与最强反方
+      description: 至少包含维持现状；逐项比较收益、成本、风险、证据、可逆性，并写明会使推荐翻转的事实。
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: 范围、明确不做、成本与升级条件
+      description: 列出产品边界、长期依赖、维护成本、可逆性、停止与重新决定条件。
+    validations:
+      required: true
+  - type: textarea
+    id: delivery
+    attributes:
+      label: 实施、验收与待决定事项
+      description: 写明如何实施、如何验收、证据最多支持到哪一级，以及负责人只需回复的少量明确决定。
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我会在创建后补挂上方选择的唯一领域 label。
+          required: true
+        - label: 我已遵守关联引用写法，没有使用 GitHub 关闭关键词或其否定式。
+          required: true

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "goal",
+  "contractId": "goal-unbounded-work-001",
+  "source": {
+    "issueUrl": "@@AGX_TARGET_URL@@/issues/10",
+    "issueNumber": 10,
+    "remoteVersion": "2026-08-16T15:00:00Z",
+    "contentDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "objective": "Perform an otherwise well-described repository migration.",
+  "successCriteria": [
+    "The migration is delivered for review."
+  ],
+  "authorities": [
+    "@@AGX_TARGET_URL@@/issues/10"
+  ],
+  "dependencies": [],
+  "deliverables": [
+    "A reviewable migration branch."
+  ],
+  "stopConditions": [
+    "The source Issue changes."
+  ],
+  "ownerAction": "The implementer begins the migration."
+}

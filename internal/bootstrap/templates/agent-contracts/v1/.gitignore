@@ -1,0 +1,30 @@
+# Regenerable, non-authoritative local execution snapshots
+run-packages/
+
+# Python bytecode and interpreter caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Project-local Python environments
+.venv/
+venv/
+
+# Python test, type-check, and lint caches
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.tox/
+.nox/
+
+# Coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

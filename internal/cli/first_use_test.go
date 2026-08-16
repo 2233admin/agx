@@ -10,6 +10,7 @@ import (
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/exitcode"
 	"github.com/2233admin/agx/internal/provider"
+	"github.com/2233admin/agx/internal/repository"
 )
 
 func TestFirstUsePrompts(t *testing.T) {
@@ -150,10 +151,61 @@ func TestApplyHelpAndNextStepRemainAvailable(t *testing.T) {
 
 	stdout.Reset()
 	printApplyNextStep(stdout)
-	want := "Next: initialize this root with agx init --root <directory> --provider codex|claude|both [--profile core|github|team|full].\n" +
+	want := "Next: preview initialization with agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full].\n" +
+		"Review the plan, then repeat it with --apply to create repositories and activate providers.\n" +
 		"Installation phase is configured; initialization does not claim verified.\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("printApplyNextStep() = %q, want %q", got, want)
+	}
+}
+
+func TestParseNamedOptionsSupportsBooleanFlags(t *testing.T) {
+	values, err := parseNamedOptions([]string{"--root", "somewhere", "--apply"}, map[string]bool{"--root": true, "--apply": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["--root"] != "somewhere" || values["--apply"] != "true" {
+		t.Fatalf("parseNamedOptions() = %#v", values)
+	}
+	if _, err := parseNamedOptions([]string{"--apply", "--apply"}, map[string]bool{"--apply": false}); err == nil {
+		t.Fatal("parseNamedOptions() accepted a duplicate flag")
+	}
+}
+
+func TestPrintInitializationPlanMakesDryRunAndApplyExplicit(t *testing.T) {
+	plan := activation.InitializationPlan{
+		InstallationID: "install-test", TemplateVersion: "bootstrap-test", TemplateContentSHA256: strings.Repeat("a", 64),
+		Repositories: []activation.RepositoryPlan{{
+			Kind: "agent-control", Owner: "octo-lab", Name: "agent-control", Visibility: repository.VisibilityPrivate,
+			Action: "create", TemplateVersion: "agent-control/v1", TemplateDigest: strings.Repeat("b", 64),
+		}},
+		Providers: []activation.ProviderPlan{{
+			Name: provider.Codex, MarketplaceAction: "add",
+			Plugins: []activation.PluginPlan{{Name: "grilling", Action: "install"}},
+		}},
+	}
+	stdout := new(bytes.Buffer)
+	printInitializationPlan(stdout, plan)
+	for _, wanted := range []string{"no changes made", "create octo-lab/agent-control", "Marketplace add", "grilling install", "--apply"} {
+		if !strings.Contains(stdout.String(), wanted) {
+			t.Fatalf("plan output %q does not contain %q", stdout.String(), wanted)
+		}
+	}
+}
+
+func TestInitPlanResultHasStableMachineReadableEnvelope(t *testing.T) {
+	plan := activation.InitializationPlan{
+		InstallationID: "install-test", TemplateVersion: "bootstrap-test",
+		TemplateContentSHA256: strings.Repeat("a", 64), PluginSource: "zaurakworks/agent-plugins",
+		Profile: activation.ProfileCore, Providers: []activation.ProviderPlan{}, Repositories: []activation.RepositoryPlan{},
+	}
+	data, err := json.Marshal(newInitPlanResult(plan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"mode":"plan","mutation_performed":false,"plan":{"installation_id":"install-test","template_version":"bootstrap-test","template_content_sha256":"` + strings.Repeat("a", 64) + `","plugin_source":"zaurakworks/agent-plugins","profile":"core","providers":[],"repositories":[]}}`
+	if string(data) != want {
+		t.Fatalf("init plan JSON = %s, want %s", data, want)
 	}
 }
 

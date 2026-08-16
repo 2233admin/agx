@@ -1,0 +1,14 @@
+# Local editor, interpreter, and operating-system state
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Deployment-local observations and generated work records
+work/records/
+work/history/
+work/*.local.*

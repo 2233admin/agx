@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/2233admin/agx/blob/main/docs/contracts/agx-bundle.schema.json",
-  "title": "AGX Bundle v1",
+  "title": "AGX Bundle v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -9,43 +9,75 @@
     "bundle_id",
     "mode",
     "provenance",
+    "development_override",
     "compatibility",
-    "artifacts"
+    "sources",
+    "templates"
   ],
   "properties": {
-    "schema_version": {
-      "const": "agx.bundle/v1"
-    },
+    "schema_version": {"const": "agx.bundle/v2"},
     "bundle_id": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
     },
-    "mode": {
-      "enum": ["production", "development"]
-    },
-    "provenance": {
-      "enum": ["github_release", "synthetic_test_only"]
-    },
-    "development_override": {
-      "type": "boolean",
-      "default": false
-    },
+    "mode": {"enum": ["production", "development"]},
+    "provenance": {"enum": ["github_release", "synthetic_test_only"]},
+    "development_override": {"type": "boolean"},
     "compatibility": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agx", "multica_cli"],
+      "required": ["agx"],
       "properties": {
-        "agx": {"type": "string", "minLength": 1},
-        "multica_cli": {"type": "string", "minLength": 1}
+        "agx": {"type": "string", "minLength": 1}
       }
     },
-    "artifacts": {
+    "sources": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agent_control", "agent_plugins"],
+      "required": ["agent_plugins"],
       "properties": {
-        "agent_control": {"$ref": "#/$defs/agentControlArtifact"},
         "agent_plugins": {"$ref": "#/$defs/agentPluginsArtifact"}
+      }
+    },
+    "templates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "content_sha256", "references"],
+      "properties": {
+        "version": {
+          "const": "bootstrap-20260817.1"
+        },
+        "content_sha256": {
+          "const": "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca"
+        },
+        "references": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["agent_plugins", "agent_control", "agent_contracts"],
+          "properties": {
+            "agent_plugins": {
+              "$ref": "#/$defs/reference",
+              "properties": {
+                "repository": {"const": "zaurakworks/agent-plugins"},
+                "commit_sha": {"const": "ad07742ade0f0039ed1df1a9262e8f087117fca0"}
+              }
+            },
+            "agent_control": {
+              "$ref": "#/$defs/reference",
+              "properties": {
+                "repository": {"const": "zaurakworks/agent-control"},
+                "commit_sha": {"const": "b0e6e0e8244ef518f671e2326745cd67c6d2307a"}
+              }
+            },
+            "agent_contracts": {
+              "$ref": "#/$defs/reference",
+              "properties": {
+                "repository": {"const": "zaurakworks/agent-contracts"},
+                "commit_sha": {"const": "5bb8ea0b54f063b0758c294b73ea270ba69322d2"}
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -56,15 +88,8 @@
         "properties": {
           "provenance": {"const": "github_release"},
           "development_override": {"const": false},
-          "artifacts": {
+          "sources": {
             "properties": {
-              "agent_control": {
-                "properties": {
-                  "download_url": {
-                    "pattern": "^https://github\\.com/2233admin/agent-control/releases/download/[^/]+/[^/]+\\.tar\\.gz$"
-                  }
-                }
-              },
               "agent_plugins": {
                 "properties": {
                   "download_url": {
@@ -74,8 +99,7 @@
               }
             }
           }
-        },
-        "required": ["development_override"]
+        }
       }
     },
     {
@@ -84,17 +108,17 @@
         "properties": {
           "provenance": {"const": "synthetic_test_only"},
           "development_override": {"const": true}
-        },
-        "required": ["development_override"]
+        }
       }
     }
   ],
   "$defs": {
-    "baseArtifact": {
+    "agentPluginsArtifact": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "repository",
+        "upstream_repository",
+        "distribution_repository",
         "release_tag",
         "commit_sha",
         "asset_name",
@@ -103,7 +127,8 @@
         "content_sha256"
       ],
       "properties": {
-        "repository": {"type": "string"},
+        "upstream_repository": {"const": "zaurakworks/agent-plugins"},
+        "distribution_repository": {"const": "2233admin/agent-plugins"},
         "release_tag": {"type": "string", "minLength": 1},
         "commit_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
         "asset_name": {"type": "string", "minLength": 1},
@@ -112,17 +137,14 @@
         "content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       }
     },
-    "agentControlArtifact": {
-      "allOf": [
-        {"$ref": "#/$defs/baseArtifact"},
-        {"properties": {"repository": {"const": "2233admin/agent-control"}}}
-      ]
-    },
-    "agentPluginsArtifact": {
-      "allOf": [
-        {"$ref": "#/$defs/baseArtifact"},
-        {"properties": {"repository": {"const": "2233admin/agent-plugins"}}}
-      ]
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit_sha"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "commit_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
     }
   }
 }

@@ -9,12 +9,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/2233admin/agx/internal/bootstrap"
 	installer "github.com/2233admin/agx/internal/install"
 )
 
@@ -22,7 +25,11 @@ func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 	archive := makeArchive(t, "source/README.md", []byte("hello\n"), tar.TypeReg)
 	digest := sha256.Sum256(archive)
 	digestHex := hex.EncodeToString(digest[:])
+	contentDigestHex := uncompressedSHA256(t, archive)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/plugins" {
+			t.Errorf("unexpected download path %q", request.URL.Path)
+		}
 		writer.Write(archive)
 	}))
 	defer server.Close()
@@ -30,14 +37,12 @@ func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 	temporary := t.TempDir()
 	bundlePath := filepath.Join(temporary, "bundle.json")
 	bundleJSON := fmt.Sprintf(`{
-  "schema_version":"agx.bundle/v1","bundle_id":"test-bundle","mode":"development",
-  "provenance":"synthetic_test_only","development_override":true,
-  "compatibility":{"agx":"test","multica_cli":"test"},
-  "artifacts":{
-    "agent_control":{"repository":"2233admin/agent-control","release_tag":"test","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_name":"control.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
-    "agent_plugins":{"repository":"2233admin/agent-plugins","release_tag":"test","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"plugins.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
-  }
-}`, server.URL+"/control", digestHex, server.URL+"/plugins", digestHex)
+	  "schema_version":"agx.bundle/v2","bundle_id":"test-bundle","mode":"development",
+	  "provenance":"synthetic_test_only","development_override":true,
+	  "compatibility":{"agx":"test"},
+	  "sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"test","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"plugins.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q}},
+	  "templates":{"version":"bootstrap-20260817.1","content_sha256":"0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca","references":{"agent_plugins":{"repository":"zaurakworks/agent-plugins","commit_sha":"ad07742ade0f0039ed1df1a9262e8f087117fca0"},"agent_control":{"repository":"zaurakworks/agent-control","commit_sha":"b0e6e0e8244ef518f671e2326745cd67c6d2307a"},"agent_contracts":{"repository":"zaurakworks/agent-contracts","commit_sha":"5bb8ea0b54f063b0758c294b73ea270ba69322d2"}}}
+}`, server.URL+"/plugins", digestHex, contentDigestHex)
 	if err := os.WriteFile(bundlePath, []byte(bundleJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +50,15 @@ func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 	receipt, unchanged, err := installer.Apply(context.Background(), installer.Options{BundlePath: bundlePath, Root: root, Client: server.Client()})
 	if err != nil || unchanged {
 		t.Fatalf("Apply() receipt=%+v unchanged=%v err=%v", receipt, unchanged, err)
+	}
+	if receipt.SchemaVersion != "agx.receipt/v2" || len(receipt.Components) != 1 || receipt.Components[0].Name != "agent-plugins" {
+		t.Fatalf("single-source receipt = %+v", receipt)
+	}
+	if receipt.TemplateVersion != "bootstrap-20260817.1" || receipt.TemplateContentSHA256 != "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca" {
+		t.Fatalf("template receipt metadata = %+v", receipt)
+	}
+	if receipt.OwnedFileSHA256["components/agent-plugins/README.md"] != sha256Hex([]byte("hello\n")) {
+		t.Fatalf("owned file digest = %+v", receipt.OwnedFileSHA256)
 	}
 	state, err := installer.Status(root)
 	if err != nil || state.Phase != "configured" {
@@ -54,7 +68,22 @@ func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 	if err != nil || !unchanged {
 		t.Fatalf("repeat Apply() unchanged=%v err=%v", unchanged, err)
 	}
-	if err := os.Remove(filepath.Join(root, "components", "agent-control", "README.md")); err != nil {
+	pluginReadme := filepath.Join(root, "components", "agent-plugins", "README.md")
+	if err := os.WriteFile(pluginReadme, []byte("tampered\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err = installer.Status(root)
+	if err != nil || state.Phase != "drifted" || len(state.Modified) != 1 || state.Modified[0] != "components/agent-plugins/README.md" {
+		t.Fatalf("modified Status() state=%+v err=%v", state, err)
+	}
+	_, unchanged, err = installer.Apply(context.Background(), installer.Options{BundlePath: bundlePath, Root: root, Client: server.Client()})
+	if err == nil || unchanged {
+		t.Fatalf("repeat Apply() accepted modified content: unchanged=%v err=%v", unchanged, err)
+	}
+	if err := os.WriteFile(pluginReadme, []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(pluginReadme); err != nil {
 		t.Fatal(err)
 	}
 	state, err = installer.Status(root)
@@ -88,7 +117,19 @@ func TestApplyRejectsArchiveWithoutOwnedFiles(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsUncompressedContentDigestMismatch(t *testing.T) {
+	archive := makeArchive(t, "source/README.md", []byte("hello\n"), tar.TypeReg)
+	if err := applyTestArchiveWithContentDigest(t, archive, strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "uncompressed content digest mismatch") {
+		t.Fatalf("Apply() content digest error = %v", err)
+	}
+}
+
 func applyTestArchive(t *testing.T, archive []byte) error {
+	t.Helper()
+	return applyTestArchiveWithContentDigest(t, archive, uncompressedSHA256(t, archive))
+}
+
+func applyTestArchiveWithContentDigest(t *testing.T, archive []byte, contentDigest string) error {
 	t.Helper()
 	digest := sha256.Sum256(archive)
 	digestHex := hex.EncodeToString(digest[:])
@@ -96,7 +137,7 @@ func applyTestArchive(t *testing.T, archive []byte) error {
 	defer server.Close()
 	temporary := t.TempDir()
 	bundlePath := filepath.Join(temporary, "bundle.json")
-	document := fmt.Sprintf(`{"schema_version":"agx.bundle/v1","bundle_id":"bad-bundle","mode":"development","provenance":"synthetic_test_only","development_override":true,"compatibility":{"agx":"x","multica_cli":"x"},"artifacts":{"agent_control":{"repository":"2233admin/agent-control","release_tag":"x","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asset_name":"a.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"agent_plugins":{"repository":"2233admin/agent-plugins","release_tag":"x","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"b.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}}`, server.URL, digestHex, server.URL, digestHex)
+	document := fmt.Sprintf(`{"schema_version":"agx.bundle/v2","bundle_id":"bad-bundle","mode":"development","provenance":"synthetic_test_only","development_override":true,"compatibility":{"agx":"x"},"sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"x","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"b.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q}},"templates":{"version":"bootstrap-20260817.1","content_sha256":"0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca","references":{"agent_plugins":{"repository":"zaurakworks/agent-plugins","commit_sha":"ad07742ade0f0039ed1df1a9262e8f087117fca0"},"agent_control":{"repository":"zaurakworks/agent-control","commit_sha":"b0e6e0e8244ef518f671e2326745cd67c6d2307a"},"agent_contracts":{"repository":"zaurakworks/agent-contracts","commit_sha":"5bb8ea0b54f063b0758c294b73ea270ba69322d2"}}}}`, server.URL, digestHex, contentDigest)
 	if err := os.WriteFile(bundlePath, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +145,33 @@ func applyTestArchive(t *testing.T, archive []byte) error {
 	return err
 }
 
+func uncompressedSHA256(t *testing.T, archive []byte) string {
+	t.Helper()
+	reader, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, reader); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
 func TestStatusRejectsInvalidReceiptContracts(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*installer.Receipt)
 	}{
+		{
+			name: "legacy receipt schema",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.SchemaVersion = "agx.receipt/v1"
+			},
+		},
 		{
 			name: "phase is not configured",
 			mutate: func(receipt *installer.Receipt) {
@@ -128,15 +191,39 @@ func TestStatusRejectsInvalidReceiptContracts(t *testing.T) {
 			},
 		},
 		{
+			name: "template version is empty",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.TemplateVersion = ""
+			},
+		},
+		{
+			name: "template version is unsupported",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.TemplateVersion = "bootstrap-other"
+			},
+		},
+		{
+			name: "template content SHA256 is malformed",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.TemplateContentSHA256 = "not-a-digest"
+			},
+		},
+		{
+			name: "template content SHA256 is not embedded template",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.TemplateContentSHA256 = strings.Repeat("a", 64)
+			},
+		},
+		{
 			name: "component is missing",
 			mutate: func(receipt *installer.Receipt) {
-				receipt.Components = receipt.Components[:1]
+				receipt.Components = nil
 			},
 		},
 		{
 			name: "component is duplicated",
 			mutate: func(receipt *installer.Receipt) {
-				receipt.Components[1] = receipt.Components[0]
+				receipt.Components = append(receipt.Components, receipt.Components[0])
 			},
 		},
 		{
@@ -152,15 +239,15 @@ func TestStatusRejectsInvalidReceiptContracts(t *testing.T) {
 			},
 		},
 		{
-			name: "repository is empty",
+			name: "upstream repository is wrong",
 			mutate: func(receipt *installer.Receipt) {
-				receipt.Components[0].Repository = " "
+				receipt.Components[0].Repository = "2233admin/agent-plugins"
 			},
 		},
 		{
-			name: "repository basename mismatches component",
+			name: "distribution repository is wrong",
 			mutate: func(receipt *installer.Receipt) {
-				receipt.Components[0].Repository = "zaurakworks/agent-plugins"
+				receipt.Components[0].DistributionRepository = "zaurakworks/agent-plugins"
 			},
 		},
 		{
@@ -176,21 +263,39 @@ func TestStatusRejectsInvalidReceiptContracts(t *testing.T) {
 			},
 		},
 		{
-			name: "agent-control has no owned file",
+			name: "legacy agent-control owned file",
 			mutate: func(receipt *installer.Receipt) {
-				receipt.OwnedFiles = receipt.OwnedFiles[1:]
-			},
-		},
-		{
-			name: "agent-plugins has no owned file",
-			mutate: func(receipt *installer.Receipt) {
-				receipt.OwnedFiles = receipt.OwnedFiles[:1]
+				receipt.OwnedFiles = []string{"components/agent-control/README.md"}
 			},
 		},
 		{
 			name: "owned files are empty",
 			mutate: func(receipt *installer.Receipt) {
 				receipt.OwnedFiles = nil
+			},
+		},
+		{
+			name: "owned file digest map is empty",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFileSHA256 = nil
+			},
+		},
+		{
+			name: "owned file digest is malformed",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFileSHA256[receipt.OwnedFiles[0]] = "not-a-digest"
+			},
+		},
+		{
+			name: "owned file digest is not canonical lowercase",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFileSHA256[receipt.OwnedFiles[0]] = strings.ToUpper(receipt.OwnedFileSHA256[receipt.OwnedFiles[0]])
+			},
+		},
+		{
+			name: "owned file digest has an extra path",
+			mutate: func(receipt *installer.Receipt) {
+				receipt.OwnedFileSHA256["components/agent-plugins/extra"] = string(bytes.Repeat([]byte{'a'}, 64))
 			},
 		},
 		{
@@ -219,7 +324,7 @@ func TestStatusRejectsInvalidReceiptContracts(t *testing.T) {
 	}
 }
 
-func TestStatusAcceptsComponentRepositoryBasenamesAcrossOwners(t *testing.T) {
+func TestStatusAcceptsSinglePinnedPluginSource(t *testing.T) {
 	root := writeTestInstallation(t, validReceipt())
 	state, err := installer.Status(root)
 	if err != nil || state.Phase != "configured" {
@@ -230,7 +335,7 @@ func TestStatusAcceptsComponentRepositoryBasenamesAcrossOwners(t *testing.T) {
 func TestStatusRequiresOwnedRegularFiles(t *testing.T) {
 	receipt := validReceipt()
 	root := writeTestInstallation(t, receipt)
-	target := filepath.Join(root, "components", "agent-control", "README.md")
+	target := filepath.Join(root, "components", "agent-plugins", "README.md")
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
@@ -247,8 +352,8 @@ func TestStatusRequiresOwnedRegularFiles(t *testing.T) {
 func TestStatusRejectsSymlinkedComponentWithoutFollowingIt(t *testing.T) {
 	receipt := validReceipt()
 	root := writeTestInstallation(t, receipt)
-	component := filepath.Join(root, "components", "agent-control")
-	sibling := filepath.Join(filepath.Dir(root), "sibling-agent-control")
+	component := filepath.Join(root, "components", "agent-plugins")
+	sibling := filepath.Join(filepath.Dir(root), "sibling-agent-plugins")
 	if err := os.MkdirAll(sibling, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -299,9 +404,46 @@ func TestUninstallRejectsSymlinkedComponentBeforeRemovingOwnedFiles(t *testing.T
 	if err != nil || string(contents) != "sibling checkout\n" {
 		t.Fatalf("sibling checkout was changed: contents=%q err=%v", contents, err)
 	}
-	controlFile := filepath.Join(root, filepath.FromSlash(receipt.OwnedFiles[0]))
-	if _, err := os.Stat(controlFile); err != nil {
+	pluginFile := filepath.Join(root, filepath.FromSlash(receipt.OwnedFiles[0]))
+	if _, err := os.Stat(pluginFile); err != nil {
 		t.Fatalf("owned file was removed before unsafe path detection: %v", err)
+	}
+}
+
+func TestUninstallRejectsModifiedOwnedFileBeforeRemoval(t *testing.T) {
+	receipt := validReceipt()
+	root := writeTestInstallation(t, receipt)
+	target := filepath.Join(root, filepath.FromSlash(receipt.OwnedFiles[0]))
+	if err := os.WriteFile(target, []byte("user modification\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installer.Uninstall(root); err == nil {
+		t.Fatal("Uninstall() removed a modified owned file")
+	}
+	contents, err := os.ReadFile(target)
+	if err != nil || string(contents) != "user modification\n" {
+		t.Fatalf("modified file changed: contents=%q err=%v", contents, err)
+	}
+}
+
+func TestUninstallRetainsUnknownEmptyDirectory(t *testing.T) {
+	root := writeTestInstallation(t, validReceipt())
+	userState := filepath.Join(root, "user-state")
+	if err := os.Mkdir(userState, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	retained, err := installer.Uninstall(root)
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if len(retained) != 1 || retained[0] != "user-state" {
+		t.Fatalf("Uninstall() retained = %v", retained)
+	}
+	info, err := os.Stat(userState)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("unknown empty directory was removed: info=%v err=%v", info, err)
 	}
 }
 
@@ -341,30 +483,28 @@ func TestStatusAndUninstallRejectSymlinkedMetadataDirectory(t *testing.T) {
 
 func validReceipt() installer.Receipt {
 	return installer.Receipt{
-		SchemaVersion:  "agx.receipt/v1",
-		InstallationID: "install-test",
-		BundleID:       "bundle-test",
-		BundleSHA256:   string(bytes.Repeat([]byte{'c'}, 64)),
-		Phase:          "configured",
+		SchemaVersion:         "agx.receipt/v2",
+		InstallationID:        "install-test",
+		BundleID:              "bundle-test",
+		BundleSHA256:          string(bytes.Repeat([]byte{'c'}, 64)),
+		TemplateVersion:       bootstrap.TemplateSetVersion,
+		TemplateContentSHA256: bootstrap.TemplateSetContentSHA256,
+		Phase:                 "configured",
 		Components: []installer.Component{
 			{
-				Name:        "agent-control",
-				Repository:  "zaurakworks/agent-control",
-				CommitSHA:   string(bytes.Repeat([]byte{'a'}, 40)),
-				AssetSHA256: string(bytes.Repeat([]byte{'c'}, 64)),
-				Path:        "components/agent-control",
-			},
-			{
-				Name:        "agent-plugins",
-				Repository:  "2233admin/agent-plugins",
-				CommitSHA:   string(bytes.Repeat([]byte{'b'}, 40)),
-				AssetSHA256: string(bytes.Repeat([]byte{'d'}, 64)),
-				Path:        "components/agent-plugins",
+				Name:                   "agent-plugins",
+				Repository:             "zaurakworks/agent-plugins",
+				DistributionRepository: "2233admin/agent-plugins",
+				CommitSHA:              string(bytes.Repeat([]byte{'b'}, 40)),
+				AssetSHA256:            string(bytes.Repeat([]byte{'d'}, 64)),
+				Path:                   "components/agent-plugins",
 			},
 		},
 		OwnedFiles: []string{
-			"components/agent-control/README.md",
 			"components/agent-plugins/README.md",
+		},
+		OwnedFileSHA256: map[string]string{
+			"components/agent-plugins/README.md": sha256Hex([]byte("owned\n")),
 		},
 	}
 }
@@ -416,4 +556,9 @@ func makeArchive(t *testing.T, name string, contents []byte, entryType byte) []b
 	tarWriter.Close()
 	gzipWriter.Close()
 	return output.Bytes()
+}
+
+func sha256Hex(contents []byte) string {
+	digest := sha256.Sum256(contents)
+	return hex.EncodeToString(digest[:])
 }

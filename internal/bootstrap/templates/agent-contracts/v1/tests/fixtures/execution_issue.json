@@ -1,0 +1,8 @@
+{
+  "number": 4,
+  "title": "执行合同：捕获合同并写回绑定回执",
+  "body": "### 合同 ID\n\nexec-@@AGX_REPOSITORY@@-issue-loop-001\n\n### 修订版本\n\n1\n\n### 不可变合同引用\n\nexec-@@AGX_REPOSITORY@@-issue-loop-001@1\n\n### 父目标\n\n@@AGX_TARGET_URL@@/issues/1\n\n### 当前目标\n\n实现最小的 GitHub 到本地执行闭环。\n\n### 范围内\n\n- 本仓内、仅使用 Python 标准库的 CLI 与测试；\n- 通过已经认证的 gh 可执行文件使用参数数组访问 GitHub。\n\n### 范围外\n\n- daemon、数据库、全局安装和其它仓库。\n\n### 完成标准\n\n- 捕获具有确定性并验证原生父级；\n- 回执交付拒绝远端漂移。\n\n### 合同状态依据与只读来源\n\n- @@AGX_TARGET_URL@@/issues/4 —— 当前执行合同；\n- @@AGX_TARGET_URL@@/issues/1 —— 父目标。\n\n### 允许的动作与写入\n\n- 在本仓专用分支修改和推送。\n\n### 禁止的动作与写入\n\n- 合并、关闭议题或修改用户级配置。\n\n### 依赖\n\n- 父目标 #1 保持开放。\n\n### 交付物\n\n- 带离线测试的项目级合同捕获与回执命令行。\n\n### 停止条件\n\n- 写回前合同状态依据议题发生变化。\n\n### 当前负责人动作\n\n新的实现执行交付边界明确的闭环，不自行合并。",
+  "updatedAt": "2026-08-16T14:49:09Z",
+  "url": "@@AGX_TARGET_URL@@/issues/4",
+  "state": "OPEN"
+}

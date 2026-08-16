@@ -1,0 +1,17 @@
+{
+  "data": {
+    "repository": {
+      "issue": {
+        "number": 4,
+        "url": "@@AGX_TARGET_URL@@/issues/4",
+        "parent": {
+          "number": 1,
+          "url": "@@AGX_TARGET_URL@@/issues/1",
+          "repository": {
+            "nameWithOwner": "@@AGX_TARGET_SLUG@@"
+          }
+        }
+      }
+    }
+  }
+}

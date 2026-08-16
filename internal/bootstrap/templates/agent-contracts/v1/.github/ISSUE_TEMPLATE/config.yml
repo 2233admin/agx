@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contract guidance
+    url: @@AGX_TARGET_URL@@#readme
+    about: Review the contract boundaries and recovery flow before opening an Issue.

@@ -11,10 +11,11 @@
 | 3 | #13 | main 保护与发布 Gate | main 已保护；单维护者以 required CI 后自合并 | #1、#3、#4、#5 |
 | 4 | #6 | domain 与 diagnostic contract | implemented；由 #27 集成 | #3、#4、#5 |
 | 5 | #7 | 安全 CLI command skeleton | implemented；由 #27 集成 | #3、#5、#6 |
+| 6 | #33 | 单一插件源、bootstrap 模板与部署仓初始化 | in progress；由 Draft PR #34 集成 | #9、#11、#27 |
 
 ## 后续 live 链
 
-真实 golden path、官方 CLI transport、资源 adapter、acceptance Issue -> Task -> Runtime 双侧验收与双平台 release gate 仍按此顺序建立。#12 已取得 bounded live preflight，后续每个 AGX adapter 命令仍须用结构化官方 CLI 行为逐项验收。
+当前先关闭 #33 的本地安装、模板渲染、目标仓创建、provider 激活和可恢复回执闭环。真实 golden path、官方 CLI transport、资源 adapter、acceptance Issue -> Task -> Runtime 双侧验收与双平台 release gate 仍按此顺序建立。#12 已取得 bounded live preflight，后续每个 AGX adapter 命令仍须用结构化官方 CLI 行为逐项验收。
 
 ## 关闭规则
 
