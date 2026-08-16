@@ -30,6 +30,3 @@ archives:
 
 checksum:
   name_template: checksums.txt
-
-release:
-  disable: true
