@@ -37,6 +37,27 @@ go run ./cmd/agx version
 go run ./cmd/agx help
 ```
 
+## Preview 安装包（仅供测试）
+
+PR 的 `preview-package` 工作流会生成 Windows x64 ZIP、Ubuntu x64 tar.gz 和
+`checksums.txt`。它们是可复现的测试产物，不会创建 GitHub Release，也不表示 AGX 已
+通过真实 Multica 安装验收。
+
+Windows 下载对应 ZIP 与 `checksums.txt` 后，在同一目录执行：
+
+```powershell
+$archive = Get-ChildItem -Filter 'agx_*_windows_amd64.zip' | Select-Object -First 1
+$line = Get-Content .\checksums.txt | Where-Object { $_ -match ([regex]::Escape($archive.Name) + '$') }
+$expected = ($line -split '\s+')[0].ToLowerInvariant()
+$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive.FullName).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "checksum mismatch for $($archive.Name)" }
+Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
+.\agx-preview\agx.exe version
+```
+
+输出的是该 preview 构建的版本；它只证明二进制可下载、校验与运行，**不**证明部署或
+`verified` 状态。
+
 认证发布平台暂定为 Windows 11 x64 与 Ubuntu 24.04 x64。其他平台在取得端到端证据前只能标记为 preview。
 
 ## 上游关系

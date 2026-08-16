@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-const version = "0.0.0-dev"
+var version = "0.0.0-dev"
 
 func main() {
 	args := os.Args[1:]
