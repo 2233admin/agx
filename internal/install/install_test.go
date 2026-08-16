@@ -305,6 +305,40 @@ func TestUninstallRejectsSymlinkedComponentBeforeRemovingOwnedFiles(t *testing.T
 	}
 }
 
+func TestStatusAndUninstallRejectSymlinkedMetadataDirectory(t *testing.T) {
+	receipt := validReceipt()
+	root := writeTestInstallation(t, receipt)
+	metadata := filepath.Join(root, ".agx")
+	siblingMetadata := filepath.Join(filepath.Dir(root), "sibling-metadata")
+	if err := os.Rename(metadata, siblingMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(siblingMetadata, metadata); err != nil {
+		t.Skipf("directory symlinks are unavailable on this platform: %v", err)
+	}
+	siblingReceipt := filepath.Join(siblingMetadata, "receipt.json")
+	before, err := os.ReadFile(siblingReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installer.Status(root); err == nil {
+		t.Fatal("Status() followed a linked metadata directory")
+	}
+	if _, err := installer.Uninstall(root); err == nil {
+		t.Fatal("Uninstall() followed a linked metadata directory")
+	}
+	after, err := os.ReadFile(siblingReceipt)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("sibling receipt was changed: before=%q after=%q err=%v", before, after, err)
+	}
+	for _, relative := range receipt.OwnedFiles {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Fatalf("owned component file %q changed: %v", relative, err)
+		}
+	}
+}
+
 func validReceipt() installer.Receipt {
 	return installer.Receipt{
 		SchemaVersion:  "agx.receipt/v1",

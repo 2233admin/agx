@@ -83,7 +83,7 @@ func Apply(ctx context.Context, options Options) (Receipt, bool, error) {
 		return Receipt{}, false, err
 	}
 
-	if _, err := os.Stat(root); err == nil {
+	if _, err := os.Lstat(root); err == nil {
 		existing, readErr := readReceipt(root)
 		if readErr != nil {
 			return Receipt{}, false, fmt.Errorf("AGX-APPLY-CONFLICT: target exists without a valid AGX receipt: %w", readErr)
@@ -162,7 +162,7 @@ func Status(rootPath string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	if _, err := os.Stat(root); os.IsNotExist(err) {
+	if _, err := os.Lstat(root); os.IsNotExist(err) {
 		return State{Phase: "absent"}, nil
 	} else if err != nil {
 		return State{}, fmt.Errorf("AGX-STATUS-ROOT: %w", err)
@@ -231,7 +231,18 @@ func Uninstall(rootPath string) ([]string, error) {
 			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: %s: %w", item.relative, err)
 		}
 	}
-	_ = os.Remove(filepath.Join(root, ".agx", "receipt.json"))
+	metadataState, err := inspectOwnedFile(root, ".agx/receipt.json")
+	if err != nil {
+		return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: receipt metadata: %w", err)
+	}
+	if metadataState == ownedFileUnsafe {
+		return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: receipt metadata path changed before removal")
+	}
+	if metadataState == ownedFileRegular {
+		if err := os.Remove(filepath.Join(root, ".agx", "receipt.json")); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: receipt metadata: %w", err)
+		}
+	}
 	var dirs []string
 	_ = filepath.Walk(root, func(current string, info os.FileInfo, walkErr error) error {
 		if walkErr == nil && info.IsDir() {
@@ -374,6 +385,44 @@ func ownedPath(root, relative string) (string, error) {
 	return absolute, nil
 }
 
+func ownedRealDirectory(root, relative string) (bool, error) {
+	absolute, err := ownedPath(root, relative)
+	if err != nil {
+		return false, err
+	}
+	back, err := filepath.Rel(root, absolute)
+	if err != nil || back == "." {
+		return false, fmt.Errorf("AGX-RECEIPT-PATH: unsafe directory path %q", relative)
+	}
+
+	info, err := os.Lstat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+
+	current := root
+	for _, part := range strings.Split(back, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err = os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // inspectOwnedFile checks every path segment without following links. An
 // intermediate segment must be a real directory, and an existing target must
 // be a regular file. On Windows, junctions and other name-surrogate reparse
@@ -429,6 +478,13 @@ func writeReceipt(root string, receipt Receipt) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("AGX-RECEIPT-WRITE: %w", err)
 	}
+	real, err := ownedRealDirectory(root, ".agx")
+	if err != nil {
+		return fmt.Errorf("AGX-RECEIPT-WRITE: %w", err)
+	}
+	if !real {
+		return fmt.Errorf("AGX-RECEIPT-WRITE: metadata directory is not a real directory")
+	}
 	data, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return fmt.Errorf("AGX-RECEIPT-WRITE: %w", err)
@@ -441,6 +497,16 @@ func writeReceipt(root string, receipt Receipt) error {
 }
 
 func readReceipt(root string) (Receipt, error) {
+	metadataState, err := inspectOwnedFile(root, ".agx/receipt.json")
+	if err != nil {
+		return Receipt{}, fmt.Errorf("AGX-RECEIPT-READ: %w", err)
+	}
+	if metadataState == ownedFileMissing {
+		return Receipt{}, fmt.Errorf("AGX-RECEIPT-READ: receipt metadata is missing")
+	}
+	if metadataState != ownedFileRegular {
+		return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: receipt metadata path is unsafe")
+	}
 	data, err := os.ReadFile(filepath.Join(root, ".agx", "receipt.json"))
 	if err != nil {
 		return Receipt{}, fmt.Errorf("AGX-RECEIPT-READ: %w", err)

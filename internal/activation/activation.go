@@ -322,7 +322,14 @@ func Uninitialize(ctx context.Context, root string, runner provider.Runner) (boo
 		return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-OWNERSHIP: %s Marketplace predates AGX initialization and still references this Installation", strings.Join(retainedMarketplaces, ", "))
 	}
 
-	if err := os.Remove(receiptPath(root)); err != nil && !os.IsNotExist(err) {
+	safeReceiptPath, present, _, err := inspectReceiptPath(root)
+	if err != nil {
+		return false, err
+	}
+	if !present {
+		return false, fmt.Errorf("AGX-INIT-RECEIPT-READ: initialization receipt disappeared before removal")
+	}
+	if err := os.Remove(safeReceiptPath); err != nil {
 		return false, fmt.Errorf("AGX-INIT-RECEIPT-REMOVE: %w", err)
 	}
 	return true, nil
@@ -496,12 +503,29 @@ func receiptPath(root string) string {
 }
 
 func readReceipt(root string) (Receipt, bool, error) {
-	data, err := os.ReadFile(receiptPath(root))
-	if os.IsNotExist(err) {
+	path, present, expectedInfo, err := inspectReceiptPath(root)
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	if !present {
 		return Receipt{}, false, nil
 	}
+	file, err := os.Open(path)
 	if err != nil {
-		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: %w", err)
+		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot open initialization receipt: %w", err)
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(expectedInfo, openedInfo) {
+		file.Close()
+		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: initialization receipt changed during read")
+	}
+	data, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot read initialization receipt: %w", readErr)
+	}
+	if closeErr != nil {
+		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot close initialization receipt: %w", closeErr)
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
@@ -520,6 +544,63 @@ func readReceipt(root string) (Receipt, bool, error) {
 		return Receipt{}, false, err
 	}
 	return receipt, true, nil
+}
+
+func inspectReceiptPath(root string) (string, bool, os.FileInfo, error) {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", false, nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: invalid Installation root: %w", err)
+	}
+	rootInfo, err := os.Lstat(absoluteRoot)
+	if os.IsNotExist(err) {
+		return filepath.Join(absoluteRoot, ".agx", initializationFile), false, nil, nil
+	}
+	if err != nil {
+		return "", false, nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect Installation root: %w", err)
+	}
+	if err := requireRealMetadataEntry(absoluteRoot, rootInfo, true, "Installation root"); err != nil {
+		return "", false, nil, err
+	}
+
+	directory := filepath.Join(absoluteRoot, ".agx")
+	directoryInfo, err := os.Lstat(directory)
+	if os.IsNotExist(err) {
+		return filepath.Join(directory, initializationFile), false, nil, nil
+	}
+	if err != nil {
+		return "", false, nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect metadata directory: %w", err)
+	}
+	if err := requireRealMetadataEntry(directory, directoryInfo, true, "metadata directory"); err != nil {
+		return "", false, nil, err
+	}
+
+	path := filepath.Join(directory, initializationFile)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return path, false, nil, nil
+	}
+	if err != nil {
+		return "", false, nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect initialization receipt: %w", err)
+	}
+	if err := requireRealMetadataEntry(path, info, false, "initialization receipt"); err != nil {
+		return "", false, nil, err
+	}
+	return path, true, info, nil
+}
+
+func requireRealMetadataEntry(path string, info os.FileInfo, directory bool, label string) error {
+	reparse, err := metadataPathIsReparsePoint(path)
+	if err != nil {
+		return fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect %s attributes: %w", label, err)
+	}
+	validType := info.Mode().IsRegular()
+	if directory {
+		validType = info.Mode().IsDir()
+	}
+	if reparse || info.Mode()&os.ModeSymlink != 0 || !validType {
+		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %s must be a real %s", label, map[bool]string{true: "directory", false: "regular file"}[directory])
+	}
+	return nil
 }
 
 func validateReceipt(receipt Receipt) error {
@@ -554,9 +635,35 @@ func writeReceipt(root string, receipt Receipt) error {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
 	}
 	data = append(data, '\n')
-	directory := filepath.Join(root, ".agx")
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: invalid Installation root: %w", err)
+	}
+	rootInfo, err := os.Lstat(absoluteRoot)
+	if err != nil {
+		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect Installation root: %w", err)
+	}
+	if err := requireRealMetadataEntry(absoluteRoot, rootInfo, true, "Installation root"); err != nil {
+		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe Installation root: %w", err)
+	}
+	directory := filepath.Join(absoluteRoot, ".agx")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
+	}
+	directoryInfo, err := os.Lstat(directory)
+	if err != nil {
+		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect metadata directory: %w", err)
+	}
+	if err := requireRealMetadataEntry(directory, directoryInfo, true, "metadata directory"); err != nil {
+		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe metadata directory: %w", err)
+	}
+	target := filepath.Join(directory, initializationFile)
+	if targetInfo, targetErr := os.Lstat(target); targetErr == nil {
+		if err := requireRealMetadataEntry(target, targetInfo, false, "initialization receipt"); err != nil {
+			return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe initialization receipt: %w", err)
+		}
+	} else if !os.IsNotExist(targetErr) {
+		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect initialization receipt: %w", targetErr)
 	}
 	temporary, err := os.CreateTemp(directory, ".initialization-*.tmp")
 	if err != nil {
@@ -575,7 +682,7 @@ func writeReceipt(root string, receipt Receipt) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
 	}
-	if err := os.Rename(temporaryName, receiptPath(root)); err != nil {
+	if err := os.Rename(temporaryName, target); err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
 	}
 	return nil

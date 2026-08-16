@@ -29,6 +29,7 @@ type statefulRunner struct {
 	omitStateChange     map[string]bool
 	disableAddedPlugin  map[string]bool
 	afterNextPluginList map[provider.Name]func()
+	afterMutation       map[string]func()
 }
 
 func newRunner() *statefulRunner {
@@ -43,6 +44,7 @@ func newRunner() *statefulRunner {
 		omitStateChange:     map[string]bool{},
 		disableAddedPlugin:  map[string]bool{},
 		afterNextPluginList: map[provider.Name]func(){},
+		afterMutation:       map[string]func(){},
 	}
 }
 
@@ -123,6 +125,10 @@ func (runner *statefulRunner) Run(_ context.Context, name string, args ...string
 		delete(state.plugins, pluginName)
 	default:
 		return nil, errors.New("unexpected command: " + joined)
+	}
+	if hook := runner.afterMutation[key]; hook != nil {
+		delete(runner.afterMutation, key)
+		hook()
 	}
 	return []byte(`{}`), nil
 }
@@ -316,6 +322,57 @@ func TestProviderLifecycleRejectsSymlinkedPluginComponent(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join(sibling, "README.md"))
 	if err != nil || string(contents) != "sibling checkout\n" {
 		t.Fatalf("sibling checkout was changed: contents=%q err=%v", contents, err)
+	}
+}
+
+func TestProviderLifecycleRejectsLinkedMetadataDirectoryBeforeMutation(t *testing.T) {
+	root := makeInstallation(t)
+	runner := newRunner()
+	options := activation.Options{
+		Root: root, Profile: activation.ProfileCore, Providers: []provider.Name{provider.Codex}, Runner: runner,
+	}
+	_, _, err := activation.Initialize(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metadata := filepath.Join(root, ".agx")
+	sibling := filepath.Join(filepath.Dir(root), "sibling-metadata")
+	if err := os.Rename(metadata, sibling); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sibling, metadata); err != nil {
+		t.Skipf("directory symlinks are unavailable on this platform: %v", err)
+	}
+	installReceiptBefore, err := os.ReadFile(filepath.Join(sibling, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initializationReceiptBefore, err := os.ReadFile(filepath.Join(sibling, "initialization.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutationsBefore := len(runner.mutations)
+
+	if _, err := activation.Status(context.Background(), root, runner); err == nil {
+		t.Fatal("Status() accepted linked metadata directory")
+	}
+	if _, _, err := activation.Initialize(context.Background(), options); err == nil {
+		t.Fatal("Initialize() accepted linked metadata directory")
+	}
+	if removed, err := activation.Uninitialize(context.Background(), root, runner); err == nil || removed {
+		t.Fatalf("Uninitialize() removed=%v err=%v", removed, err)
+	}
+	if len(runner.mutations) != mutationsBefore {
+		t.Fatalf("linked metadata caused provider mutations: %#v", runner.mutations[mutationsBefore:])
+	}
+	installReceiptAfter, err := os.ReadFile(filepath.Join(sibling, "receipt.json"))
+	if err != nil || string(installReceiptAfter) != string(installReceiptBefore) {
+		t.Fatalf("sibling install receipt changed: err=%v", err)
+	}
+	initializationReceiptAfter, err := os.ReadFile(filepath.Join(sibling, "initialization.json"))
+	if err != nil || string(initializationReceiptAfter) != string(initializationReceiptBefore) {
+		t.Fatalf("sibling initialization receipt changed: err=%v", err)
 	}
 }
 
@@ -543,6 +600,52 @@ func TestUninitializeRechecksSourceBeforeFirstMutation(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(root, ".agx", "initialization.json")); statErr != nil {
 		t.Fatalf("initialization receipt was not retained: %v", statErr)
+	}
+}
+
+func TestUninitializeRechecksReceiptPathBeforeRemoval(t *testing.T) {
+	probeTarget := t.TempDir()
+	probeLink := filepath.Join(t.TempDir(), "directory-link")
+	if err := os.Symlink(probeTarget, probeLink); err != nil {
+		t.Skipf("directory symlinks are unavailable on this platform: %v", err)
+	}
+	if err := os.Remove(probeLink); err != nil {
+		t.Fatal(err)
+	}
+
+	root := makeInstallation(t)
+	runner := newRunner()
+	_, _, err := activation.Initialize(context.Background(), activation.Options{
+		Root: root, Profile: activation.ProfileCore, Providers: []provider.Name{provider.Codex}, Runner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := filepath.Join(root, ".agx")
+	sibling := filepath.Join(filepath.Dir(root), "sibling-metadata-after-cleanup")
+	initializationReceiptBefore, err := os.ReadFile(filepath.Join(metadata, "initialization.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hookErr error
+	runner.afterMutation["codex:marketplace-remove:"] = func() {
+		if err := os.Rename(metadata, sibling); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = os.Symlink(sibling, metadata)
+	}
+
+	removed, err := activation.Uninitialize(context.Background(), root, runner)
+	if hookErr != nil {
+		t.Fatalf("metadata swap hook failed: %v", hookErr)
+	}
+	if err == nil || removed || !strings.Contains(err.Error(), "AGX-INIT-RECEIPT-INVALID") {
+		t.Fatalf("Uninitialize() removed=%v err=%v", removed, err)
+	}
+	initializationReceiptAfter, err := os.ReadFile(filepath.Join(sibling, "initialization.json"))
+	if err != nil || string(initializationReceiptAfter) != string(initializationReceiptBefore) {
+		t.Fatalf("sibling initialization receipt changed: err=%v", err)
 	}
 }
 
