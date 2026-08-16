@@ -9,7 +9,6 @@
 | 2 | #5 | credential/redaction/lifecycle/platform Gate | blocked：具名 security/release owner | #3 |
 | 3 | #6 | domain 与 diagnostic contract | blocked | #3、#4、#5 |
 | 4 | #7 | 安全 CLI command skeleton | blocked | #3、#5、#6 |
-| 5 | #10 | agent-facing `agx` skill 调用合同 | blocked | #3、#5、#7 |
 
 ## 后续 live 链
 
