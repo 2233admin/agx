@@ -1,0 +1,40 @@
+{
+  "schema_version": "agx.bundle/v2",
+  "bundle_id": "synthetic-development-v2",
+  "mode": "development",
+  "provenance": "synthetic_test_only",
+  "development_override": true,
+  "compatibility": {
+    "agx": ">=0.1.0 <0.2.0"
+  },
+  "sources": {
+    "agent_plugins": {
+      "upstream_repository": "zaurakworks/agent-plugins",
+      "distribution_repository": "2233admin/agent-plugins",
+      "release_tag": "synthetic-agent-plugins-v0",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "asset_name": "synthetic-agent-plugins.tar.gz",
+      "download_url": "https://example.invalid/agent-plugins/synthetic-agent-plugins.tar.gz",
+      "asset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "templates": {
+    "version": "bootstrap-20260817.1",
+    "content_sha256": "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca",
+    "references": {
+      "agent_plugins": {
+        "repository": "zaurakworks/agent-plugins",
+        "commit_sha": "ad07742ade0f0039ed1df1a9262e8f087117fca0"
+      },
+      "agent_control": {
+        "repository": "zaurakworks/agent-control",
+        "commit_sha": "b0e6e0e8244ef518f671e2326745cd67c6d2307a"
+      },
+      "agent_contracts": {
+        "repository": "zaurakworks/agent-contracts",
+        "commit_sha": "5bb8ea0b54f063b0758c294b73ea270ba69322d2"
+      }
+    }
+  }
+}

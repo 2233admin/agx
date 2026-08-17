@@ -1,0 +1,71 @@
+name: 交付
+description: 建立有明确成功条件的可独立交付任务
+title: "交付："
+labels:
+  - "类型/交付"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        标题必须保留「交付：」前缀，并用动词短语说明可验收的结果。本表单已预挂「类型/交付」；创建后请立即补挂下方选择的唯一「领域/*」 label。
+
+        > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 主要领域
+      description: 选择一项；创建后将同名「领域/*」 label 补挂到 Issue。
+      options:
+        - "领域/总目标"
+        - "领域/知识"
+        - "领域/长程工作"
+        - "领域/思考方法"
+        - "领域/协同协作"
+        - "领域/资源运营"
+        - "领域/横向"
+    validations:
+      required: true
+  - type: textarea
+    id: parent
+    attributes:
+      label: 主要父级与贡献
+      description: 写明「关联 #N」及本交付如何改善父级的一条未满足成功条件。
+    validations:
+      required: true
+  - type: textarea
+    id: authorization
+    attributes:
+      label: 授权链与当前就绪状态
+      description: 列出建项、实施、外部写入和交付 PR 的可核验授权；说明未授权事项。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 预期结果、范围与明确不做
+      description: 给出可独立交付的结果，以及所有范围边界。
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依赖、写入所有权与停止条件
+      description: 写明原生依赖关系、文件／分支／远程对象的排他写入范围，以及何时停止或升级。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收条件与交付形态
+      description: 逐条列出可远程核验的成功信号、要运行的验证，以及分支／Draft PR 约束。
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我会在创建后补挂上方选择的唯一领域 label，并核验原生父子关系。
+          required: true
+        - label: 我已遵守关联引用写法，没有使用 GitHub 关闭关键词或其否定式。
+          required: true

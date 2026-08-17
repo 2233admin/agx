@@ -1,0 +1,8 @@
+{
+  "number": 1,
+  "title": "目标：建立 GitHub Issue 驱动的执行合同仓",
+  "body": "`contract-id: goal-@@AGX_REPOSITORY@@-001`\n\n## 原始目标\n\nGitHub Issue 是本仓长期合同的权威载体。",
+  "updatedAt": "2026-08-16T14:03:04Z",
+  "url": "@@AGX_TARGET_URL@@/issues/1",
+  "state": "OPEN"
+}

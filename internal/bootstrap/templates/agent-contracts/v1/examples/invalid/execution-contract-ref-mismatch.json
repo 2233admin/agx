@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "execution-contract",
+  "contractId": "exec-release-001",
+  "revision": 2,
+  "contractRef": "exec-release-001@1",
+  "source": {
+    "issueUrl": "@@AGX_TARGET_URL@@/issues/20",
+    "issueNumber": 20,
+    "remoteVersion": "2026-08-16T16:00:00Z",
+    "contentDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "parentGoal": {
+    "contractId": "goal-release-001",
+    "relationship": "github-sub-issue",
+    "issueUrl": "@@AGX_TARGET_URL@@/issues/19"
+  },
+  "objective": "Prepare a bounded release.",
+  "scope": {
+    "included": [
+      "Create release artifacts."
+    ],
+    "excluded": [
+      "Publish the release."
+    ]
+  },
+  "successCriteria": [
+    "Release artifacts are ready for review."
+  ],
+  "authorities": [
+    "@@AGX_TARGET_URL@@/issues/20",
+    "@@AGX_TARGET_URL@@/issues/19"
+  ],
+  "permissions": {
+    "allowed": [
+      "Write release artifacts on the work branch."
+    ],
+    "forbidden": [
+      "Publish or merge."
+    ]
+  },
+  "dependencies": [],
+  "deliverables": [
+    "Reviewable release artifacts."
+  ],
+  "stopConditions": [
+    "The contract snapshot changes."
+  ],
+  "ownerAction": "The release implementer builds the release artifacts."
+}

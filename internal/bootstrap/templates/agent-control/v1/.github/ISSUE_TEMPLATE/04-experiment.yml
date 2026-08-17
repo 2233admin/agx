@@ -1,0 +1,71 @@
+name: 实验
+description: 用有界验证减少会改变路径的关键未知
+title: "实验："
+labels:
+  - "类型/实验"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        标题必须保留「实验：」前缀，并说明要验证的关键未知。本表单已预挂「类型/实验」；创建后请立即补挂下方选择的唯一「领域/*」 label。成功判据在实验开始后不得原地改写。
+
+        > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 主要领域
+      description: 选择一项；创建后将同名「领域/*」 label 补挂到 Issue。
+      options:
+        - "领域/总目标"
+        - "领域/知识"
+        - "领域/长程工作"
+        - "领域/思考方法"
+        - "领域/协同协作"
+        - "领域/资源运营"
+        - "领域/横向"
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: 来源、父级与授权
+      description: 写明「关联 #N」、本实验如何减少父级未知，以及实验和外部写入授权。
+    validations:
+      required: true
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: 预注册假设
+      description: 用「我们相信〈做法〉会带来〈结果〉，观察到〈信号〉即证实」的形状写清。
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: 检验方式、度量与成功阈值
+      description: 列出测量方法、开始前写死的阈值、可接受近似和测量系统故障排除方法。
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: 范围、停止条件与失效信号
+      description: 写明成本上限、明确不做、何时停止，以及哪些事实会使假设或授权失效。
+    validations:
+      required: true
+  - type: textarea
+    id: closeout
+    attributes:
+      label: 收口卡与交付位置
+      description: 说明实验后将如何记录观察、结论、方向改变、遗留未知与下一责任人。
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我会在创建后补挂上方选择的唯一领域 label。
+          required: true
+        - label: 我已遵守关联引用写法，没有使用 GitHub 关闭关键词或其否定式。
+          required: true

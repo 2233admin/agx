@@ -7,9 +7,15 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/2233admin/agx/internal/bootstrap"
 )
 
-const SchemaVersionV1 = "agx.bundle/v1"
+const (
+	SchemaVersionV2                    = "agx.bundle/v2"
+	AgentPluginsUpstreamRepository     = "zaurakworks/agent-plugins"
+	AgentPluginsDistributionRepository = "2233admin/agent-plugins"
+)
 
 type Mode string
 
@@ -32,36 +38,54 @@ type Document struct {
 	Provenance          Provenance    `json:"provenance"`
 	DevelopmentOverride bool          `json:"development_override"`
 	Compatibility       Compatibility `json:"compatibility"`
-	Artifacts           Artifacts     `json:"artifacts"`
+	Sources             Sources       `json:"sources"`
+	Templates           Templates     `json:"templates"`
 }
 
 type Compatibility struct {
-	AGX        string `json:"agx"`
-	MulticaCLI string `json:"multica_cli"`
+	AGX string `json:"agx"`
 }
 
-type Artifacts struct {
-	AgentControl Artifact `json:"agent_control"`
+type Sources struct {
 	AgentPlugins Artifact `json:"agent_plugins"`
 }
 
 type Artifact struct {
-	Repository    string `json:"repository"`
-	ReleaseTag    string `json:"release_tag"`
-	CommitSHA     string `json:"commit_sha"`
-	AssetName     string `json:"asset_name"`
-	DownloadURL   string `json:"download_url"`
-	AssetSHA256   string `json:"asset_sha256"`
-	ContentSHA256 string `json:"content_sha256"`
+	UpstreamRepository     string `json:"upstream_repository"`
+	DistributionRepository string `json:"distribution_repository"`
+	ReleaseTag             string `json:"release_tag"`
+	CommitSHA              string `json:"commit_sha"`
+	AssetName              string `json:"asset_name"`
+	DownloadURL            string `json:"download_url"`
+	AssetSHA256            string `json:"asset_sha256"`
+	ContentSHA256          string `json:"content_sha256"`
+}
+
+type Templates struct {
+	Version       string             `json:"version"`
+	ContentSHA256 string             `json:"content_sha256"`
+	References    TemplateReferences `json:"references"`
+}
+
+type TemplateReferences struct {
+	AgentPlugins   Reference `json:"agent_plugins"`
+	AgentControl   Reference `json:"agent_control"`
+	AgentContracts Reference `json:"agent_contracts"`
+}
+
+type Reference struct {
+	Repository string `json:"repository"`
+	CommitSHA  string `json:"commit_sha"`
 }
 
 var (
-	bundleIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,127}$`)
-	commitPattern   = regexp.MustCompile(`^[a-f0-9]{40}$`)
-	sha256Pattern   = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	bundleIDPattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,127}$`)
+	templateVersionPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	commitPattern          = regexp.MustCompile(`^[a-f0-9]{40}$`)
+	sha256Pattern          = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
-// Decode strictly decodes and validates a Bundle v1 document. It has no I/O.
+// Decode strictly decodes and validates a Bundle v2 document. It has no I/O.
 func Decode(data []byte) (Document, error) {
 	if err := rejectDuplicateKeys(data); err != nil {
 		return Document{}, err
@@ -80,7 +104,7 @@ func Decode(data []byte) (Document, error) {
 	} else if err.Error() != "EOF" {
 		return Document{}, decodeError("invalid trailing JSON: %v", err)
 	}
-	if raw.SchemaVersion != SchemaVersionV1 {
+	if raw.SchemaVersion != SchemaVersionV2 {
 		return Document{}, schemaError("unsupported schema version %q", raw.SchemaVersion)
 	}
 	if raw.DevelopmentOverride == nil {
@@ -94,7 +118,8 @@ func Decode(data []byte) (Document, error) {
 		Provenance:          raw.Provenance,
 		DevelopmentOverride: *raw.DevelopmentOverride,
 		Compatibility:       raw.Compatibility,
-		Artifacts:           raw.Artifacts,
+		Sources:             raw.Sources,
+		Templates:           raw.Templates,
 	}
 	if err := document.validate(); err != nil {
 		return Document{}, err
@@ -109,18 +134,19 @@ type rawDocument struct {
 	Provenance          Provenance    `json:"provenance"`
 	DevelopmentOverride *bool         `json:"development_override"`
 	Compatibility       Compatibility `json:"compatibility"`
-	Artifacts           Artifacts     `json:"artifacts"`
+	Sources             Sources       `json:"sources"`
+	Templates           Templates     `json:"templates"`
 }
 
 func (document Document) validate() error {
-	if document.SchemaVersion != SchemaVersionV1 {
+	if document.SchemaVersion != SchemaVersionV2 {
 		return schemaError("unsupported schema version %q", document.SchemaVersion)
 	}
 	if !bundleIDPattern.MatchString(document.BundleID) {
 		return validationError("bundle_id must match %s", bundleIDPattern.String())
 	}
-	if strings.TrimSpace(document.Compatibility.AGX) == "" || strings.TrimSpace(document.Compatibility.MulticaCLI) == "" {
-		return validationError("compatibility.agx and compatibility.multica_cli are required")
+	if strings.TrimSpace(document.Compatibility.AGX) == "" {
+		return validationError("compatibility.agx is required")
 	}
 
 	switch document.Mode {
@@ -136,18 +162,21 @@ func (document Document) validate() error {
 		return validationError("unsupported mode %q", document.Mode)
 	}
 
-	if err := validateArtifact(document.Artifacts.AgentControl, "2233admin/agent-control", document.Mode); err != nil {
+	if err := validateArtifact(document.Sources.AgentPlugins, document.Mode); err != nil {
 		return err
 	}
-	if err := validateArtifact(document.Artifacts.AgentPlugins, "2233admin/agent-plugins", document.Mode); err != nil {
+	if err := validateTemplates(document.Templates); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateArtifact(artifact Artifact, repository string, mode Mode) error {
-	if artifact.Repository != repository {
-		return provenanceError("artifact repository must be %q", repository)
+func validateArtifact(artifact Artifact, mode Mode) error {
+	if artifact.UpstreamRepository != AgentPluginsUpstreamRepository {
+		return provenanceError("artifact upstream_repository must be %q", AgentPluginsUpstreamRepository)
+	}
+	if artifact.DistributionRepository != AgentPluginsDistributionRepository {
+		return provenanceError("artifact distribution_repository must be %q", AgentPluginsDistributionRepository)
 	}
 	if strings.TrimSpace(artifact.ReleaseTag) == "" || strings.TrimSpace(artifact.AssetName) == "" || strings.Contains(artifact.AssetName, "/") {
 		return validationError("artifact release_tag and simple asset_name are required")
@@ -162,9 +191,43 @@ func validateArtifact(artifact Artifact, repository string, mode Mode) error {
 		return provenanceError("artifact download_url must use HTTPS")
 	}
 	if mode == ModeProduction {
-		expected := "https://github.com/" + repository + "/releases/download/" + artifact.ReleaseTag + "/" + artifact.AssetName
+		expected := "https://github.com/" + AgentPluginsDistributionRepository + "/releases/download/" + artifact.ReleaseTag + "/" + artifact.AssetName
 		if artifact.DownloadURL != expected || !strings.HasSuffix(artifact.AssetName, ".tar.gz") {
 			return provenanceError("production artifact must use its pinned GitHub Release tarball URL")
+		}
+	}
+	return nil
+}
+
+func validateTemplates(templates Templates) error {
+	if !templateVersionPattern.MatchString(templates.Version) {
+		return validationError("templates.version must match %s", templateVersionPattern.String())
+	}
+	if !sha256Pattern.MatchString(templates.ContentSHA256) {
+		return validationError("templates.content_sha256 must be a lowercase 64-character value")
+	}
+	if templates.Version != bootstrap.TemplateSetVersion || templates.ContentSHA256 != bootstrap.TemplateSetContentSHA256 {
+		return provenanceError("templates version or content digest is not supported by this AGX binary")
+	}
+	references := []struct {
+		name      string
+		expected  string
+		commit    string
+		reference Reference
+	}{
+		{name: "agent_plugins", expected: bootstrap.AgentPluginsReferenceRepository, commit: bootstrap.AgentPluginsReferenceCommit, reference: templates.References.AgentPlugins},
+		{name: "agent_control", expected: bootstrap.AgentControlReferenceRepository, commit: bootstrap.AgentControlReferenceCommit, reference: templates.References.AgentControl},
+		{name: "agent_contracts", expected: bootstrap.AgentContractsReferenceRepository, commit: bootstrap.AgentContractsReferenceCommit, reference: templates.References.AgentContracts},
+	}
+	for _, item := range references {
+		if item.reference.Repository != item.expected {
+			return provenanceError("templates.references.%s.repository must be %q", item.name, item.expected)
+		}
+		if !commitPattern.MatchString(item.reference.CommitSHA) {
+			return validationError("templates.references.%s.commit_sha must be a lowercase 40-character SHA-1", item.name)
+		}
+		if item.reference.CommitSHA != item.commit {
+			return provenanceError("templates.references.%s.commit_sha is not the pinned reference", item.name)
 		}
 	}
 	return nil

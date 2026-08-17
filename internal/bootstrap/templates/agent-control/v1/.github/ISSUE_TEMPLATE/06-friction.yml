@@ -1,0 +1,69 @@
+name: 摩擦
+description: 记录可累计、可复现的 Agent、工具、宿主或工作流事件模式
+title: "摩擦："
+labels:
+  - "类型/摩擦"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        标题必须保留「摩擦：」前缀，并用一句话描述可复现的事件模式，不把单次噪音写成长期结论。本表单已预挂「类型/摩擦」；创建后请立即补挂下方选择的唯一「领域/*」 label。
+
+        > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 主要领域
+      description: 选择一项；创建后将同名「领域/*」 label 补挂到 Issue。
+      options:
+        - "领域/总目标"
+        - "领域/知识"
+        - "领域/长程工作"
+        - "领域/思考方法"
+        - "领域/协同协作"
+        - "领域/资源运营"
+        - "领域/横向"
+    validations:
+      required: true
+  - type: textarea
+    id: observation
+    attributes:
+      label: 原始观察与影响
+      description: 记录发生了什么、影响了哪个用户或父目标，以及为什么值得跨 Session 保留。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据与复现边界
+      description: 列出时间、环境、精确对象、实际与预期结果；敏感信息只写可核验摘要。
+    validations:
+      required: true
+  - type: textarea
+    id: pattern
+    attributes:
+      label: 候选模式与替代解释
+      description: 分开写事实、当前解释和最强的替代解释；说明什么证据会使该模式不再成立。
+    validations:
+      required: true
+  - type: textarea
+    id: response
+    attributes:
+      label: 当前处置、停止谓词与升级条件
+      description: 写明已有缓解、可返回验证、何时转为交付／实验，以及负责人决定点。
+    validations:
+      required: true
+  - type: textarea
+    id: relations
+    attributes:
+      label: 关联合同与相邻范围
+      description: 使用「关联 #N」列出父级、重复样本和已有纠偏，并说明本项不触碰的相邻范围。
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我会在创建后补挂上方选择的唯一领域 label。
+          required: true
+        - label: 我已遵守关联引用写法，没有使用 GitHub 关闭关键词或其否定式。
+          required: true

@@ -1,0 +1,71 @@
+name: 调研
+description: 为一项明确决定产出有界知识或证据
+title: "调研："
+labels:
+  - "类型/调研"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        标题必须保留「调研：」前缀，并说明调研将支持的决定或证据缺口。本表单已预挂「类型/调研」；创建后请立即补挂下方选择的唯一「领域/*」 label。
+
+        > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 主要领域
+      description: 选择一项；创建后将同名「领域/*」 label 补挂到 Issue。
+      options:
+        - "领域/总目标"
+        - "领域/知识"
+        - "领域/长程工作"
+        - "领域/思考方法"
+        - "领域/协同协作"
+        - "领域/资源运营"
+        - "领域/横向"
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: 来源、父级与授权
+      description: 写明「关联 #N」、调研如何贡献父级，以及网络访问、评论或其他外部写入权限。
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: 调研支持的决定与关键未知
+      description: 写明调研结果要改变哪个决定，以及哪些证据会翻转当前判断。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据范围与可信门
+      description: 列出需要的一手来源、当前知识、时效要求、可接受近似，以及事实与推断的分开标注方式。
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: 范围、成本上限与停止条件
+      description: 写明明确不做、时间或样本上限，以及何时已足以影响下一步而停止。
+    validations:
+      required: true
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: 交付物与验收方式
+      description: 说明证据、选项比较、推荐、最强反方、翻转条件和遗留未知将保存到哪里。
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我会在创建后补挂上方选择的唯一领域 label。
+          required: true
+        - label: 我已遵守关联引用写法，没有使用 GitHub 关闭关键词或其否定式。
+          required: true

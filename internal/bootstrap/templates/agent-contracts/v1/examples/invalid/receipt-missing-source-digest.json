@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "receipt",
+  "receiptId": "receipt-unverifiable-delivery-001",
+  "contract": {
+    "contractId": "exec-release-001",
+    "revision": 1,
+    "contractRef": "exec-release-001@1",
+    "issueUrl": "@@AGX_TARGET_URL@@/issues/20",
+    "issueNumber": 20,
+    "remoteVersion": "2026-08-16T16:00:00Z"
+  },
+  "outcome": "delivered",
+  "summary": "Claims delivery without identifying the authoritative content snapshot.",
+  "artifacts": [
+    {
+      "name": "Pull request",
+      "url": "@@AGX_TARGET_URL@@/pull/21"
+    }
+  ],
+  "verification": [
+    {
+      "command": "python tools/validate.py",
+      "result": "Passed."
+    }
+  ],
+  "globalWrites": [],
+  "remainingUnknowns": [],
+  "submittedAt": "2026-08-16T17:30:00Z"
+}
