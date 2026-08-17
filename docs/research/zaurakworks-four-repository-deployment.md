@@ -179,21 +179,17 @@ performs digest checks. Source:
 
 ## Initialization UX Gaps and Remaining Risk
 
-1. **Subsequent live evidence:** after this source review, Issue
-   [#39](https://github.com/2233admin/agx/issues/39) completed an approved
-   Claude-only live acceptance run. It created two private deployment
-   repositories, verified their default branches and initial commits, activated
-   the `github` profile, invoked the printed `/grilling:grilling` first-use
-   prompt in a new session, proved repeat initialization was a no-op, and then
-   proved uninstall removed only AGX-owned local/provider state while retaining
-   both remote repositories. This closes the earlier live-mutation evidence gap
-   for that provider path; it does not create a general `verified` claim.
-2. **UX follow-up:** the same live run found that recommending `both` blindly
-   is poor first-run UX when one provider already has an `agent-plugins`
-   Marketplace bound to another source. Issue
-   [#40](https://github.com/2233admin/agx/issues/40) therefore adds a human-only,
-   side-effect-free guided path that discovers the authenticated GitHub identity
-   and provider inventories before recommending an available provider. Explicit
+1. **Subsequent acceptance evidence:** a controlled acceptance run verified
+   repository creation and readback, first use, repeat-initialization
+   idempotence, and ownership-safe uninstall with remote repository retention.
+   Operational identifiers and environment-specific evidence are intentionally
+   not published. This closes the earlier live-mutation evidence gap for the
+   exercised path; it does not create a general `verified` claim.
+2. **UX follow-up:** controlled acceptance also showed that recommending
+   `both` blindly is poor first-run UX when one provider has a Marketplace
+   source conflict. AGX therefore adds a human-only, side-effect-free guided
+   path that discovers the authenticated GitHub identity and provider
+   inventories before recommending an available provider. Explicit
    non-interactive flags and JSON output remain the automation path.
 3. **UX gap:** collision recovery is safe but manual: same-name repositories
    stop before writes, and the user must choose different names with
