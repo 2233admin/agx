@@ -61,7 +61,7 @@ func TestRunInitRequiresRootAndProvider(t *testing.T) {
 	for _, text := range []string{
 		"Prerequisites", "git", "authenticated GitHub CLI", "selected provider CLI",
 		"Defaults", "--profile core", "--visibility private", "--control-repo agent-control", "--contracts-repo agent-contracts",
-		"Order", "agx apply", "agx init (plan)", "Collision policy", "never adopts or overwrites",
+		"Order", "agx apply", "agx init --guided", "explicit init plan", "Collision policy", "never adopts or overwrites",
 	} {
 		if !strings.Contains(stderr.String(), text) {
 			t.Fatalf("Run(init) usage stderr does not contain %q: %q", text, stderr.String())

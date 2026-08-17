@@ -32,7 +32,25 @@ var lifecycleCommands = []command{
 	{name: "uninstall", description: "Remove AGX-owned Installation resources"},
 }
 
+type runtimeDependencies struct {
+	stdin            io.Reader
+	providerRunner   provider.Runner
+	repositoryRunner repository.Runner
+	initPlan         func(context.Context, activation.Options) (activation.InitializationPlan, error)
+	goos             string
+}
+
 func Run(args []string, version string, stdout, stderr io.Writer) int {
+	return runWithDependencies(args, version, stdout, stderr, runtimeDependencies{stdin: os.Stdin, goos: runtime.GOOS})
+}
+
+func runWithDependencies(args []string, version string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
+	if dependencies.stdin == nil {
+		dependencies.stdin = os.Stdin
+	}
+	if dependencies.goos == "" {
+		dependencies.goos = runtime.GOOS
+	}
 	if len(args) == 0 || isHelp(args[0]) {
 		if len(args) > 1 {
 			return showCommandHelp(args[1], stdout, stderr)
@@ -58,7 +76,7 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	case "apply":
 		return runApply(args[1:], stdout, stderr)
 	case "init":
-		return runInit(args[1:], stdout, stderr)
+		return runInit(args[1:], stdout, stderr, dependencies)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
 	case "uninstall":
@@ -80,12 +98,15 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	return exitcode.Software
 }
 
-func runInit(args []string, stdout, stderr io.Writer) int {
+func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
 	values, err := parseNamedOptions(args, map[string]bool{
 		"--root": true, "--github-owner": true, "--provider": true, "--profile": true,
 		"--visibility": true, "--control-repo": true, "--contracts-repo": true,
-		"--output": true, "--apply": false,
+		"--output": true, "--apply": false, "--guided": false,
 	})
+	if containsOption(args, "--guided") {
+		return runGuidedInit(args, values, stdout, stderr, dependencies)
+	}
 	if err != nil || values["--root"] == "" || values["--github-owner"] == "" || values["--provider"] == "" ||
 		(values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
 		printInitUsage(stderr)
@@ -122,10 +143,20 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		Profile:             profile,
 		Providers:           providers,
 	}
+	if dependencies.providerRunner != nil {
+		options.Runner = dependencies.providerRunner
+	}
+	if dependencies.repositoryRunner != nil {
+		options.RepositoryRunner = dependencies.repositoryRunner
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if values["--apply"] == "" {
-		plan, err := activation.Plan(ctx, options)
+		planFunc := dependencies.initPlan
+		if planFunc == nil {
+			planFunc = activation.Plan
+		}
+		plan, err := planFunc(ctx, options)
 		if err != nil {
 			printInitError(stderr, err, values["--output"])
 			return exitcode.Software
@@ -179,6 +210,15 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	return exitcode.Success
 }
 
+func containsOption(args []string, option string) bool {
+	for _, arg := range args {
+		if arg == option {
+			return true
+		}
+	}
+	return false
+}
+
 type initPlanResult struct {
 	Mode              string                        `json:"mode"`
 	MutationPerformed bool                          `json:"mutation_performed"`
@@ -190,10 +230,10 @@ func newInitPlanResult(plan activation.InitializationPlan) initPlanResult {
 }
 
 func printInitUsage(output io.Writer) {
-	fmt.Fprintln(output, "AGX-USAGE-INIT: --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
+	fmt.Fprintln(output, "AGX-USAGE-INIT: --guided --root <directory> OR --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
 	fmt.Fprintln(output, "Prerequisites: git, an authenticated GitHub CLI (gh), and every selected provider CLI must be on PATH.")
-	fmt.Fprintln(output, "Defaults: --profile core, --visibility private, --control-repo agent-control, --contracts-repo agent-contracts.")
-	fmt.Fprintln(output, "Order: agx apply, agx init (plan), then the same agx init command with --apply appended.")
+	fmt.Fprintln(output, "Defaults: explicit init uses --profile core; guided init suggests profile github. Both default to --visibility private, --control-repo agent-control, --contracts-repo agent-contracts.")
+	fmt.Fprintln(output, "Order: agx apply, agx init --guided (or explicit init plan), then the same agx init command with --apply appended.")
 	fmt.Fprintln(output, "Collision policy: AGX stops on same-name repositories; it never adopts or overwrites them.")
 }
 
@@ -310,6 +350,8 @@ func printInitError(output io.Writer, err error, outputMode string) {
 		fmt.Fprintln(output, "Next: install git and GitHub CLI (gh), ensure both are on PATH, authenticate gh, then rerun the same init command.")
 	case strings.Contains(message, "AGX-INIT-PROVIDER-CLI-MISSING"):
 		fmt.Fprintln(output, "Next: install every selected provider CLI (codex and/or claude), ensure it is on PATH, then rerun the same init command.")
+	case strings.Contains(message, "AGX-GUIDED-PROVIDER"):
+		fmt.Fprintln(output, "Next: install or repair at least one provider CLI (codex or claude), resolve any Marketplace source conflicts, then rerun agx init --guided --root <directory>.")
 	}
 }
 
@@ -461,10 +503,9 @@ func printApplyNextStep(stdout io.Writer, root ...string) {
 	if len(root) > 0 && strings.TrimSpace(root[0]) != "" {
 		rootValue = quoteCommandArg(root[0])
 	}
-	fmt.Fprintf(stdout, "Next: preview initialization with this %s command. Replace <owner> and ensure git, authenticated gh, and both selected provider CLIs are on PATH:\n", commandShellLabel())
-	fmt.Fprintf(stdout, "  agx init --root %s --github-owner %s --provider both --profile core\n", rootValue, quoteCommandArg("<owner>"))
-	fmt.Fprintln(stdout, "The preview names the two deployment repositories, provider changes, template digests, and collision behavior.")
-	fmt.Fprintln(stdout, "Review the plan, then append --apply with all other arguments unchanged to create agent-control and agent-contracts and activate providers.")
+	fmt.Fprintf(stdout, "Next: run the guided initialization preview with this %s command. It discovers gh identity, usable provider CLIs, source conflicts, repositories, and prints an exact apply command:\n", commandShellLabel())
+	fmt.Fprintf(stdout, "  agx init --guided --root %s\n", rootValue)
+	fmt.Fprintln(stdout, "Automation can keep using explicit agx init --root ... --github-owner ... --provider ... followed by the same command with --apply.")
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 }
 
@@ -540,8 +581,8 @@ func printStatusNext(output io.Writer, root, installationPhase string, missing, 
 		return
 	}
 	if installationPhase == "configured" && initialization.Status == activation.StatusAbsent {
-		fmt.Fprintf(output, "Next: preview initialization with this %s command (no changes are made). Replace <owner> before running it:\n", commandShellLabel())
-		fmt.Fprintf(output, "  agx init --root %s --github-owner %s --provider both --profile core\n", quoteCommandArg(root), quoteCommandArg("<owner>"))
+		fmt.Fprintf(output, "Next: preview initialization with this %s guided command (no changes are made):\n", commandShellLabel())
+		fmt.Fprintf(output, "  agx init --guided --root %s\n", quoteCommandArg(root))
 		return
 	}
 	if initialization.Status == activation.PhaseNeedsResume || initialization.Status == activation.PhaseProvisioning {
@@ -617,12 +658,14 @@ func runUninstall(args []string, stdout, stderr io.Writer) int {
 
 func parseNamedOptions(args []string, allowed map[string]bool) (map[string]string, error) {
 	values := map[string]string{}
+	seen := map[string]bool{}
 	for index := 0; index < len(args); index++ {
 		name := args[index]
 		requiresValue, known := allowed[name]
-		if !known || values[name] != "" {
+		if !known || seen[name] {
 			return nil, fmt.Errorf("invalid option %q", name)
 		}
+		seen[name] = true
 		if !requiresValue {
 			values[name] = "true"
 			continue
@@ -760,9 +803,10 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Download, verify, and atomically install the built-in production Bundle. Use --bundle only to explicitly override it with a local Bundle file.")
 		return exitcode.Success
 	case "init":
-		fmt.Fprintln(stdout, "Usage: agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
+		fmt.Fprintln(stdout, "Usage: agx init --guided --root <directory>")
+		fmt.Fprintln(stdout, "   or: agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Preview a side-effect-free initialization plan. Add --apply to create deployment repositories and activate the pinned agent-plugins component.")
+		fmt.Fprintln(stdout, "Preview a side-effect-free initialization plan. Use --guided for first run discovery and confirmation; add --apply only to an explicit init command to create deployment repositories and activate the pinned agent-plugins component.")
 		fmt.Fprintln(stdout, "Ownership is recorded for safe uninstall; remote repositories are always retained.")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Prerequisites:")
@@ -770,7 +814,8 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "  - Every selected provider CLI (codex and/or claude) is on PATH.")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Defaults:")
-		fmt.Fprintln(stdout, "  - profile: core")
+		fmt.Fprintln(stdout, "  - explicit init profile: core")
+		fmt.Fprintln(stdout, "  - guided init suggested profile: github")
 		fmt.Fprintln(stdout, "  - visibility: private")
 		fmt.Fprintln(stdout, "  - repositories: agent-control and agent-contracts")
 		fmt.Fprintln(stdout, "")
@@ -782,8 +827,8 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "First deployment order:")
 		fmt.Fprintln(stdout, "  agx apply --root '<new-install-dir>'")
-		fmt.Fprintln(stdout, "  agx init --root '<new-install-dir>' --github-owner '<owner>' --provider both")
-		fmt.Fprintln(stdout, "  agx init --root '<new-install-dir>' --github-owner '<owner>' --provider both --apply")
+		fmt.Fprintln(stdout, "  agx init --guided --root '<new-install-dir>'")
+		fmt.Fprintln(stdout, "  agx init --root '<new-install-dir>' --github-owner '<owner>' --provider '<recommended>' --profile github --apply")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "A same-name repository is a collision: AGX stops before writes and never adopts or overwrites it.")
 		return exitcode.Success

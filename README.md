@@ -14,11 +14,12 @@ AGXCLI (`agx`) 是小型部署 CLI：它安装固定版本的 `agent-plugins`，
 
 ```text
 agx apply --root D:\agx\installations\default
+agx init --guided --root D:\agx\installations\default
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --apply
 ```
 
-第一条 `init` 只执行 GitHub、模板、安装和 provider 的只读 preflight，并打印将要创建的仓库与激活对象；只有带 `--apply` 才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control` 和 `octo-lab/agent-contracts`，每创建一个仓库就持久化一次恢复回执，然后从已安装的 `agent-plugins` 激活选定能力并结构化回读。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
+`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、profile、visibility 与两个部署仓名。确认后它只打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control` 和 `octo-lab/agent-contracts`，每创建一个仓库就持久化一次恢复回执，然后从已安装的 `agent-plugins` 激活选定能力并结构化回读。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
 ## 四仓部署速查
 
@@ -35,11 +36,11 @@ AGX 交付时用户会看到四类仓库，但它们不是同一层东西：
 
 ```powershell
 agx apply --root D:\agx\installations\default
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile github
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile github --apply
+agx init --guided --root D:\agx\installations\default
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider <guided-recommendation> --profile github --apply
 ```
 
-第二条命令必须先看计划：它会列出目标 owner、两个仓库名、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名仓库冲突行为。第三条命令才创建远端仓库并激活 Codex/Claude。初始化后开启新的 Codex 或 Claude 会话，再使用输出中的 first-use prompt，例如 Codex 的 `$grilling:grilling ...` 或 `$github-collaboration:issue-workflow ...`，Claude 对应 `/grilling:grilling ...` 或 `/github-collaboration:issue-workflow ...`。
+第二条命令必须先看计划：它会列出目标 owner、两个仓库名、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名仓库冲突行为，并根据无冲突 provider 给出推荐。第三条命令才创建远端仓库并激活 Codex/Claude。初始化后开启新的 Codex 或 Claude 会话，再使用输出中的 first-use prompt，例如 Codex 的 `$grilling:grilling ...` 或 `$github-collaboration:issue-workflow ...`，Claude 对应 `/grilling:grilling ...` 或 `/github-collaboration:issue-workflow ...`。
 
 卸载边界也要直接理解：`agx uninstall` 只撤销回执证明由 AGX 新增的本地文件和 provider 激活；不会删除 `<owner>/agent-control` 或 `<owner>/agent-contracts`。远端仓库要由 operator 自己决定是否归档、迁移或删除。
 
@@ -78,6 +79,7 @@ go run ./cmd/agx init --help
 
 ```powershell
 go run ./cmd/agx apply --root D:\agx\installations\default
+go run ./cmd/agx init --guided --root D:\agx\installations\default
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --apply
 go run ./cmd/agx status --root D:\agx\installations\default
@@ -98,7 +100,13 @@ go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-202
 
 ## 初始化能力包
 
-`init` 必须显式指定 GitHub owner 和运行端，能力包默认是 `core`，仓库默认私有：
+首次运行优先使用 human-only 的 guided 入口；它不执行 mutation，也不输出 JSON：
+
+```powershell
+agx init --guided --root D:\agx\installations\default
+```
+
+自动化仍使用显式 `init` 参数。显式 `init` 必须指定 GitHub owner 和运行端；不传 `--profile` 时默认是 `core`，仓库默认私有。guided 入口为了首次部署可用性默认建议 `github` profile，并要求用户在输出 apply 命令前确认：
 
 首次初始化前先确认本机入口，不需要把任何凭据交给 AGX：
 

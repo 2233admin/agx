@@ -154,10 +154,9 @@ func TestApplyHelpAndNextStepRemainAvailable(t *testing.T) {
 
 	stdout.Reset()
 	printApplyNextStep(stdout, `D:\AGX installations\default`)
-	want := fmt.Sprintf("Next: preview initialization with this %s command. Replace <owner> and ensure git, authenticated gh, and both selected provider CLIs are on PATH:\n", commandShellLabel()) +
-		fmt.Sprintf("  agx init --root %s --github-owner %s --provider both --profile core\n", quoteCommandArg(`D:\AGX installations\default`), quoteCommandArg("<owner>")) +
-		"The preview names the two deployment repositories, provider changes, template digests, and collision behavior.\n" +
-		"Review the plan, then append --apply with all other arguments unchanged to create agent-control and agent-contracts and activate providers.\n" +
+	want := fmt.Sprintf("Next: run the guided initialization preview with this %s command. It discovers gh identity, usable provider CLIs, source conflicts, repositories, and prints an exact apply command:\n", commandShellLabel()) +
+		fmt.Sprintf("  agx init --guided --root %s\n", quoteCommandArg(`D:\AGX installations\default`)) +
+		"Automation can keep using explicit agx init --root ... --github-owner ... --provider ... followed by the same command with --apply.\n" +
 		"Installation phase is configured; initialization does not claim verified.\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("printApplyNextStep() = %q, want %q", got, want)
@@ -186,6 +185,12 @@ func TestParseNamedOptionsSupportsBooleanFlags(t *testing.T) {
 	}
 	if _, err := parseNamedOptions([]string{"--apply", "--apply"}, map[string]bool{"--apply": false}); err == nil {
 		t.Fatal("parseNamedOptions() accepted a duplicate flag")
+	}
+	if _, err := parseNamedOptions([]string{"--root", "", "--root", "somewhere"}, map[string]bool{"--root": true}); err == nil {
+		t.Fatal("parseNamedOptions() accepted a duplicate flag after an empty value")
+	}
+	if values, err := parseNamedOptions([]string{"--output", ""}, map[string]bool{"--output": true}); err != nil || values["--output"] != "" {
+		t.Fatalf("parseNamedOptions(empty value) = %#v, %v", values, err)
 	}
 }
 
@@ -303,7 +308,7 @@ func TestPrintStatusNextGuidesInitializationAndRecoveryWithoutGuessing(t *testin
 		{
 			name: "configured installation needs preview", installPhase: "configured",
 			initialization: activation.State{Status: activation.StatusAbsent},
-			want:           []string{"preview initialization", "agx init --root " + quoteCommandArg(`D:\AGX installations\default`), "--github-owner " + quoteCommandArg("<owner>"), "--provider both"},
+			want:           []string{"preview initialization", "agx init --guided --root " + quoteCommandArg(`D:\AGX installations\default`)},
 		},
 		{
 			name: "needs resume uses original apply", installPhase: "configured",
