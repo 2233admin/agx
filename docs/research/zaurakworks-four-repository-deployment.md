@@ -1,100 +1,214 @@
 # Zaurakworks Four-Repository Deployment Notes
 
-Observed on 2026-08-17 from GitHub primary sources and the current AGX
-repository. The public `zaurakworks` organization currently exposes three AGX
-related repositories: `agent-plugins`, `agent-control`, and `agent-contracts`.
-The fourth repository in the deployment UX is the AGX CLI repository,
-`2233admin/agx`, which installs and initializes the other pieces for a user
-deployment.
+Observed on 2026-08-17 against current AGX head
+`f78e59b05f0d16b17eb3877aa47130490e8d7df0` and primary sources only.
+This note answers: how should the AGX four-repository model be used and
+deployed, and what initialization UX gaps remain?
 
-## Repository Roles
+## Scope and Evidence Classes
 
-| Repository | Current role | Source evidence |
-| --- | --- | --- |
-| `2233admin/agx` | Installer and lifecycle CLI. It owns `apply`, `init`, `status`, `uninstall`, receipts, and the clean bootstrap templates. | Local [README.md](../../README.md), local [docs/decisions/repository-provenance.md](../decisions/repository-provenance.md). |
-| `zaurakworks/agent-plugins` | Long-term installable Plugin source. AGX should install only this source through a pinned release artifact; Codex and Claude each have their own marketplace manifest. | Repository page: <https://github.com/zaurakworks/agent-plugins>. Pinned README: <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/README.md>. Codex manifest: <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.agents/plugins/marketplace.json>. Claude manifest: <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.claude-plugin/marketplace.json>. |
-| `zaurakworks/agent-control` | Reference source for the deployment control-state template. It is not installed as a runtime component and must not be copied with live history or current work state. | Repository page: <https://github.com/zaurakworks/agent-control>. Pinned README: <https://github.com/zaurakworks/agent-control/blob/b0e6e0e8244ef518f671e2326745cd67c6d2307a/README.md>. AGX rendered template README: [internal/bootstrap/templates/agent-control/v1/README.md](../../internal/bootstrap/templates/agent-control/v1/README.md). |
-| `zaurakworks/agent-contracts` | Reference source for the deployment contract repository template. It provides Issue-driven contract forms, schema, examples, and validation tools. | Repository page: <https://github.com/zaurakworks/agent-contracts>. Pinned README: <https://github.com/zaurakworks/agent-contracts/blob/5bb8ea0b54f063b0758c294b73ea270ba69322d2/README.md>. AGX rendered template README: [internal/bootstrap/templates/agent-contracts/v1/README.md](../../internal/bootstrap/templates/agent-contracts/v1/README.md). |
+- **Fact** means the statement is directly supported by linked source,
+  repository content, or official CLI documentation.
+- **Inference** means the statement follows from AGX source plus upstream
+  repository content, but was not itself observed in a live deployment.
+- **Unverified boundary** means AGX has tests or dry-run evidence, but this
+  review did not perform the external mutation.
+
+Primary AGX source for this review:
+
+- Current AGX README at head `f78e59b`:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/README.md>
+- Current AGX CLI implementation:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>
+- Embedded production Bundle:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production.go>
+  and
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>
+- Apply/install implementation:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/install/install.go>
+- Initialization lifecycle:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/activation/activation.go>
+- Repository provisioning implementation:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/repository/repository.go>
+- Provider wrapper implementation:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/provider/provider.go>
+- Bundle v2 contract:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/docs/contracts/agx-bundle-v2.md>
+
+Official GitHub CLI sources used for precondition claims:
+
+- `gh` manual and authentication entry point:
+  <https://cli.github.com/manual/> and <https://cli.github.com/manual/gh_auth_login>
+- `gh auth status` manual:
+  <https://cli.github.com/manual/gh_auth_status>
+- `gh repo create` manual:
+  <https://cli.github.com/manual/gh_repo_create>
+
+## Confirmed Repository Model
+
+| Repository | Classification | How AGX uses it | Source |
+| --- | --- | --- | --- |
+| `2233admin/agx` | **Fact:** installer/lifecycle CLI repository. | Builds the `agx` binary, owns `apply`, `init`, `status`, `uninstall`, receipts, embedded production Bundle, and clean templates. | AGX README and CLI source at `f78e59b`: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/README.md>, <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>. |
+| `zaurakworks/agent-plugins` | **Fact:** installable Plugin source. | AGX installs this single source through a pinned production artifact; provider activation points Codex/Claude Marketplace at the installed copy. AGX does not create a deployment-owned `agent-plugins` repository. | Upstream README and manifests: <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/README.md>, <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.agents/plugins/marketplace.json>, <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.claude-plugin/marketplace.json>. AGX Bundle source: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
+| `<owner>/agent-control` | **Fact:** deployment-generated repository, not an installed component. | `agx init --apply` creates this user-owned control-state repository from AGX's `agent-control/v1` clean template. It holds deployment control state and work entry rules. | Upstream reference README: <https://github.com/zaurakworks/agent-control/blob/b0e6e0e8244ef518f671e2326745cd67c6d2307a/README.md>. AGX template README: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bootstrap/templates/agent-control/v1/README.md>. |
+| `<owner>/agent-contracts` | **Fact:** deployment-generated repository, not an installed component. | `agx init --apply` creates this user-owned contract repository from AGX's `agent-contracts/v1` clean template. It holds Issue contract forms, schema, examples, and validation tools. | Upstream reference README: <https://github.com/zaurakworks/agent-contracts/blob/5bb8ea0b54f063b0758c294b73ea270ba69322d2/README.md>. AGX template README: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bootstrap/templates/agent-contracts/v1/README.md>. |
+
+**Fact:** the public `zaurakworks` repository listing available to this review
+also includes `zaurakworks/ticket-decision-core`. It is not referenced by AGX
+head `f78e59b` in Bundle, template, provider, or repository initialization
+sources, so it is outside the current AGX four-repository initialization model.
+Primary listing: <https://github.com/zaurakworks?tab=repositories>. Current AGX
+references: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>
+and <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/docs/contracts/agx-bundle-v2.md>.
 
 ## Pinned Inputs Used by AGX
 
-AGX currently pins the template/reference inputs in
-[docs/contracts/agx-bundle-v2.md](../contracts/agx-bundle-v2.md):
+**Fact:** AGX pins the plugin source and template references in its Bundle v2
+contract and embedded production manifest.
 
-| Input | Commit |
-| --- | --- |
-| `zaurakworks/agent-plugins` | `ad07742ade0f0039ed1df1a9262e8f087117fca0` |
-| `zaurakworks/agent-control` | `b0e6e0e8244ef518f671e2326745cd67c6d2307a` |
-| `zaurakworks/agent-contracts` | `5bb8ea0b54f063b0758c294b73ea270ba69322d2` |
+| Input | Commit | Source |
+| --- | --- | --- |
+| `zaurakworks/agent-plugins` | `ad07742ade0f0039ed1df1a9262e8f087117fca0` | Commit permalink: <https://github.com/zaurakworks/agent-plugins/commit/ad07742ade0f0039ed1df1a9262e8f087117fca0>. AGX manifest: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
+| `zaurakworks/agent-control` | `b0e6e0e8244ef518f671e2326745cd67c6d2307a` | Commit permalink: <https://github.com/zaurakworks/agent-control/commit/b0e6e0e8244ef518f671e2326745cd67c6d2307a>. AGX manifest: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
+| `zaurakworks/agent-contracts` | `5bb8ea0b54f063b0758c294b73ea270ba69322d2` | Commit permalink: <https://github.com/zaurakworks/agent-contracts/commit/5bb8ea0b54f063b0758c294b73ea270ba69322d2>. AGX manifest: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
 
-GitHub commit permalinks:
+**Fact:** the embedded production manifest points to the production
+`agent-plugins` release asset and pins both compressed asset SHA-256 and
+gzip-uncompressed tar-stream SHA-256. Source:
+<https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>.
+The install implementation accepts exactly one Bundle source, either
+`BundleData` or `BundlePath`, decodes the Bundle, downloads the asset, and
+performs digest checks. Source:
+<https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/install/install.go>.
 
-- <https://github.com/zaurakworks/agent-plugins/commit/ad07742ade0f0039ed1df1a9262e8f087117fca0>
-- <https://github.com/zaurakworks/agent-control/commit/b0e6e0e8244ef518f671e2326745cd67c6d2307a>
-- <https://github.com/zaurakworks/agent-contracts/commit/5bb8ea0b54f063b0758c294b73ea270ba69322d2>
+## From a New Machine to First Usable Session
 
-## Deployment Sequence
+1. **Install prerequisites.** **Fact:** AGX help requires `git`, authenticated
+   GitHub CLI `gh`, and every selected provider CLI (`codex` and/or `claude`) on
+   `PATH`. Source:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>.
+   GitHub CLI official docs say `gh auth login` authenticates and
+   `gh auth status` displays the active account/authentication state. Sources:
+   <https://cli.github.com/manual/gh_auth_login> and
+   <https://cli.github.com/manual/gh_auth_status>.
+2. **Install AGX's pinned plugin source.** **Fact:** run
+   `agx apply --root <new-install-dir>`. At head `f78e59b`, omitting
+   `--bundle` uses `bundle.Production()` and the embedded production manifest;
+   `--bundle <bundle.json>` is an explicit local override. Sources:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>,
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production.go>,
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>.
+3. **Preview initialization.** **Fact:** run
+   `agx init --root <install-dir> --github-owner <owner> --provider ...`.
+   Without `--apply`, AGX calls the plan path and prints a no-mutation
+   initialization plan. Source:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>.
+4. **Review defaults and collisions.** **Fact:** defaults are profile `core`,
+   visibility `private`, repositories `agent-control` and `agent-contracts`;
+   same-name repositories are collisions and are not adopted or overwritten.
+   Sources: AGX help/README and repository preflight implementation:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/README.md>,
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/repository/repository.go>.
+5. **Apply initialization.** **Fact:** rerun the same init arguments with
+   `--apply`. AGX creates `<owner>/agent-control` and
+   `<owner>/agent-contracts`, persists recovery state during provisioning, then
+   activates selected provider plugins from the installed `agent-plugins`
+   source. Sources:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/activation/activation.go>,
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/repository/repository.go>,
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/provider/provider.go>.
+   GitHub CLI's official `gh repo create` manual confirms the CLI supports
+   non-interactive repository creation with `--public`, `--private`, or
+   `--internal`. Source: <https://cli.github.com/manual/gh_repo_create>.
+6. **Start a new provider session and use the printed first-use prompt.**
+   **Fact:** AGX output includes provider-qualified prompts such as Codex
+   `$grilling:grilling ...` and GitHub profile prompts for
+   `$github-collaboration:issue-workflow ...`; Claude uses
+   `/grilling:grilling ...` and
+   `/github-collaboration:issue-workflow ...`. Source:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>.
+   Upstream `agent-plugins` documents native provider entry points and
+   Marketplace manifests. Sources:
+   <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/README.md>,
+   <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.agents/plugins/marketplace.json>,
+   <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.claude-plugin/marketplace.json>.
 
-1. User downloads or builds `agx` from `2233admin/agx`.
-2. `agx apply --root <new-install-dir>` uses the production Bundle manifest
-   embedded in the AGX binary, downloads the pinned `agent-plugins` artifact
-   into the local installation root, and writes an AGX receipt. `--bundle
-   <bundle.json>` is an explicit override for development, audit, or controlled
-   regression use.
-3. `agx init --root <install-dir> --github-owner <owner> --provider ...`
-   performs a read-only preflight and prints the exact repositories, template
-   digests, provider changes, and collision behavior.
-4. `agx init ... --apply` creates `<owner>/agent-control` and
-   `<owner>/agent-contracts` from AGX's clean templates, persisting a recovery
-   receipt after each repository.
-5. The same `--apply` run activates the selected profile for Codex and/or
-   Claude from the installed `agent-plugins` source, then prints provider
-   qualified first-use prompts.
+## Dry-Run, Apply, Recovery, Status, and Uninstall
 
-AGX does not create a deployment-owned `agent-plugins` repository. It also does
-not copy upstream repository history, live Issues, comments, user paths,
-credentials, run packages, or current work state into the two deployment
-repositories. Those exclusions are stated in the local template READMEs linked
-above and in [docs/decisions/repository-provenance.md](../decisions/repository-provenance.md).
+- **Dry-run fact:** `agx init` without `--apply` is the intended no-mutation
+  preview path; the CLI formats the exact copyable follow-up command with
+  `--apply` appended. Source:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>.
+- **Apply fact:** `agx init ... --apply` is the mutation boundary for remote
+  repository creation and provider activation. Sources:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>
+  and <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/activation/activation.go>.
+- **Recovery fact:** AGX does not expose a separate `agx resume` command in
+  the current CLI help. Human output tells the operator to fix the reported
+  problem and rerun the original `agx init ... --apply` unchanged; the
+  activation implementation validates existing receipts and continues based on
+  recorded objects. Sources:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>
+  and <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/activation/activation.go>.
+- **Status fact:** `agx status` reads receipts, reports configured/drifted
+  initialization state, and prints next actions for absent initialization,
+  drift, and needs-resume/provisioning. Source:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>.
+- **Uninstall fact:** `agx uninstall` reverses AGX-owned provider activation
+  and removes AGX-owned local files while retaining remote deployment
+  repositories and unknown files. Sources:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>
+  and <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/activation/activation.go>.
 
-## Provider Entry Points
+## Upgrade and Migration Boundaries
 
-`zaurakworks/agent-plugins` documents the native marketplace installation
-commands in its pinned README:
+- **Fact:** `agent-plugins` upgrades are Bundle upgrades: a future production
+  Bundle must point to a new immutable artifact and new digest values. Source:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/docs/contracts/agx-bundle-v2.md>.
+- **Inference:** `agent-control` and `agent-contracts` are user-owned state
+  repositories after creation. AGX can create them from templates, but future
+  template migrations are not equivalent to reinstalling `agent-plugins`;
+  migration policy needs a separate issue contract before AGX mutates existing
+  deployment state. Source for current create-only model:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/activation/activation.go>.
+- **Fact:** uninstall deliberately does not delete remote repositories. Any
+  remote deletion, archival, rename, migration, or adoption is an operator
+  decision outside the current uninstall behavior. Sources:
+  <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/README.md>
+  and <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>.
 
-- Codex adds the repository root as a marketplace and installs plugins such as
-  `grilling@agent-plugins`; explicit entry examples include `$grilling` and
-  `$github-collaboration:issue-workflow`.
-- Claude adds the same repository root as a marketplace and installs plugins
-  with user scope; explicit entry examples include `/grilling:grilling` and
-  `/github-collaboration:issue-workflow`.
+## Initialization UX Gaps and Remaining Risk
 
-AGX wraps those native provider operations with receipts, idempotence, preflight
-checks, and safe uninstall behavior. The provider command shapes are documented
-by the upstream README, while the AGX wrapper behavior is implemented and tested
-in `internal/provider`, `internal/activation`, and `internal/cli`.
-
-## Upgrade and Uninstall Boundaries
-
-`agent-plugins` upgrades are AGX Bundle upgrades: a future Bundle must point to
-a new immutable artifact and digest. `agent-control` and `agent-contracts`
-deployment repositories are user-owned state repositories; AGX initialization
-creates them, but `agx uninstall` deliberately does not delete them.
-
-Uninstall only reverses receipt-proven local/provider additions and removes
-AGX-owned files. Remote repository deletion, archival, migration, or adoption
-requires a separate operator decision because those repositories can contain
-deployment state after first use.
-
-## Open Questions
-
-- There is no fourth public `zaurakworks` repository in the current GitHub
-  organization listing available to this environment. If a private or newly
-  transferred repository exists, AGX docs should name it only after primary
-  source confirmation.
-- The current PR intentionally has not run live `init --apply` against a real
-  GitHub owner, so repository creation and provider activation remain simulated
-  or read-only validated in AGX tests and CI.
-- AGX currently documents and implements the bootstrap path; future upgrade or
-  template migration UX still needs a separate issue contract before changing
-  deployment state.
+1. **Subsequent live evidence:** after this source review, Issue
+   [#39](https://github.com/2233admin/agx/issues/39) completed an approved
+   Claude-only live acceptance run. It created two private deployment
+   repositories, verified their default branches and initial commits, activated
+   the `github` profile, invoked the printed `/grilling:grilling` first-use
+   prompt in a new session, proved repeat initialization was a no-op, and then
+   proved uninstall removed only AGX-owned local/provider state while retaining
+   both remote repositories. This closes the earlier live-mutation evidence gap
+   for that provider path; it does not create a general `verified` claim.
+2. **UX follow-up:** the same live run found that recommending `both` blindly
+   is poor first-run UX when one provider already has an `agent-plugins`
+   Marketplace bound to another source. Issue
+   [#40](https://github.com/2233admin/agx/issues/40) therefore adds a human-only,
+   side-effect-free guided path that discovers the authenticated GitHub identity
+   and provider inventories before recommending an available provider. Explicit
+   non-interactive flags and JSON output remain the automation path.
+3. **UX gap:** collision recovery is safe but manual: same-name repositories
+   stop before writes, and the user must choose different names with
+   `--control-repo` and/or `--contracts-repo` or perform a separate audited
+   ownership/adoption flow that does not exist yet. Sources:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/README.md>
+   and <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/repository/repository.go>.
+4. **Remaining boundary:** provider Marketplace conflicts remain fail-closed:
+   AGX will not rebind an existing `agent-plugins` Marketplace that points
+   elsewhere. Guided initialization can recommend an unaffected provider, but
+   resolving or replacing the conflicting source remains an explicit operator
+   action. Source:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/provider/provider.go>.
+5. **Unverified boundary:** no local step should claim `verified`. Current docs
+   and CLI frame install/initialization as `configured` or initialized, while
+   external validation remains separate. Sources:
+   <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/README.md>
+   and <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>.
