@@ -11,94 +11,28 @@ import (
 
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/exitcode"
+	"github.com/2233admin/agx/internal/project"
 	"github.com/2233admin/agx/internal/provider"
 	"github.com/2233admin/agx/internal/repository"
+	"github.com/2233admin/agx/internal/smoke"
 )
 
 func TestFirstUsePrompts(t *testing.T) {
-	tests := []struct {
-		name      string
-		profile   activation.Profile
-		providers []provider.Name
-		want      []firstUsePrompt
-	}{
-		{
-			name:      "core codex",
-			profile:   activation.ProfileCore,
-			providers: []provider.Name{provider.Codex},
-			want: []firstUsePrompt{
-				{Provider: provider.Codex, Prompt: "$grilling:grilling 帮我压力测试这个方案"},
-			},
-		},
-		{
-			name:      "core claude",
-			profile:   activation.ProfileCore,
-			providers: []provider.Name{provider.Claude},
-			want: []firstUsePrompt{
-				{Provider: provider.Claude, Prompt: "/grilling:grilling 帮我压力测试这个方案"},
-			},
-		},
-		{
-			name:      "core both",
-			profile:   activation.ProfileCore,
-			providers: []provider.Name{provider.Codex, provider.Claude},
-			want: []firstUsePrompt{
-				{Provider: provider.Codex, Prompt: "$grilling:grilling 帮我压力测试这个方案"},
-				{Provider: provider.Claude, Prompt: "/grilling:grilling 帮我压力测试这个方案"},
-			},
-		},
-		{
-			name:      "full codex",
-			profile:   activation.ProfileFull,
-			providers: []provider.Name{provider.Codex},
-			want: []firstUsePrompt{
-				{Provider: provider.Codex, Prompt: "$grilling:grilling 帮我压力测试这个方案"},
-				{Provider: provider.Codex, Prompt: "$github-collaboration:issue-workflow 处理 GitHub Issue #123"},
-				{Provider: provider.Codex, Prompt: "$resource-observability:resource-observability 查看当前账户额度"},
-			},
-		},
-		{
-			name:      "full claude",
-			profile:   activation.ProfileFull,
-			providers: []provider.Name{provider.Claude},
-			want: []firstUsePrompt{
-				{Provider: provider.Claude, Prompt: "/grilling:grilling 帮我压力测试这个方案"},
-				{Provider: provider.Claude, Prompt: "/github-collaboration:issue-workflow 处理 GitHub Issue #123"},
-				{Provider: provider.Claude, Prompt: "/resource-observability:resource-observability 查看当前账户额度"},
-			},
-		},
-		{
-			name:      "full both",
-			profile:   activation.ProfileFull,
-			providers: []provider.Name{provider.Codex, provider.Claude},
-			want: []firstUsePrompt{
-				{Provider: provider.Codex, Prompt: "$grilling:grilling 帮我压力测试这个方案"},
-				{Provider: provider.Claude, Prompt: "/grilling:grilling 帮我压力测试这个方案"},
-				{Provider: provider.Codex, Prompt: "$github-collaboration:issue-workflow 处理 GitHub Issue #123"},
-				{Provider: provider.Claude, Prompt: "/github-collaboration:issue-workflow 处理 GitHub Issue #123"},
-				{Provider: provider.Codex, Prompt: "$resource-observability:resource-observability 查看当前账户额度"},
-				{Provider: provider.Claude, Prompt: "/resource-observability:resource-observability 查看当前账户额度"},
-			},
-		},
+	receipt := firstUseReceipt([]provider.Name{provider.Codex, provider.Claude}, activation.ProfileFull)
+	got := firstUsePrompts(receipt)
+	if len(got) != 2 || got[0].Provider != provider.Codex || got[1].Provider != provider.Claude {
+		t.Fatalf("firstUsePrompts() = %#v, want one prompt per selected Agent", got)
 	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			receipt := activation.Receipt{Profile: test.profile, Providers: providerReceipts(test.providers)}
-			if got := firstUsePrompts(receipt); !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("firstUsePrompts() = %#v, want %#v", got, test.want)
-			}
-		})
+	for _, item := range got {
+		if !strings.Contains(item.Prompt, "grilling") || !strings.Contains(item.Prompt, smoke.ContractVersionV1) ||
+			!strings.Contains(item.Prompt, receipt.Project.URL) || strings.Contains(item.Prompt, "帮我创建一个 Project") {
+			t.Fatalf("prompt = %q, want self-contained bootstrap verification contract", item.Prompt)
+		}
 	}
 }
 
 func TestInitResultSerializesStructuredFirstUse(t *testing.T) {
-	receipt := activation.Receipt{
-		InstallationID: "installation-test",
-		Phase:          activation.PhaseInitialized,
-		Profile:        activation.ProfileFull,
-		Providers:      providerReceipts([]provider.Name{provider.Codex, provider.Claude}),
-	}
+	receipt := firstUseReceipt([]provider.Name{provider.Codex, provider.Claude}, activation.ProfileFull)
 	result := newInitResult(receipt, true)
 
 	data, err := json.Marshal(result)
@@ -106,7 +40,8 @@ func TestInitResultSerializesStructuredFirstUse(t *testing.T) {
 		t.Fatalf("json.Marshal(newInitResult()) error = %v", err)
 	}
 	var decoded struct {
-		FirstUse []firstUsePrompt `json:"first_use"`
+		FirstUseContract smoke.Contract   `json:"first_use_contract"`
+		FirstUse         []firstUsePrompt `json:"first_use"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(init result) error = %v", err)
@@ -114,29 +49,64 @@ func TestInitResultSerializesStructuredFirstUse(t *testing.T) {
 	if !reflect.DeepEqual(decoded.FirstUse, firstUsePrompts(receipt)) {
 		t.Fatalf("decoded first_use = %#v, want %#v", decoded.FirstUse, firstUsePrompts(receipt))
 	}
-	if !strings.Contains(string(data), `"first_use":[{"provider":"codex","prompt":"$grilling:grilling`) {
+	if decoded.FirstUseContract.SchemaVersion != smoke.ContractVersionV1 ||
+		decoded.FirstUseContract.ProjectURL != receipt.Project.URL || decoded.FirstUseContract.InstallationID != receipt.InstallationID {
+		t.Fatalf("decoded first_use_contract = %+v", decoded.FirstUseContract)
+	}
+	if !strings.Contains(string(data), `"first_use":[{"provider":"codex","prompt":"$grilling:grilling 请严格按以下 agx.first-use/v1`) {
 		t.Fatalf("init result JSON does not contain machine-readable first_use prompts: %s", data)
 	}
 }
 
 func TestHumanFirstUseUsesStructuredPrompts(t *testing.T) {
-	receipt := activation.Receipt{
-		Profile:   activation.ProfileFull,
-		Providers: providerReceipts([]provider.Name{provider.Codex, provider.Claude}),
-	}
+	receipt := firstUseReceipt([]provider.Name{provider.Codex, provider.Claude}, activation.ProfileFull)
 	stdout := new(bytes.Buffer)
 
 	printFirstUse(stdout, receipt)
 
-	want := "Start a new provider session, then try:\n" +
-		"  Codex:  $grilling:grilling 帮我压力测试这个方案\n" +
-		"  Claude: /grilling:grilling 帮我压力测试这个方案\n" +
-		"  Codex:  $github-collaboration:issue-workflow 处理 GitHub Issue #123\n" +
-		"  Claude: /github-collaboration:issue-workflow 处理 GitHub Issue #123\n" +
-		"  Codex:  $resource-observability:resource-observability 查看当前账户额度\n" +
-		"  Claude: /resource-observability:resource-observability 查看当前账户额度\n"
-	if got := stdout.String(); got != want {
-		t.Fatalf("printFirstUse() = %q, want %q", got, want)
+	for _, want := range []string{
+		"GitHub Project: " + receipt.Project.URL,
+		"First-use contract: " + smoke.ContractVersionV1,
+		`"required_outputs":["issue_url","project_item","pull_request_url","validation_result"]`,
+		"Codex:", "Claude:", "Bootstrap Verification", "agx status",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("printFirstUse() = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestDeploymentVisibilityPrintsURLsTemplateEvidenceAndEffectiveSmoke(t *testing.T) {
+	state := activation.State{
+		Status: activation.PhaseInitialized, Profile: activation.ProfileCore,
+		Project: &project.Receipt{
+			URL: "https://github.com/orgs/octo-lab/projects/7", Visibility: project.VisibilityPrivate,
+			LinkedRepository: "octo-lab/agent-control",
+		},
+		RepositoryDetails: []repository.Receipt{{
+			NameWithOwner: "octo-lab/agent-control", URL: "https://github.com/octo-lab/agent-control",
+			TemplateDigest: strings.Repeat("a", 64), Verification: repository.VerificationReadback,
+		}},
+		Smoke: smoke.Evidence{
+			Status: smoke.StatusEffective, IssueURL: "https://github.com/octo-lab/agent-control/issues/12",
+			ProjectItem: "PVTI_item", PullRequestURL: "https://github.com/octo-lab/agent-control/pull/13",
+			WorkPointer:      "work/current.md",
+			ValidationResult: "passed",
+		},
+	}
+	stdout := new(bytes.Buffer)
+	printDeploymentVisibility(stdout, state)
+	for _, want := range []string{
+		"https://github.com/orgs/octo-lab/projects/7", "octo-lab/agent-control", strings.Repeat("a", 64),
+		"https://github.com/octo-lab/agent-control/issues/12", "PVTI_item",
+		"https://github.com/octo-lab/agent-control/pull/13", "effective", "passed",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("visibility output = %q, want %q", stdout.String(), want)
+		}
+	}
+	if strings.Contains(stdout.String(), "verified") {
+		t.Fatalf("visibility output made a reserved verification claim: %q", stdout.String())
 	}
 }
 
@@ -201,6 +171,10 @@ func TestPrintInitializationPlanMakesDryRunAndApplyExplicit(t *testing.T) {
 			Kind: "agent-control", Owner: "octo-lab", Name: "agent-control", Visibility: repository.VisibilityPrivate,
 			Action: "create", TemplateVersion: "agent-control/v1", TemplateDigest: strings.Repeat("b", 64),
 		}},
+		Project: activation.ProjectPlan{
+			Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: project.VisibilityPrivate,
+			LinkedRepository: "octo-lab/agent-control", Action: "create", Retained: true,
+		},
 		Providers: []activation.ProviderPlan{{
 			Name: provider.Codex, MarketplaceAction: "add",
 			Plugins: []activation.PluginPlan{{Name: "grilling", Action: "install"}},
@@ -209,7 +183,8 @@ func TestPrintInitializationPlanMakesDryRunAndApplyExplicit(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	printInitializationPlan(stdout, plan, "agx init --root D:\\agx --github-owner octo-lab --provider codex --apply")
 	for _, wanted := range []string{
-		"no changes made", "create octo-lab/agent-control", "Marketplace add", "grilling install", "--apply",
+		"no changes made", "create octo-lab/agent-control", "Project create", "agent-control deployment (install-test)",
+		"link octo-lab/agent-control", "Marketplace add", "grilling install", "--apply",
 		"agent-plugins as the only installed source", "persist a recovery receipt", "retained on uninstall",
 		"never adopted or overwritten", "same arguments", "agx init --root D:\\agx --github-owner octo-lab --provider codex --apply",
 	} {
@@ -344,12 +319,16 @@ func TestInitPlanResultHasStableMachineReadableEnvelope(t *testing.T) {
 		InstallationID: "install-test", TemplateVersion: "bootstrap-test",
 		TemplateContentSHA256: strings.Repeat("a", 64), PluginSource: "zaurakworks/agent-plugins",
 		Profile: activation.ProfileCore, Providers: []activation.ProviderPlan{}, Repositories: []activation.RepositoryPlan{},
+		Project: activation.ProjectPlan{
+			Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: project.VisibilityPrivate,
+			LinkedRepository: "octo-lab/agent-control", Action: "create", Retained: true,
+		},
 	}
 	data, err := json.Marshal(newInitPlanResult(plan))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"mode":"plan","mutation_performed":false,"plan":{"installation_id":"install-test","template_version":"bootstrap-test","template_content_sha256":"` + strings.Repeat("a", 64) + `","plugin_source":"zaurakworks/agent-plugins","profile":"core","providers":[],"repositories":[]}}`
+	want := `{"mode":"plan","mutation_performed":false,"plan":{"installation_id":"install-test","template_version":"bootstrap-test","template_content_sha256":"` + strings.Repeat("a", 64) + `","plugin_source":"zaurakworks/agent-plugins","profile":"core","providers":[],"repositories":[],"project":{"owner":"octo-lab","title":"agent-control deployment (install-test)","visibility":"private","linked_repository":"octo-lab/agent-control","action":"create","retained_on_uninstall":true}}}`
 	if string(data) != want {
 		t.Fatalf("init plan JSON = %s, want %s", data, want)
 	}
@@ -359,6 +338,39 @@ func providerReceipts(names []provider.Name) []activation.ProviderReceipt {
 	receipts := make([]activation.ProviderReceipt, 0, len(names))
 	for _, name := range names {
 		receipts = append(receipts, activation.ProviderReceipt{Name: name})
+	}
+	return receipts
+}
+
+func firstUseReceipt(names []provider.Name, profile activation.Profile) activation.Receipt {
+	installationID := "installation-test"
+	return activation.Receipt{
+		InstallationID: installationID, Phase: activation.PhaseInitialized, Profile: profile,
+		GitHubOwner: "octo-lab", ControlRepository: "agent-control", ContractsRepository: "agent-contracts",
+		Repositories: []repository.Receipt{
+			{NameWithOwner: "octo-lab/agent-control", URL: "https://github.com/octo-lab/agent-control"},
+			{NameWithOwner: "octo-lab/agent-contracts", URL: "https://github.com/octo-lab/agent-contracts"},
+		},
+		Project: &project.Receipt{
+			Owner: "octo-lab", Number: 7, NodeID: "PVT_test", URL: "https://github.com/orgs/octo-lab/projects/7",
+			Title: "agent-control deployment (" + installationID + ")", Visibility: project.VisibilityPrivate,
+			LinkedRepository: "octo-lab/agent-control", InstallationID: installationID, Created: true, Linked: true,
+			Verification: project.VerificationReadback,
+		},
+		Providers: providerReceiptsForProfile(names, profile),
+	}
+}
+
+func providerReceiptsForProfile(names []provider.Name, profile activation.Profile) []activation.ProviderReceipt {
+	plugins := map[activation.Profile][]string{
+		activation.ProfileCore:   {"grilling", "self-improvement", "knowledge-maintenance", "adaptive-problem-solving"},
+		activation.ProfileGitHub: {"grilling", "self-improvement", "knowledge-maintenance", "adaptive-problem-solving", "github-collaboration"},
+		activation.ProfileTeam:   {"grilling", "self-improvement", "knowledge-maintenance", "adaptive-problem-solving", "github-collaboration", "orchestrated-collaboration"},
+		activation.ProfileFull:   {"grilling", "self-improvement", "knowledge-maintenance", "adaptive-problem-solving", "github-collaboration", "orchestrated-collaboration", "resource-observability"},
+	}[profile]
+	receipts := make([]activation.ProviderReceipt, 0, len(names))
+	for _, name := range names {
+		receipts = append(receipts, activation.ProviderReceipt{Name: name, SelectedPlugins: append([]string(nil), plugins...)})
 	}
 	return receipts
 }

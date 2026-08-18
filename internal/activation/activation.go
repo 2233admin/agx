@@ -14,12 +14,15 @@ import (
 
 	"github.com/2233admin/agx/internal/bootstrap"
 	installer "github.com/2233admin/agx/internal/install"
+	"github.com/2233admin/agx/internal/project"
 	"github.com/2233admin/agx/internal/provider"
 	"github.com/2233admin/agx/internal/repository"
+	"github.com/2233admin/agx/internal/smoke"
 )
 
 const (
-	receiptSchema      = "agx.initialization/v2"
+	receiptSchemaV2    = "agx.initialization/v2"
+	receiptSchema      = "agx.initialization/v3"
 	initializationFile = "initialization.json"
 	PhaseInitialized   = "initialized"
 	PhaseProvisioning  = "provisioning"
@@ -90,15 +93,19 @@ type Receipt struct {
 	TemplateContentSHA256 string                `json:"template_content_sha256,omitempty"`
 	Profile               Profile               `json:"profile"`
 	Repositories          []repository.Receipt  `json:"repositories,omitempty"`
+	Project               *project.Receipt      `json:"project,omitempty"`
 	Providers             []ProviderReceipt     `json:"providers"`
 }
 
 type State struct {
-	Status       string          `json:"status"`
-	Profile      Profile         `json:"profile,omitempty"`
-	Providers    []provider.Name `json:"providers,omitempty"`
-	Repositories []string        `json:"repositories,omitempty"`
-	Problems     []string        `json:"problems,omitempty"`
+	Status            string               `json:"status"`
+	Profile           Profile              `json:"profile,omitempty"`
+	Providers         []provider.Name      `json:"providers,omitempty"`
+	Repositories      []string             `json:"repositories,omitempty"`
+	RepositoryDetails []repository.Receipt `json:"repository_details,omitempty"`
+	Project           *project.Receipt     `json:"project,omitempty"`
+	Smoke             smoke.Evidence       `json:"smoke,omitempty"`
+	Problems          []string             `json:"problems,omitempty"`
 }
 
 type Options struct {
@@ -134,6 +141,15 @@ type RepositoryPlan struct {
 	TemplateDigest  string                `json:"template_digest"`
 }
 
+type ProjectPlan struct {
+	Owner            string             `json:"owner"`
+	Title            string             `json:"title"`
+	Visibility       project.Visibility `json:"visibility"`
+	LinkedRepository string             `json:"linked_repository"`
+	Action           string             `json:"action"`
+	Retained         bool               `json:"retained_on_uninstall"`
+}
+
 type InitializationPlan struct {
 	InstallationID        string           `json:"installation_id"`
 	TemplateVersion       string           `json:"template_version"`
@@ -142,12 +158,14 @@ type InitializationPlan struct {
 	Profile               Profile          `json:"profile"`
 	Providers             []ProviderPlan   `json:"providers"`
 	Repositories          []RepositoryPlan `json:"repositories"`
+	Project               ProjectPlan      `json:"project"`
 }
 
 type UninitializeResult struct {
 	Changed              bool                 `json:"changed"`
 	ReceiptRemoved       bool                 `json:"receipt_removed"`
 	RetainedRepositories []repository.Receipt `json:"retained_repositories"`
+	RetainedProject      *project.Receipt     `json:"retained_project,omitempty"`
 	RetainedMarketplaces []provider.Name      `json:"retained_marketplaces,omitempty"`
 }
 
@@ -190,6 +208,15 @@ func Plan(ctx context.Context, options Options) (InitializationPlan, error) {
 			Action: action, TemplateVersion: item.Seed.Version, TemplateDigest: item.Seed.Digest,
 		})
 	}
+	projectAction := "create"
+	if prepared.existing.Project != nil {
+		projectAction = "verify"
+	}
+	plan.Project = ProjectPlan{
+		Owner: prepared.projectTarget.Owner, Title: prepared.projectTarget.Title,
+		Visibility: prepared.projectTarget.Visibility, LinkedRepository: prepared.projectTarget.LinkedRepository,
+		Action: projectAction, Retained: true,
+	}
 	for _, item := range prepared.providerTargets {
 		providerPlan := ProviderPlan{Name: item.name, MarketplaceAction: "keep"}
 		if item.receipt.MarketplaceAdded {
@@ -217,12 +244,52 @@ func Initialize(ctx context.Context, options Options) (Receipt, bool, error) {
 	return initializeProvidersOnly(ctx, options)
 }
 
+func FirstUseContract(receipt Receipt) (smoke.Contract, error) {
+	if receipt.Project == nil || receipt.Project.Verification != project.VerificationReadback {
+		return smoke.Contract{}, fmt.Errorf("AGX-FIRST-USE-PROJECT: Project readback evidence is required")
+	}
+	var controlURL, contractsURL string
+	for _, item := range receipt.Repositories {
+		switch strings.ToLower(item.NameWithOwner) {
+		case strings.ToLower(receipt.GitHubOwner + "/" + receipt.ControlRepository):
+			controlURL = item.URL
+		case strings.ToLower(receipt.GitHubOwner + "/" + receipt.ContractsRepository):
+			contractsURL = item.URL
+		}
+	}
+	if controlURL == "" || contractsURL == "" {
+		return smoke.Contract{}, fmt.Errorf("AGX-FIRST-USE-REPOSITORIES: both deployment repository receipts are required")
+	}
+	title := "Bootstrap Verification [" + receipt.InstallationID + "]"
+	marker := "AGX-Installation: " + receipt.InstallationID
+	return smoke.Contract{
+		SchemaVersion: smoke.ContractVersionV1, InstallationID: receipt.InstallationID,
+		ProjectURL: receipt.Project.URL, ProjectTitle: receipt.Project.Title,
+		ControlRepositoryURL: controlURL, ContractsRepositoryURL: contractsURL,
+		Profile: string(receipt.Profile), Objective: "complete bootstrap verification",
+		IssueTitle: title, PullRequestTitle: title, Marker: marker,
+		Branch:            "agx/bootstrap-verification-" + receipt.InstallationID,
+		ValidationCommand: "python tools/validate.py",
+		RequiredActions: []string{
+			"read README.md, AGENTS.md, and authority/00-map.md in the control repository",
+			"create the bounded Bootstrap Verification Issue with the contract marker",
+			"add the Issue to the deployment Project",
+			"create the contract branch and update work/current.md to point at the Issue",
+			"run python tools/validate.py and preserve the result",
+			"open an unmerged pull request with the contract title and marker",
+		},
+		RequiredOutputs: []string{"issue_url", "project_item", "pull_request_url", "validation_result"},
+		Cleanup:         "operator-owned",
+	}, nil
+}
+
 type preparedDeployment struct {
 	installation      installer.Receipt
 	source            string
 	pluginRepository  string
 	options           Options
 	repositoryTargets []repository.Target
+	projectTarget     project.Target
 	providerTargets   []target
 	existing          Receipt
 	present           bool
@@ -312,6 +379,18 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 			return preparedDeployment{}, err
 		}
 	}
+	projectTarget := buildProjectTarget(options, installation.InstallationID)
+	if existing.Project == nil {
+		if err := project.Preflight(ctx, projectTarget, options.RepositoryRunner); err != nil {
+			return preparedDeployment{}, err
+		}
+	} else if existing.Project.Linked && existing.Project.Verification == project.VerificationReadback {
+		if err := project.Verify(ctx, projectTarget, *existing.Project, options.RepositoryRunner); err != nil {
+			return preparedDeployment{}, fmt.Errorf("AGX-INIT-PROJECT-DRIFT: %w", err)
+		}
+	} else if err := project.ValidateReceipt(*existing.Project, projectTarget); err != nil {
+		return preparedDeployment{}, fmt.Errorf("AGX-INIT-PROJECT-RECEIPT: %w", err)
+	}
 	providerRunner := options.Runner
 	if providerRunner == nil {
 		providerRunner = provider.OSRunner{}
@@ -323,8 +402,21 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 	options.Runner = providerRunner
 	return preparedDeployment{
 		installation: installation, source: source, pluginRepository: pluginRepository, options: options,
-		repositoryTargets: repositoryTargets, providerTargets: providerTargets, existing: existing, present: present,
+		repositoryTargets: repositoryTargets, projectTarget: projectTarget,
+		providerTargets: providerTargets, existing: existing, present: present,
 	}, nil
+}
+
+func buildProjectTarget(options Options, installationID string) project.Target {
+	visibility := project.VisibilityPrivate
+	if options.Visibility == repository.VisibilityPublic {
+		visibility = project.VisibilityPublic
+	}
+	return project.Target{
+		Owner: options.GitHubOwner, Title: options.ControlRepository + " deployment (" + installationID + ")",
+		Visibility: visibility, LinkedRepository: options.GitHubOwner + "/" + options.ControlRepository,
+		InstallationID: installationID,
+	}
 }
 
 func buildRepositoryTargets(options Options, pluginRepository string) ([]repository.Target, error) {
@@ -374,7 +466,7 @@ func initializeDeployment(ctx context.Context, options Options) (Receipt, bool, 
 		return Receipt{}, false, err
 	}
 	receipt := prepared.existing
-	if prepared.present && receipt.Phase == PhaseInitialized {
+	if prepared.present && receipt.Phase == PhaseInitialized && receipt.Project != nil {
 		if problems := verifyReceipt(ctx, receipt, prepared.source, prepared.options.Runner); len(problems) > 0 {
 			return Receipt{}, false, fmt.Errorf("AGX-INIT-DRIFT: %s", strings.Join(problems, "; "))
 		}
@@ -415,6 +507,27 @@ func initializeDeployment(ctx context.Context, options Options) (Receipt, bool, 
 			return receipt, false, err
 		}
 	}
+	var existingProject *project.Receipt
+	if receipt.Project != nil {
+		copy := *receipt.Project
+		existingProject = &copy
+	}
+	projectReceipt, projectErr := project.Provision(ctx, prepared.projectTarget, existingProject, prepared.options.RepositoryRunner, func(value project.Receipt) error {
+		receipt.Project = &value
+		receipt.Phase = PhaseProvisioning
+		return writeReceipt(prepared.options.Root, receipt)
+	})
+	if projectErr != nil {
+		if projectReceipt.NodeID != "" {
+			receipt.Project = &projectReceipt
+		}
+		receipt.Phase = PhaseNeedsResume
+		if writeErr := writeReceipt(prepared.options.Root, receipt); writeErr != nil {
+			return Receipt{}, false, fmt.Errorf("%v; recovery receipt failed: %w", projectErr, writeErr)
+		}
+		return receipt, false, projectErr
+	}
+	receipt.Project = &projectReceipt
 	// Repository creation may take long enough for provider inventory to change.
 	// Recheck it immediately before the first provider mutation.
 	selected, _ := Plugins(prepared.options.Profile)
@@ -651,7 +764,7 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 	if !present {
 		return State{Status: StatusAbsent}, nil
 	}
-	state := State{Status: receipt.Phase, Profile: receipt.Profile}
+	state := State{Status: receipt.Phase, Profile: receipt.Profile, Project: receipt.Project}
 	for _, item := range receipt.Providers {
 		state.Providers = append(state.Providers, item.Name)
 	}
@@ -661,8 +774,21 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 	}
 	for _, item := range receipt.Repositories {
 		state.Repositories = append(state.Repositories, item.NameWithOwner)
+		state.RepositoryDetails = append(state.RepositoryDetails, item)
 		if err := repository.Verify(ctx, item, repositoryRunner); err != nil {
 			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
+		}
+	}
+	if receipt.GitHubOwner != "" {
+		if receipt.Project == nil {
+			state.Problems = append(state.Problems, "GitHub Project is not initialized")
+		} else {
+			target := buildProjectTarget(Options{
+				GitHubOwner: receipt.GitHubOwner, ControlRepository: receipt.ControlRepository, Visibility: receipt.Visibility,
+			}, receipt.InstallationID)
+			if err := project.Verify(ctx, target, *receipt.Project, repositoryRunner); err != nil {
+				state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
+			}
 		}
 	}
 	if receipt.Phase == PhaseManualCleanup {
@@ -688,6 +814,20 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 	state.Problems = append(state.Problems, verifyReceipt(ctx, receipt, source, runner)...)
 	if len(state.Problems) > 0 {
 		state.Status = StatusDrifted
+		return state, nil
+	}
+	if receipt.Project != nil {
+		contract, contractErr := FirstUseContract(receipt)
+		if contractErr != nil {
+			state.Smoke = smoke.Evidence{Status: smoke.StatusAwaiting, Problems: []string{contractErr.Error()}}
+			return state, nil
+		}
+		evidence, smokeErr := smoke.Inspect(ctx, contract, repositoryRunner)
+		if smokeErr != nil {
+			state.Smoke = smoke.Evidence{Status: smoke.StatusAwaiting, Problems: []string{smokeErr.Error()}}
+			return state, nil
+		}
+		state.Smoke = evidence
 	}
 	return state, nil
 }
@@ -701,7 +841,10 @@ func UninitializeDetailed(ctx context.Context, root string, runner provider.Runn
 	if err != nil || !present {
 		return UninitializeResult{}, err
 	}
-	result := UninitializeResult{RetainedRepositories: append([]repository.Receipt(nil), receipt.Repositories...)}
+	result := UninitializeResult{
+		RetainedRepositories: append([]repository.Receipt(nil), receipt.Repositories...),
+		RetainedProject:      receipt.Project,
+	}
 	providerRunner := runner
 	if providerRunner == nil {
 		providerRunner = provider.OSRunner{}
@@ -1043,6 +1186,11 @@ func readReceipt(root string) (Receipt, bool, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: trailing data")
 	}
+	if receipt.SchemaVersion == receiptSchemaV2 {
+		if err := migrateReceiptV2(&receipt); err != nil {
+			return Receipt{}, false, err
+		}
+	}
 	if receipt.SchemaVersion != receiptSchema || receipt.InstallationID == "" ||
 		(receipt.Phase != PhaseInitialized && receipt.Phase != PhaseProvisioning && receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseManualCleanup) {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: required fields are missing")
@@ -1051,6 +1199,37 @@ func readReceipt(root string) (Receipt, bool, error) {
 		return Receipt{}, false, err
 	}
 	return receipt, true, nil
+}
+
+func migrateReceiptV2(receipt *Receipt) error {
+	if receipt == nil || receipt.SchemaVersion != receiptSchemaV2 {
+		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: cannot migrate initialization receipt")
+	}
+	for index := range receipt.Repositories {
+		item := &receipt.Repositories[index]
+		kind := bootstrap.KindAgentControl
+		repositoryName := receipt.ControlRepository
+		switch strings.ToLower(item.NameWithOwner) {
+		case strings.ToLower(receipt.GitHubOwner + "/" + receipt.ControlRepository):
+		case strings.ToLower(receipt.GitHubOwner + "/" + receipt.ContractsRepository):
+			kind = bootstrap.KindAgentContracts
+			repositoryName = receipt.ContractsRepository
+		default:
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: cannot migrate unknown deployment repository")
+		}
+		rendered, err := bootstrap.Render(kind, bootstrap.Params{
+			Owner: receipt.GitHubOwner, Repository: repositoryName, PluginSource: bootstrap.AgentPluginsReferenceRepository,
+		})
+		if err != nil || item.TemplateVersion != rendered.Version || item.TemplateDigest != rendered.Digest {
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: cannot migrate mismatched template evidence")
+		}
+		item.RequiredPaths = make([]string, 0, len(rendered.Files))
+		for _, file := range rendered.Files {
+			item.RequiredPaths = append(item.RequiredPaths, file.Path)
+		}
+	}
+	receipt.SchemaVersion = receiptSchema
+	return nil
 }
 
 func inspectReceiptPath(root string) (string, bool, os.FileInfo, error) {
@@ -1111,7 +1290,7 @@ func requireRealMetadataEntry(path string, info os.FileInfo, directory bool, lab
 }
 
 func validateReceipt(receipt Receipt) error {
-	deployment := receipt.GitHubOwner != "" || receipt.ControlRepository != "" || receipt.ContractsRepository != "" ||
+	deployment := receipt.GitHubOwner != "" || receipt.ControlRepository != "" || receipt.ContractsRepository != "" || receipt.Project != nil ||
 		receipt.Visibility != "" || receipt.TemplateVersion != "" || receipt.TemplateContentSHA256 != "" || len(receipt.Repositories) > 0
 	if deployment {
 		if receipt.GitHubOwner == "" || receipt.ControlRepository == "" || receipt.ContractsRepository == "" ||
@@ -1139,6 +1318,7 @@ func validateReceipt(receipt Receipt) error {
 			if !expected[key] || seen[key] || item.Visibility != receipt.Visibility || item.InitialCommit == "" ||
 				item.URL != "https://github.com/"+item.NameWithOwner || renderErr != nil ||
 				item.TemplateVersion != rendered.Version || item.TemplateDigest != rendered.Digest ||
+				!sameTemplatePaths(item.RequiredPaths, rendered.Files) ||
 				(item.Verification != repository.VerificationReadback && item.Verification != repository.VerificationUncertain) {
 				return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repository ownership evidence is inconsistent")
 			}
@@ -1146,6 +1326,14 @@ func validateReceipt(receipt Receipt) error {
 		}
 		if receipt.Phase == PhaseInitialized && len(seen) != 2 {
 			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: initialized deployment must contain both repository receipts")
+		}
+		if receipt.Project != nil {
+			target := buildProjectTarget(Options{
+				GitHubOwner: receipt.GitHubOwner, ControlRepository: receipt.ControlRepository, Visibility: receipt.Visibility,
+			}, receipt.InstallationID)
+			if err := project.ValidateReceipt(*receipt.Project, target); err != nil {
+				return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: Project ownership evidence is inconsistent")
+			}
 		}
 	} else if len(receipt.Repositories) != 0 {
 		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repositories require deployment metadata")
@@ -1260,6 +1448,24 @@ func sameStrings(left, right []string) bool {
 		if left[index] != right[index] {
 			return false
 		}
+	}
+	return true
+}
+
+func sameTemplatePaths(paths []string, files []bootstrap.File) bool {
+	if len(paths) != len(files) {
+		return false
+	}
+	expected := make(map[string]bool, len(files))
+	for _, file := range files {
+		expected[file.Path] = true
+	}
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if !expected[path] || seen[path] {
+			return false
+		}
+		seen[path] = true
 	}
 	return true
 }
