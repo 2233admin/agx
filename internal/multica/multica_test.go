@@ -181,7 +181,11 @@ func TestRuntimeReadbackRejectsUnparseableOutput(t *testing.T) {
 
 // leakedSecret is written to stderr by the helper process below. If OSRunner
 // ever starts folding stderr into its error, this exact string shows up.
-const leakedSecret = "mul_AGXTESTTOKENSHOULDNOTLEAK"
+//
+// Deliberately does NOT use the real `mul_` credential prefix: a fixture that
+// looks like a live token trips secret scanners and, worse, makes a future
+// grep for leaked credentials return a false positive from the test suite.
+const leakedSecret = "AGX-TEST-SENTINEL-NOT-A-CREDENTIAL"
 
 // TestHelperProcess is not a real test. Re-executed by
 // TestOSRunnerErrorOmitsStartedCommandStderr as a child process that writes a
