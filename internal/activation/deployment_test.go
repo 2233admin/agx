@@ -66,6 +66,7 @@ func newDeploymentRepositoryRunner() *deploymentRepositoryRunner {
 type statusContextRepositoryRunner struct {
 	delegate         repository.Runner
 	target           func(string, []string) bool
+	observe          func(string, []string)
 	expire           func()
 	readErr          error
 	targetHits       int
@@ -77,6 +78,9 @@ func (runner *statusContextRepositoryRunner) LookPath(name string) (string, erro
 }
 
 func (runner *statusContextRepositoryRunner) Run(ctx context.Context, workdir, name string, args ...string) ([]byte, error) {
+	if runner.observe != nil {
+		runner.observe(name, args)
+	}
 	if runner.target(name, args) {
 		runner.targetHits++
 		runner.targetSawHealthy = ctx.Err() == nil
@@ -926,6 +930,9 @@ func TestStatusReturnsInconclusiveWhenReadbackContextExpires(t *testing.T) {
 	projectReadback := func(name string, args []string) bool {
 		return name == "gh" && argumentsEqual(args, []string{"project", "view", "7", "--owner", "octo-lab", "--format", "json"})
 	}
+	projectRevalidateAuth := func(name string, args []string) bool {
+		return name == "gh" && argumentsEqual(args, []string{"auth", "status", "--active", "--json", "hosts"})
+	}
 	providerReadback := func(name string, args []string) bool {
 		return name == "codex" && argumentsEqual(args, []string{"plugin", "marketplace", "list", "--json"})
 	}
@@ -939,12 +946,16 @@ func TestStatusReturnsInconclusiveWhenReadbackContextExpires(t *testing.T) {
 		repositoryCall func(string, []string) bool
 		providerCall   func(string, []string) bool
 		cause          error
+		projectBranch  bool
+		projectLinked  bool
+		projectProof   project.Verification
+		projectAuth    int
 	}{
 		{name: "uncertain repository inspect", setup: "uncertain absent", repositoryCall: repositoryReadback("agent-contracts", "HEAD"), cause: context.Canceled},
 		{name: "uncertain repository verify", setup: "uncertain present", repositoryCall: repositoryReadback("agent-contracts", deploymentCommit), cause: context.DeadlineExceeded},
 		{name: "repository verify", setup: "initialized", repositoryCall: repositoryReadback("agent-control", deploymentCommit), cause: context.Canceled},
-		{name: "Project verify", setup: "initialized", repositoryCall: projectReadback, cause: context.DeadlineExceeded},
-		{name: "Project revalidate", setup: "partial Project", repositoryCall: projectReadback, cause: context.Canceled},
+		{name: "Project verify", setup: "initialized", repositoryCall: projectReadback, cause: context.DeadlineExceeded, projectBranch: true, projectLinked: true, projectProof: project.VerificationReadback},
+		{name: "Project revalidate", setup: "partial Project", repositoryCall: projectReadback, cause: context.Canceled, projectBranch: true, projectProof: project.VerificationCreated, projectAuth: 1},
 		{name: "provider verify", setup: "initialized", providerCall: providerReadback, cause: context.DeadlineExceeded},
 		{name: "smoke inspect", setup: "initialized", repositoryCall: smokeReadback, cause: context.Canceled},
 	}
@@ -975,6 +986,9 @@ func TestStatusReturnsInconclusiveWhenReadbackContextExpires(t *testing.T) {
 			} else if initializationErr == nil || receipt.Phase != activation.PhaseNeedsResume {
 				t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, initializationErr)
 			}
+			if test.projectBranch && (receipt.Project == nil || receipt.Project.Linked != test.projectLinked || receipt.Project.Verification != test.projectProof) {
+				t.Fatalf("Initialize() Project receipt=%+v, want linked=%v verification=%s for %s branch", receipt.Project, test.projectLinked, test.projectProof, test.name)
+			}
 
 			contextKey := struct{ name string }{"target-value"}
 			ctx := newTargetedStatusContext(context.WithValue(context.Background(), contextKey, "forwarded"))
@@ -993,11 +1007,17 @@ func TestStatusReturnsInconclusiveWhenReadbackContextExpires(t *testing.T) {
 			}
 			var statusRepository repository.Runner = repositoryRunner
 			var repositoryTarget *statusContextRepositoryRunner
+			projectAuthHits := 0
 			if test.repositoryCall != nil {
 				repositoryTarget = &statusContextRepositoryRunner{
 					delegate: repositoryRunner,
 					target:   test.repositoryCall,
-					expire:   func() { ctx.expire(test.cause) },
+					observe: func(name string, args []string) {
+						if projectRevalidateAuth(name, args) {
+							projectAuthHits++
+						}
+					},
+					expire: func() { ctx.expire(test.cause) },
 				}
 				statusRepository = repositoryTarget
 			}
@@ -1020,6 +1040,9 @@ func TestStatusReturnsInconclusiveWhenReadbackContextExpires(t *testing.T) {
 			}
 			if targetHits != 1 || !targetSawHealthy {
 				t.Fatalf("target readback hits=%d healthy=%v, want exactly one hit reached with a healthy context", targetHits, targetSawHealthy)
+			}
+			if test.projectBranch && projectAuthHits != test.projectAuth {
+				t.Fatalf("Project branch auth-status hits=%d, want %d for %s", projectAuthHits, test.projectAuth, test.name)
 			}
 			if !errors.Is(ctx.Err(), test.cause) {
 				t.Fatalf("target context err=%v, want %v", ctx.Err(), test.cause)
