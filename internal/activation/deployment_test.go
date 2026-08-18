@@ -20,6 +20,7 @@ type deploymentRepository struct {
 	nameWithOwner string
 	visibility    repository.Visibility
 	commit        string
+	files         map[string]bool
 }
 
 type deploymentRepositoryRunner struct {
@@ -57,6 +58,9 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 		}
 		return nil, nil
 	}
+	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "view" {
+		return []byte(`{"hasIssuesEnabled":true}`), nil
+	}
 	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "create" {
 		slug := args[2]
 		runner.createCalls = append(runner.createCalls, slug)
@@ -66,12 +70,35 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 			visibility = repository.VisibilityPublic
 		}
 		if !runner.failCreate[slug] || runner.landOnFailure[slug] {
-			runner.repositories[strings.ToLower(slug)] = deploymentRepository{nameWithOwner: slug, visibility: visibility, commit: deploymentCommit}
+			files := map[string]bool{}
+			source := argumentAfter(args, "--source")
+			_ = filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+				if err != nil || entry.IsDir() || strings.Contains(filepath.ToSlash(path), "/.git/") {
+					return err
+				}
+				relative, relativeErr := filepath.Rel(source, path)
+				if relativeErr == nil {
+					files[filepath.ToSlash(relative)] = true
+				}
+				return relativeErr
+			})
+			runner.repositories[strings.ToLower(slug)] = deploymentRepository{
+				nameWithOwner: slug, visibility: visibility, commit: deploymentCommit, files: files,
+			}
 		}
 		if runner.failCreate[slug] {
 			return nil, errors.New("injected create failure")
 		}
 		return nil, nil
+	}
+	if name == "gh" && len(args) >= 2 && args[0] == "api" && strings.HasPrefix(args[1], "repos/") {
+		parts := strings.Split(args[1], "/")
+		repositoryState := runner.repositories[strings.ToLower(parts[1]+"/"+parts[2])]
+		tree := []map[string]any{}
+		for file := range repositoryState.files {
+			tree = append(tree, map[string]any{"path": file, "type": "blob"})
+		}
+		return json.Marshal(map[string]any{"tree": tree, "truncated": false})
 	}
 	if name == "gh" && len(args) >= 2 && args[0] == "api" && args[1] == "graphql" {
 		owner := graphQLArgument(args, "owner")
@@ -367,6 +394,15 @@ func containsArgument(args []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func argumentAfter(args []string, name string) string {
+	for index, argument := range args {
+		if argument == name && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
 }
 
 func countString(values []string, wanted string) int {

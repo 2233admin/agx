@@ -28,6 +28,8 @@ type fakeRepository struct {
 	defaultBranch string
 	head          string
 	reachable     map[string]bool
+	issues        bool
+	files         map[string]bool
 }
 
 type fakeRunner struct {
@@ -116,6 +118,22 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 			"object": object,
 		}}})
 	}
+	if name == "gh" && len(args) >= 2 && args[0] == "api" && strings.HasPrefix(args[1], "repos/") {
+		parts := strings.Split(args[1], "/")
+		if len(parts) < 4 {
+			return nil, errors.New("invalid tree endpoint")
+		}
+		repository := runner.repositories[strings.ToLower(parts[1]+"/"+parts[2])]
+		tree := []map[string]any{}
+		for file := range repository.files {
+			tree = append(tree, map[string]any{"path": file, "type": "blob"})
+		}
+		return json.Marshal(map[string]any{"tree": tree, "truncated": false})
+	}
+	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "view" {
+		repository := runner.repositories[strings.ToLower(args[2])]
+		return json.Marshal(map[string]any{"hasIssuesEnabled": repository.issues})
+	}
 	if name == "git" {
 		command := gitCommand(args)
 		if command == runner.gitErrCommand {
@@ -133,17 +151,51 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 			if contains(args, "--public") {
 				visibility = VisibilityPublic
 			}
+			files := map[string]bool{}
+			source := argumentAfter(args, "--source")
+			_ = filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+				if err != nil || entry.IsDir() || strings.Contains(filepath.ToSlash(path), "/.git/") {
+					return err
+				}
+				relative, relativeErr := filepath.Rel(source, path)
+				if relativeErr == nil {
+					files[filepath.ToSlash(relative)] = true
+				}
+				return relativeErr
+			})
 			runner.repositories[strings.ToLower(nameWithOwner)] = fakeRepository{
 				nameWithOwner: nameWithOwner,
 				visibility:    visibility,
 				defaultBranch: "main",
 				head:          testCommit,
 				reachable:     map[string]bool{testCommit: true},
+				issues:        true,
+				files:         files,
 			}
 		}
 		return nil, runner.createErr
 	}
 	return nil, errors.New("unexpected command")
+}
+
+func TestVerifyDetectsMissingTemplateEntriesAndDisabledIssues(t *testing.T) {
+	runner := newFakeRunner()
+	receipt, err := Create(context.Background(), testTarget("agent-control"), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := runner.repositories["zaurakworks/agent-control"]
+	delete(repository.files, "README.md")
+	runner.repositories["zaurakworks/agent-control"] = repository
+	if err := Verify(context.Background(), receipt, runner); err == nil || !strings.Contains(err.Error(), "template path") {
+		t.Fatalf("Verify() err = %v, want missing template path", err)
+	}
+	repository.files["README.md"] = true
+	repository.issues = false
+	runner.repositories["zaurakworks/agent-control"] = repository
+	if err := Verify(context.Background(), receipt, runner); err == nil || !strings.Contains(err.Error(), "Issues are disabled") {
+		t.Fatalf("Verify() err = %v, want disabled Issues", err)
+	}
 }
 
 func TestProvisionPreflightsEveryTargetBeforeFirstWrite(t *testing.T) {
@@ -267,10 +319,14 @@ func TestCreateCommandOrderAndLocalGitConfiguration(t *testing.T) {
 			continue
 		}
 		if call.name == "gh" && len(call.args) > 1 && call.args[0] == "repo" {
-			got = append(got, "create")
+			got = append(got, call.args[1])
+			continue
+		}
+		if call.name == "gh" && len(call.args) > 1 && call.args[0] == "api" && strings.Contains(call.args[1], "/git/trees/") {
+			got = append(got, "tree readback")
 		}
 	}
-	want := []string{"auth", "preflight", "git init", "git add", "git commit", "git rev-parse", "create", "readback"}
+	want := []string{"auth", "preflight", "git init", "git add", "git commit", "git rev-parse", "create", "readback", "view", "tree readback"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command order = %#v, want %#v", got, want)
 	}
@@ -577,6 +633,15 @@ func argumentValue(args []string, name string) string {
 	for _, argument := range args {
 		if strings.HasPrefix(argument, prefix) {
 			return strings.TrimPrefix(argument, prefix)
+		}
+	}
+	return ""
+}
+
+func argumentAfter(args []string, name string) string {
+	for index, argument := range args {
+		if argument == name && index+1 < len(args) {
+			return args[index+1]
 		}
 	}
 	return ""
