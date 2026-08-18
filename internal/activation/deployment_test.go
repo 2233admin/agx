@@ -116,6 +116,15 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 	if name == "gh" && len(args) >= 2 && args[0] == "project" && args[1] == "view" {
 		return runner.projectJSON(), nil
 	}
+	if name == "gh" && len(args) >= 2 && args[0] == "project" && args[1] == "item-list" {
+		items := []map[string]any{}
+		if runner.smokeComplete {
+			items = append(items, map[string]any{
+				"id": "PVTI_item", "content": map[string]any{"url": "https://github.com/octo-lab/agent-control/issues/12"},
+			})
+		}
+		return json.Marshal(map[string]any{"items": items, "totalCount": len(items)})
+	}
 	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "view" {
 		nodes := []map[string]any{}
 		if runner.project.linked {
@@ -146,7 +155,7 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 			"body":        "AGX-Installation: install-test\nValidation-Command: python tools/validate.py\nValidation-Result: passed",
 			"headRefName": "agx/bootstrap-verification-install-test",
 			"state":       "OPEN", "mergedAt": nil, "files": []map[string]any{{"path": "work/current.md"}},
-			"statusCheckRollup": []map[string]any{{"status": "COMPLETED", "conclusion": "SUCCESS"}},
+			"statusCheckRollup": []map[string]any{{"name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}},
 		}})
 	}
 	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "create" {
@@ -332,6 +341,10 @@ func TestInitializeRecoversProjectCreateThatLandedBeforeCommandFailure(t *testin
 	if repositoryRunner.projectCreateCalls != 1 || repositoryRunner.projectLinkCalls != 0 || len(providerRunner.mutations) != 0 {
 		t.Fatalf("partial mutation counts: creates=%d links=%d provider=%v",
 			repositoryRunner.projectCreateCalls, repositoryRunner.projectLinkCalls, providerRunner.mutations)
+	}
+	state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
+	if statusErr != nil || state.Status != activation.PhaseNeedsResume {
+		t.Fatalf("partial Project Status() state=%+v err=%v, want needs_resume", state, statusErr)
 	}
 	repositoryRunner.failProjectCreate = false
 	receipt, unchanged, err = activation.Initialize(context.Background(), options)

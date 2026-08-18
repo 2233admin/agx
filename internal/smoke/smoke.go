@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -84,19 +85,19 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	}
 	evidence := Evidence{Status: StatusAwaiting, ValidationResult: "awaiting"}
 	marker := contract.Marker
+	projectOwner, projectNumber, err := projectCoordinates(contract.ProjectURL)
+	if err != nil {
+		return Evidence{}, err
+	}
 
-	issueOutput, err := runner.Run(ctx, "", "gh", "issue", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.IssueTitle+" in:title", "--json", "number,url,title,body,projectItems")
+	issueOutput, err := runner.Run(ctx, "", "gh", "issue", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.IssueTitle+" in:title", "--json", "number,url,title,body")
 	if err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-ISSUE: cannot inspect Bootstrap Verification Issue: %w", err)
 	}
 	var issues []struct {
-		URL          string `json:"url"`
-		Title        string `json:"title"`
-		Body         string `json:"body"`
-		ProjectItems []struct {
-			ID    string `json:"id"`
-			Title string `json:"title"`
-		} `json:"projectItems"`
+		URL   string `json:"url"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
 	}
 	if err := decodeJSON(issueOutput, &issues); err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-ISSUE: invalid Issue inventory: %w", err)
@@ -106,21 +107,42 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 			continue
 		}
 		evidence.IssueURL = issue.URL
-		for _, item := range issue.ProjectItems {
-			if contract.ProjectTitle == "" || item.Title == contract.ProjectTitle {
-				evidence.ProjectItem = item.ID
-				if evidence.ProjectItem == "" {
-					evidence.ProjectItem = item.Title
-				}
-				break
-			}
-		}
 		break
 	}
 	if evidence.IssueURL == "" {
 		evidence.Problems = append(evidence.Problems, "Bootstrap Verification Issue is missing")
-	} else if evidence.ProjectItem == "" {
-		evidence.Problems = append(evidence.Problems, "Bootstrap Verification Issue is not in the deployment Project")
+	} else {
+		projectOutput, projectErr := runner.Run(ctx, "", "gh", "project", "item-list", strconv.Itoa(projectNumber), "--owner", projectOwner, "--limit", "1000", "--format", "json")
+		if projectErr != nil {
+			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: cannot inspect deployment Project items: %w", projectErr)
+		}
+		var inventory struct {
+			TotalCount int `json:"totalCount"`
+			Items      []struct {
+				ID      string `json:"id"`
+				Content struct {
+					URL string `json:"url"`
+				} `json:"content"`
+			} `json:"items"`
+		}
+		if err := decodeJSON(projectOutput, &inventory); err != nil {
+			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: invalid deployment Project item inventory: %w", err)
+		}
+		if inventory.TotalCount > len(inventory.Items) {
+			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: deployment Project item inventory is truncated")
+		}
+		for _, item := range inventory.Items {
+			if strings.EqualFold(item.Content.URL, evidence.IssueURL) {
+				evidence.ProjectItem = item.ID
+				if evidence.ProjectItem == "" {
+					evidence.ProjectItem = evidence.IssueURL
+				}
+				break
+			}
+		}
+		if evidence.ProjectItem == "" {
+			evidence.Problems = append(evidence.Problems, "Bootstrap Verification Issue is not in the deployment Project")
+		}
 	}
 
 	prOutput, err := runner.Run(ctx, "", "gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.PullRequestTitle+" in:title", "--json", "number,url,title,body,headRefName,state,mergedAt,files,statusCheckRollup")
@@ -138,8 +160,11 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 			Path string `json:"path"`
 		} `json:"files"`
 		Checks []struct {
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
+			Name         string `json:"name"`
+			Context      string `json:"context"`
+			WorkflowName string `json:"workflowName"`
+			Status       string `json:"status"`
+			Conclusion   string `json:"conclusion"`
 		} `json:"statusCheckRollup"`
 	}
 	if err := decodeJSON(prOutput, &pullRequests); err != nil {
@@ -161,13 +186,18 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 			}
 		}
 		checksPassed := len(pullRequest.Checks) > 0
+		validationCheckPassed := false
 		for _, check := range pullRequest.Checks {
 			if !strings.EqualFold(check.Status, "COMPLETED") || !strings.EqualFold(check.Conclusion, "SUCCESS") {
 				checksPassed = false
-				break
+				continue
+			}
+			identity := strings.ToLower(check.Name + " " + check.Context + " " + check.WorkflowName)
+			if strings.Contains(identity, "validate") {
+				validationCheckPassed = true
 			}
 		}
-		if checksPassed && bodyHasValidation {
+		if checksPassed && validationCheckPassed && bodyHasValidation {
 			evidence.ValidationResult = "passed"
 		} else {
 			evidence.ValidationResult = "pending_or_failed"
@@ -207,7 +237,7 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 
 func validateContract(contract Contract) (string, error) {
 	if contract.SchemaVersion != ContractVersionV1 || strings.TrimSpace(contract.InstallationID) == "" || strings.TrimSpace(contract.IssueTitle) == "" ||
-		contract.PullRequestTitle == "" || contract.Marker != "AGX-Installation: "+contract.InstallationID ||
+		contract.ProjectTitle == "" || contract.PullRequestTitle == "" || contract.Marker != "AGX-Installation: "+contract.InstallationID ||
 		!strings.HasPrefix(contract.Branch, "agx/bootstrap-verification-") || len(contract.RequiredActions) == 0 ||
 		contract.Objective != "complete bootstrap verification" || contract.Cleanup != "operator-owned" {
 		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: invalid first-use contract")
@@ -220,7 +250,26 @@ func validateContract(contract Contract) (string, error) {
 	if strings.Count(slug, "/") != 1 {
 		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: invalid control repository URL")
 	}
+	if _, _, err := projectCoordinates(contract.ProjectURL); err != nil {
+		return "", err
+	}
 	return slug, nil
+}
+
+func projectCoordinates(value string) (string, int, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil {
+		return "", 0, fmt.Errorf("AGX-SMOKE-CONTRACT: invalid Project URL")
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) != 4 || (parts[0] != "orgs" && parts[0] != "users") || parts[1] == "" || parts[2] != "projects" {
+		return "", 0, fmt.Errorf("AGX-SMOKE-CONTRACT: invalid Project URL")
+	}
+	number, err := strconv.Atoi(parts[3])
+	if err != nil || number <= 0 {
+		return "", 0, fmt.Errorf("AGX-SMOKE-CONTRACT: invalid Project URL")
+	}
+	return parts[1], number, nil
 }
 
 func decodeJSON(data []byte, target any) error {

@@ -694,7 +694,7 @@ func diagnoseNextSteps(root string, installation installer.State, initialization
 		next = append(next, "run agx init --guided --root "+quoteCommandArg(root)+" for a guided, read-only preview")
 	}
 	if initialization.Status == activation.PhaseNeedsResume || initialization.Status == activation.PhaseProvisioning {
-		next = append(next, "resolve the initialization problem and rerun the original apply command")
+		next = append(next, "resolve the initialization problem and rerun the original agx init ... --apply command unchanged")
 	}
 	if initialization.Smoke.Status == smoke.StatusAwaiting {
 		next = append(next, "run one first-use Agent prompt from the initialization result, then run agx status --root "+quoteCommandArg(root))

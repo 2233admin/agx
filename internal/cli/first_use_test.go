@@ -11,6 +11,7 @@ import (
 
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/exitcode"
+	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/project"
 	"github.com/2233admin/agx/internal/provider"
 	"github.com/2233admin/agx/internal/repository"
@@ -311,6 +312,13 @@ func TestPrintStatusNextGuidesInitializationAndRecoveryWithoutGuessing(t *testin
 				}
 			}
 		})
+	}
+}
+
+func TestDiagnoseNextStepsNamesInitializationResumeCommand(t *testing.T) {
+	next := diagnoseNextSteps(`D:\agx`, installer.State{Phase: "configured"}, activation.State{Status: activation.PhaseNeedsResume})
+	if len(next) != 1 || !strings.Contains(next[0], "agx init") || !strings.Contains(next[0], "--apply") || strings.Contains(next[0], "original apply command") {
+		t.Fatalf("diagnoseNextSteps() = %#v, want original agx init ... --apply guidance", next)
 	}
 }
 

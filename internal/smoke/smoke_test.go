@@ -12,6 +12,8 @@ import (
 type fakeRunner struct {
 	merged         bool
 	missingPointer bool
+	wrongProject   bool
+	unrelatedCheck bool
 }
 
 func (fakeRunner) LookPath(name string) (string, error) {
@@ -30,8 +32,17 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 		return json.Marshal([]map[string]any{{
 			"number": 12, "url": "https://github.com/octo-lab/agent-control/issues/12",
 			"title": "Bootstrap Verification [install-test]", "body": marker,
-			"projectItems": []map[string]any{{"id": "PVTI_item", "title": "agent-control deployment (install-test)"}},
 		}})
+	}
+	if args[0] == "project" && args[1] == "item-list" {
+		issueURL := "https://github.com/octo-lab/agent-control/issues/12"
+		if runner.wrongProject {
+			issueURL = "https://github.com/octo-lab/agent-control/issues/999"
+		}
+		return json.Marshal(map[string]any{
+			"totalCount": 1,
+			"items":      []map[string]any{{"id": "PVTI_item", "content": map[string]any{"url": issueURL}}},
+		})
 	}
 	if args[0] == "pr" && args[1] == "list" {
 		state := "OPEN"
@@ -40,6 +51,10 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			state = "MERGED"
 			mergedAt = "2026-08-18T00:00:00Z"
 		}
+		checkName := "validate"
+		if runner.unrelatedCheck {
+			checkName = "unrelated tests"
+		}
 		return json.Marshal([]map[string]any{{
 			"number": 13, "url": "https://github.com/octo-lab/agent-control/pull/13",
 			"title":       "Bootstrap Verification [install-test]",
@@ -47,7 +62,7 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			"headRefName": "agx/bootstrap-verification-install-test",
 			"state":       state, "mergedAt": mergedAt, "files": []map[string]any{{"path": "work/current.md"}},
 			"statusCheckRollup": []map[string]any{{
-				"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS",
+				"__typename": "CheckRun", "name": checkName, "status": "COMPLETED", "conclusion": "SUCCESS",
 			}},
 		}})
 	}
@@ -61,18 +76,32 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 	return nil, errors.New("unexpected gh command")
 }
 
-func TestInspectReturnsEffectiveOnlyForIssueProjectItemPRAndSuccessfulValidation(t *testing.T) {
-	contract := Contract{
+func TestInspectRejectsWrongProjectAndUnrelatedSuccessfulCheck(t *testing.T) {
+	contract := testContract()
+	evidence, err := Inspect(context.Background(), contract, fakeRunner{wrongProject: true, unrelatedCheck: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Status == StatusEffective || evidence.ProjectItem != "" || evidence.ValidationResult == "passed" {
+		t.Fatalf("unbound Project item or unrelated check became effective: %+v", evidence)
+	}
+}
+
+func testContract() Contract {
+	return Contract{
 		SchemaVersion: ContractVersionV1, InstallationID: "install-test",
-		ProjectURL:             "https://github.com/orgs/octo-lab/projects/7",
-		ControlRepositoryURL:   "https://github.com/octo-lab/agent-control",
-		ContractsRepositoryURL: "https://github.com/octo-lab/agent-contracts",
-		Profile:                "core", Objective: "complete bootstrap verification",
+		ProjectURL: "https://github.com/orgs/octo-lab/projects/7", ProjectTitle: "agent-control deployment (install-test)",
+		ControlRepositoryURL: "https://github.com/octo-lab/agent-control", ContractsRepositoryURL: "https://github.com/octo-lab/agent-contracts",
+		Profile: "core", Objective: "complete bootstrap verification",
 		IssueTitle: "Bootstrap Verification [install-test]", PullRequestTitle: "Bootstrap Verification [install-test]",
 		Marker: "AGX-Installation: install-test", Branch: "agx/bootstrap-verification-install-test",
 		ValidationCommand: "python tools/validate.py", RequiredActions: []string{"run bootstrap verification"},
 		RequiredOutputs: []string{"issue_url", "project_item", "pull_request_url", "validation_result"}, Cleanup: "operator-owned",
 	}
+}
+
+func TestInspectReturnsEffectiveOnlyForIssueProjectItemPRAndSuccessfulValidation(t *testing.T) {
+	contract := testContract()
 	evidence, err := Inspect(context.Background(), contract, fakeRunner{})
 	if err != nil {
 		t.Fatal(err)
@@ -85,16 +114,7 @@ func TestInspectReturnsEffectiveOnlyForIssueProjectItemPRAndSuccessfulValidation
 }
 
 func TestInspectDoesNotAcceptMergedPRWithoutWorkPointerEvidence(t *testing.T) {
-	contract := Contract{
-		SchemaVersion: ContractVersionV1, InstallationID: "install-test",
-		ProjectURL: "https://github.com/orgs/octo-lab/projects/7", ProjectTitle: "agent-control deployment (install-test)",
-		ControlRepositoryURL: "https://github.com/octo-lab/agent-control", ContractsRepositoryURL: "https://github.com/octo-lab/agent-contracts",
-		Profile: "core", Objective: "complete bootstrap verification",
-		IssueTitle: "Bootstrap Verification [install-test]", PullRequestTitle: "Bootstrap Verification [install-test]",
-		Marker: "AGX-Installation: install-test", Branch: "agx/bootstrap-verification-install-test",
-		ValidationCommand: "python tools/validate.py", RequiredActions: []string{"run bootstrap verification"},
-		RequiredOutputs: []string{"issue_url", "project_item", "pull_request_url", "validation_result"}, Cleanup: "operator-owned",
-	}
+	contract := testContract()
 	evidence, err := Inspect(context.Background(), contract, fakeRunner{merged: true, missingPointer: true})
 	if err != nil {
 		t.Fatal(err)

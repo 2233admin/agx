@@ -781,12 +781,18 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 	}
 	if receipt.GitHubOwner != "" {
 		if receipt.Project == nil {
-			state.Problems = append(state.Problems, "GitHub Project is not initialized")
+			if receipt.Phase == PhaseInitialized {
+				state.Status = PhaseNeedsResume
+			}
 		} else {
 			target := buildProjectTarget(Options{
 				GitHubOwner: receipt.GitHubOwner, ControlRepository: receipt.ControlRepository, Visibility: receipt.Visibility,
 			}, receipt.InstallationID)
-			if err := project.Verify(ctx, target, *receipt.Project, repositoryRunner); err != nil {
+			if receipt.Project.Linked && receipt.Project.Verification == project.VerificationReadback {
+				if err := project.Verify(ctx, target, *receipt.Project, repositoryRunner); err != nil {
+					state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
+				}
+			} else if receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseProvisioning {
 				state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
 			}
 		}
