@@ -111,30 +111,29 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 		}
 		observed, decodeErr := decodeProject(output)
 		if decodeErr != nil {
-			var found bool
-			observed, found, err = findTargetProject(ctx, target, runner)
-			if err != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid: %w; inventory: %w", decodeErr, err)
-			}
-			if !found {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid and the Project was not found: %w", decodeErr)
-			}
+			return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response was invalid: %w", decodeErr)
 		}
-		receipt, err = receiptFromProject(target, observed)
-		if err != nil {
-			if decodeErr != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid: %w; readback: %w", decodeErr, err)
-			}
-			return Receipt{}, err
+		created, receiptErr := receiptFromProject(target, observed)
+		if receiptErr != nil {
+			return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response did not match target: %w", receiptErr)
 		}
+		created.Verification = VerificationCreated
+		if err := journal(created); err != nil {
+			return created, fmt.Errorf("AGX-PROJECT-JOURNAL: cannot persist create receipt: %w", err)
+		}
+		confirmed, readbackErr := readProject(ctx, target, created.Number, runner)
+		if readbackErr != nil {
+			return created, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create readback was inconclusive: %w", readbackErr)
+		}
+		if !sameProjectIdentity(confirmed, created) || confirmed.Visibility != created.Visibility {
+			return created, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create readback did not match create response")
+		}
+		receipt = confirmed
 		receipt.Verification = VerificationCreated
-		if err := journal(receipt); err != nil {
-			return receipt, fmt.Errorf("AGX-PROJECT-JOURNAL: cannot persist create receipt: %w", err)
-		}
 	} else {
 		receipt = *existing
-		if err := ValidateReceipt(receipt, target); err != nil {
-			return Receipt{}, err
+		if err := Revalidate(ctx, target, receipt, runner); err != nil {
+			return receipt, err
 		}
 	}
 
@@ -293,9 +292,39 @@ func Verify(ctx context.Context, target Target, receipt Receipt, runner Runner) 
 	if err != nil {
 		return err
 	}
-	if observed.Number != receipt.Number || observed.NodeID != receipt.NodeID || !strings.EqualFold(observed.URL, receipt.URL) ||
+	if observed.Number != receipt.Number || observed.NodeID != receipt.NodeID || observed.URL != receipt.URL ||
 		observed.Title != receipt.Title || observed.Visibility != receipt.Visibility || observed.LinkedRepository != receipt.LinkedRepository ||
 		observed.InstallationID != receipt.InstallationID || !observed.Linked {
+		return fmt.Errorf("AGX-PROJECT-DRIFT: Project readback no longer matches receipt")
+	}
+	return nil
+}
+
+// Revalidate proves project scope and exact receipt-bound Project identity and
+// visibility without requiring the repository link to be complete.
+func Revalidate(ctx context.Context, target Target, receipt Receipt, runner Runner) error {
+	runner = defaultRunner(runner)
+	if err := validateTarget(target); err != nil {
+		return err
+	}
+	if err := ValidateReceipt(receipt, target); err != nil {
+		return err
+	}
+	if err := requireCLI(runner); err != nil {
+		return err
+	}
+	output, err := runner.Run(ctx, "", "gh", "auth", "status", "--active", "--json", "hosts")
+	if err != nil {
+		return fmt.Errorf("AGX-PROJECT-AUTH: cannot inspect GitHub CLI authentication: %w", err)
+	}
+	if !hasProjectScope(output) {
+		return fmt.Errorf("AGX-PROJECT-SCOPE: active GitHub CLI token lacks project scope; run gh auth refresh -s project")
+	}
+	observed, err := readProject(ctx, target, receipt.Number, runner)
+	if err != nil {
+		return err
+	}
+	if !sameProjectIdentity(observed, receipt) || observed.Visibility != receipt.Visibility {
 		return fmt.Errorf("AGX-PROJECT-DRIFT: Project readback no longer matches receipt")
 	}
 	return nil
@@ -339,7 +368,7 @@ func inspect(ctx context.Context, target Target, number int, runner Runner) (Rec
 		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: Issues are disabled for %s", target.LinkedRepository)
 	}
 	for _, item := range repository.ProjectsV2.Nodes {
-		if item.ID == receipt.NodeID && item.Number == receipt.Number && item.Title == receipt.Title && strings.EqualFold(item.URL, receipt.URL) {
+		if item.ID == receipt.NodeID && item.Number == receipt.Number && item.Title == receipt.Title && item.URL == receipt.URL {
 			receipt.Linked = true
 			return receipt, nil
 		}
@@ -367,7 +396,9 @@ func readProject(ctx context.Context, target Target, number int, runner Runner) 
 }
 
 func receiptFromProject(target Target, observed projectJSON) (Receipt, error) {
-	if observed.Public == nil || observed.ID == "" || observed.Number <= 0 || !strings.EqualFold(observed.Owner.Login, target.Owner) || observed.Title != target.Title || !validURL(observed.URL) {
+	urlOwner, urlNumber, ok := projectCoordinates(observed.URL)
+	if observed.Public == nil || observed.ID == "" || observed.Number <= 0 || !strings.EqualFold(observed.Owner.Login, target.Owner) || observed.Title != target.Title ||
+		!ok || !strings.EqualFold(urlOwner, target.Owner) || urlNumber != observed.Number {
 		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: Project identity does not match target")
 	}
 	visibility := VisibilityPrivate
@@ -381,7 +412,7 @@ func receiptFromProject(target Target, observed projectJSON) (Receipt, error) {
 }
 
 func sameProjectIdentity(left, right Receipt) bool {
-	return left.Owner == right.Owner && left.Number == right.Number && left.NodeID == right.NodeID && left.Title == right.Title && strings.EqualFold(left.URL, right.URL)
+	return left.Owner == right.Owner && left.Number == right.Number && left.NodeID == right.NodeID && left.Title == right.Title && left.URL == right.URL
 }
 
 func validateTarget(target Target) error {
@@ -400,8 +431,9 @@ func validateTarget(target Target) error {
 func ValidateReceipt(receipt Receipt, target Target) error {
 	validEvidence := (receipt.Verification == VerificationCreated || receipt.Verification == VerificationConfigured) && !receipt.Linked ||
 		receipt.Verification == VerificationReadback && receipt.Linked
+	urlOwner, urlNumber, validProjectURL := projectCoordinates(receipt.URL)
 	if receipt.Owner != target.Owner || receipt.Title != target.Title || receipt.LinkedRepository != target.LinkedRepository || receipt.InstallationID != target.InstallationID ||
-		receipt.Number <= 0 || receipt.NodeID == "" || !validURL(receipt.URL) || !receipt.Created ||
+		receipt.Number <= 0 || receipt.NodeID == "" || !validProjectURL || !strings.EqualFold(urlOwner, receipt.Owner) || urlNumber != receipt.Number || !receipt.Created ||
 		(receipt.Visibility != VisibilityPrivate && receipt.Visibility != VisibilityPublic) || !validEvidence {
 		return fmt.Errorf("AGX-PROJECT-RECEIPT: Project receipt does not match target")
 	}
@@ -452,8 +484,10 @@ func decodeProject(data []byte) (projectJSON, error) {
 	if err := decodeJSON(data, &value); err != nil {
 		return projectJSON{}, err
 	}
+	urlOwner, urlNumber, validProjectURL := projectCoordinates(value.URL)
 	if value.Public == nil || value.ID == "" || value.Number <= 0 || !validName(value.Owner.Login, 39) ||
-		strings.TrimSpace(value.Title) != value.Title || value.Title == "" || utf8.RuneCountInString(value.Title) > 256 || hasControl(value.Title) || !validURL(value.URL) {
+		strings.TrimSpace(value.Title) != value.Title || value.Title == "" || utf8.RuneCountInString(value.Title) > 256 || hasControl(value.Title) ||
+		!validProjectURL || !strings.EqualFold(urlOwner, value.Owner.Login) || urlNumber != value.Number {
 		return projectJSON{}, fmt.Errorf("Project response has invalid required fields")
 	}
 	return value, nil
@@ -521,9 +555,21 @@ func defaultRunner(runner Runner) Runner {
 	return runner
 }
 
-func validURL(value string) bool {
+func projectCoordinates(value string) (string, int, bool) {
 	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && strings.EqualFold(parsed.Host, "github.com") && parsed.User == nil
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawPath != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.Opaque != "" {
+		return "", 0, false
+	}
+	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 4 || (parts[0] != "users" && parts[0] != "orgs") || !validName(parts[1], 39) || parts[2] != "projects" {
+		return "", 0, false
+	}
+	number, err := strconv.Atoi(parts[3])
+	if err != nil || number <= 0 || strconv.Itoa(number) != parts[3] {
+		return "", 0, false
+	}
+	return parts[1], number, true
 }
 
 func validName(value string, limit int) bool {

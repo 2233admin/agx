@@ -679,6 +679,58 @@ func TestInitializeRetriesUncertainRepositoryAfterConfirmedAbsence(t *testing.T)
 	}
 }
 
+func TestStatusKeepsConfirmedAbsentUncertainRepositoryRecoverable(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	slug := "octo-lab/agent-contracts"
+	repositoryRunner.failCreate[slug] = true
+	repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+
+	receipt, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner))
+	if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+		t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+	}
+	state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
+	if statusErr != nil || state.Status != activation.PhaseNeedsResume || len(state.Problems) != 0 {
+		t.Fatalf("Status() state=%+v err=%v, want recoverable needs_resume", state, statusErr)
+	}
+}
+
+func TestInitializeRevalidatesPartialProjectBeforeMissingRepositoryCreate(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	repositoryRunner.failProjectLink = true
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+
+	receipt, _, err := activation.Initialize(context.Background(), options)
+	if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Project == nil || receipt.Project.Linked {
+		t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+	}
+	receipt.Repositories = receipt.Repositories[:1]
+	data, marshalErr := json.Marshal(receipt)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agx", "initialization.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	delete(repositoryRunner.repositories, "octo-lab/agent-contracts")
+	repositoryRunner.failProjectLink = false
+	repositoryRunner.project.id = "PVT_remote_drift"
+	mutationCount := repositoryRunner.mutationCalls
+	providerMutationCount := len(providerRunner.mutations)
+
+	if _, _, err := activation.Initialize(context.Background(), options); err == nil {
+		t.Fatal("Initialize() accepted partial Project readback drift")
+	}
+	if repositoryRunner.mutationCalls != mutationCount || len(providerRunner.mutations) != providerMutationCount {
+		t.Fatalf("mutations ran before partial Project revalidation: repository=%d want=%d provider=%d want=%d",
+			repositoryRunner.mutationCalls, mutationCount, len(providerRunner.mutations), providerMutationCount)
+	}
+}
+
 func deploymentOptions(root string, providerRunner provider.Runner, repositoryRunner repository.Runner) activation.Options {
 	return activation.Options{
 		Root: root, GitHubOwner: "octo-lab", Visibility: repository.VisibilityPrivate,

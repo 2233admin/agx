@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -319,6 +320,46 @@ func TestDiagnoseNextStepsNamesInitializationResumeCommand(t *testing.T) {
 	next := diagnoseNextSteps(`D:\agx`, installer.State{Phase: "configured"}, activation.State{Status: activation.PhaseNeedsResume})
 	if len(next) != 1 || !strings.Contains(next[0], "agx init") || !strings.Contains(next[0], "--apply") || strings.Contains(next[0], "original apply command") {
 		t.Fatalf("diagnoseNextSteps() = %#v, want original agx init ... --apply guidance", next)
+	}
+}
+
+func TestDiagnoseDoesNotDiscloseAbsoluteInstallationRoot(t *testing.T) {
+	root := makeGuidedInstallation(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{"human", "json"} {
+		t.Run(output, func(t *testing.T) {
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			code := runWithDependencies(
+				[]string{"diagnose", "--root", root, "--output", output}, "0.0.0-test", stdout, stderr, runtimeDependencies{},
+			)
+			if code != exitcode.Success {
+				t.Fatalf("diagnose code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			combined := stdout.String() + stderr.String()
+			escapedRoot, _ := json.Marshal(root)
+			escapedHome, _ := json.Marshal(home)
+			for _, sentinel := range []string{root, home, strings.Trim(string(escapedRoot), `"`), strings.Trim(string(escapedHome), `"`)} {
+				if sentinel != "" && strings.Contains(combined, sentinel) {
+					t.Fatalf("diagnose %s output disclosed local path sentinel %q: %q", output, sentinel, combined)
+				}
+			}
+			placeholderOutput := combined
+			if output == "json" {
+				var report struct {
+					Next []string `json:"next_steps"`
+				}
+				if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+					t.Fatal(err)
+				}
+				placeholderOutput = strings.Join(report.Next, "\n")
+			}
+			if !strings.Contains(placeholderOutput, "<installation-root>") {
+				t.Fatalf("diagnose %s output = %q, want stable root placeholder", output, combined)
+			}
+		})
 	}
 }
 

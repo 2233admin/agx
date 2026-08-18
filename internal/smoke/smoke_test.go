@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -39,6 +40,14 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			"number": 12, "url": "https://github.com/octo-lab/agent-control/issues/12",
 			"title": "Bootstrap Verification [install-test]", "body": marker,
 		}})
+	}
+	if args[0] == "project" && args[1] == "list" {
+		return json.Marshal(map[string]any{
+			"projects": []map[string]any{{
+				"number": 7, "title": "agent-control deployment (install-test)", "url": "https://github.com/orgs/octo-lab/projects/7",
+			}},
+			"totalCount": 1,
+		})
 	}
 	if args[0] == "project" && args[1] == "item-list" {
 		issueURL := "https://github.com/octo-lab/agent-control/issues/12"
@@ -164,16 +173,67 @@ func TestInspectDoesNotAcceptMergedPRWithoutWorkPointerEvidence(t *testing.T) {
 	}
 }
 
-func TestInspectKeepsAwaitingWhenMatchingProjectItemHasNoID(t *testing.T) {
+func TestInspectRejectsMatchingProjectItemWithoutID(t *testing.T) {
 	evidence, err := Inspect(context.Background(), testContract(), fakeRunner{missingProjectItemID: true})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || evidence.Status == StatusEffective {
+		t.Fatalf("Project item without ID evidence=%+v err=%v, want fail closed", evidence, err)
 	}
-	if evidence.Status != StatusAwaiting || evidence.ProjectItem != "" {
-		t.Fatalf("Project item without ID became effective: %+v", evidence)
+}
+
+type projectInventoryRunner struct {
+	fakeRunner
+	output []byte
+}
+
+func (runner projectInventoryRunner) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	if name == "gh" && len(args) >= 2 && args[0] == "project" && args[1] == "item-list" {
+		return runner.output, nil
 	}
-	if !strings.Contains(strings.Join(evidence.Problems, "\n"), "not in the deployment Project") {
-		t.Fatalf("problems = %v", evidence.Problems)
+	return runner.fakeRunner.Run(ctx, dir, name, args...)
+}
+
+func TestInspectRejectsIncompleteProjectItemInventory(t *testing.T) {
+	invalid := map[string]string{
+		"missing items":         `{"totalCount":0}`,
+		"null items":            `{"items":null,"totalCount":0}`,
+		"items wrong type":      `{"items":{},"totalCount":0}`,
+		"missing total count":   `{"items":[]}`,
+		"null total count":      `{"items":[],"totalCount":null}`,
+		"count wrong type":      `{"items":[],"totalCount":"0"}`,
+		"negative count":        `{"items":[],"totalCount":-1}`,
+		"count larger":          `{"items":[],"totalCount":1}`,
+		"count smaller":         `{"items":[{"id":"PVTI_item","content":{"url":"https://github.com/octo-lab/agent-control/issues/12"}}],"totalCount":0}`,
+		"duplicate field":       `{"items":[],"items":[],"totalCount":0}`,
+		"trailing document":     `{"items":[],"totalCount":0}{"extra":true}`,
+		"missing item id":       `{"items":[{"content":{"url":"https://github.com/octo-lab/agent-control/issues/12"}}],"totalCount":1}`,
+		"malformed item id":     `{"items":[{"id":"bad\\nitem","content":{"url":"https://github.com/octo-lab/agent-control/issues/12"}}],"totalCount":1}`,
+		"missing content url":   `{"items":[{"id":"PVTI_item","content":{}}],"totalCount":1}`,
+		"malformed content url": `{"items":[{"id":"PVTI_item","content":{"url":"https://example.com/octo-lab/agent-control/issues/12"}}],"totalCount":1}`,
+	}
+	for name, output := range invalid {
+		t.Run(name, func(t *testing.T) {
+			evidence, err := Inspect(context.Background(), testContract(), projectInventoryRunner{output: []byte(output)})
+			if err == nil || evidence.Status == StatusEffective {
+				t.Fatalf("Inspect() evidence=%+v err=%v, want fail closed", evidence, err)
+			}
+		})
+	}
+}
+
+func TestProjectCoordinatesRequireCanonicalBoundURL(t *testing.T) {
+	invalid := []string{
+		"https://github.com/orgs/octo-lab/projects/7/extra",
+		"https://github.com/octo-lab/agent-control",
+		"https://github.com/orgs/octo-lab/projects/7?tab=items",
+		"https://github.com/orgs/octo-lab/projects/7#items",
+		"https://github.com:443/orgs/octo-lab/projects/7",
+		"https://github.com/orgs/octo-lab/projects/7/",
+		"https://user@github.com/orgs/octo-lab/projects/7",
+	}
+	for _, value := range invalid {
+		if _, _, err := projectCoordinates(value); err == nil {
+			t.Fatalf("projectCoordinates() accepted %q", value)
+		}
 	}
 }
 
@@ -182,4 +242,100 @@ func TestDecodeJSONRejectsTrailingValues(t *testing.T) {
 	if err := decodeJSON([]byte(`{"ok":true}{"unexpected":true}`), &value); err == nil {
 		t.Fatal("decodeJSON() accepted trailing JSON")
 	}
+}
+
+type ownerInventoryRunner struct {
+	fakeRunner
+	outputs [][]byte
+	calls   int
+	limits  []string
+}
+
+func (runner *ownerInventoryRunner) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	if name == "gh" && len(args) >= 2 && args[0] == "project" && args[1] == "list" {
+		runner.limits = append(runner.limits, argumentAfter(args, "--limit"))
+		index := runner.calls
+		runner.calls++
+		if index >= len(runner.outputs) {
+			return nil, errors.New("unexpected Project inventory page")
+		}
+		return runner.outputs[index], nil
+	}
+	return runner.fakeRunner.Run(ctx, dir, name, args...)
+}
+
+func TestInspectExpandsOwnerProjectInventoryToTotalCount(t *testing.T) {
+	first := projectInventory(t, 100, 101, false)
+	complete := projectInventory(t, 101, 101, false)
+	runner := &ownerInventoryRunner{outputs: [][]byte{first, complete}}
+	evidence, err := Inspect(context.Background(), testContract(), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Status != StatusEffective || runner.calls != 2 || strings.Join(runner.limits, ",") != "100,101" {
+		t.Fatalf("evidence=%+v calls=%d limits=%v", evidence, runner.calls, runner.limits)
+	}
+}
+
+func TestInspectRequiresExactlyOneCanonicalProjectInventoryMatch(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		duplicate bool
+	}{
+		{name: "missing"},
+		{name: "duplicate", duplicate: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output := projectInventory(t, 2, 2, test.duplicate)
+			if !test.duplicate {
+				output = projectInventoryWithoutTarget(t)
+			}
+			runner := &ownerInventoryRunner{outputs: [][]byte{output}}
+			if evidence, err := Inspect(context.Background(), testContract(), runner); err == nil || evidence.Status == StatusEffective {
+				t.Fatalf("Inspect() evidence=%+v err=%v, want fail closed", evidence, err)
+			}
+		})
+	}
+}
+
+func projectInventory(t *testing.T, returned, total int, duplicateTarget bool) []byte {
+	t.Helper()
+	projects := make([]map[string]any, 0, returned)
+	for index := 0; index < returned; index++ {
+		number := index + 100
+		title := "unrelated deployment " + strconv.Itoa(number)
+		projectURL := "https://github.com/orgs/octo-lab/projects/" + strconv.Itoa(number)
+		if index == 0 || duplicateTarget && index == 1 {
+			number = 7
+			title = "agent-control deployment (install-test)"
+			projectURL = "https://github.com/orgs/octo-lab/projects/7"
+		}
+		projects = append(projects, map[string]any{"number": number, "title": title, "url": projectURL})
+	}
+	output, err := json.Marshal(map[string]any{"projects": projects, "totalCount": total})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return output
+}
+
+func projectInventoryWithoutTarget(t *testing.T) []byte {
+	t.Helper()
+	output, err := json.Marshal(map[string]any{
+		"projects":   []map[string]any{{"number": 8, "title": "unrelated", "url": "https://github.com/orgs/octo-lab/projects/8"}},
+		"totalCount": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return output
+}
+
+func argumentAfter(args []string, name string) string {
+	for index, argument := range args {
+		if argument == name && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
 }

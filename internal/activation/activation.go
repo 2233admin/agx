@@ -391,8 +391,8 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 		if err := project.Verify(ctx, projectTarget, *existing.Project, options.RepositoryRunner); err != nil {
 			return preparedDeployment{}, fmt.Errorf("AGX-INIT-PROJECT-DRIFT: %w", err)
 		}
-	} else if err := project.ValidateReceipt(*existing.Project, projectTarget); err != nil {
-		return preparedDeployment{}, fmt.Errorf("AGX-INIT-PROJECT-RECEIPT: %w", err)
+	} else if err := project.Revalidate(ctx, projectTarget, *existing.Project, options.RepositoryRunner); err != nil {
+		return preparedDeployment{}, fmt.Errorf("AGX-INIT-PROJECT-DRIFT: %w", err)
 	}
 	providerRunner := options.Runner
 	if providerRunner == nil {
@@ -778,6 +778,16 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 	for _, item := range receipt.Repositories {
 		state.Repositories = append(state.Repositories, item.NameWithOwner)
 		state.RepositoryDetails = append(state.RepositoryDetails, item)
+		if item.Verification == repository.VerificationUncertain && !item.Created &&
+			(receipt.Phase == PhaseNeedsResume || receipt.Phase == PhaseProvisioning) {
+			owner, name, ok := strings.Cut(item.NameWithOwner, "/")
+			if ok {
+				_, inspectErr := repository.Inspect(ctx, owner, name, repositoryRunner)
+				if inspectErr != nil && strings.Contains(inspectErr.Error(), "AGX-REPOSITORY-ABSENT") {
+					continue
+				}
+			}
+		}
 		if err := repository.Verify(ctx, item, repositoryRunner); err != nil {
 			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
 		}
@@ -795,6 +805,8 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 				if err := project.Verify(ctx, target, *receipt.Project, repositoryRunner); err != nil {
 					state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
 				}
+			} else if err := project.Revalidate(ctx, target, *receipt.Project, repositoryRunner); err != nil {
+				state.Problems = append(state.Problems, "GitHub Project identity or visibility drifted")
 			} else if receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseProvisioning {
 				state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
 			}
@@ -1160,6 +1172,59 @@ func receiptPath(root string) string {
 	return filepath.Join(root, ".agx", initializationFile)
 }
 
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delimiter, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delimiter {
+		case '{':
+			keys := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return fmt.Errorf("invalid object key")
+				}
+				if _, duplicate := keys[key]; duplicate {
+					return fmt.Errorf("duplicate object key %q", key)
+				}
+				keys[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for decoder.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("unexpected JSON delimiter")
+		}
+		_, err = decoder.Token()
+		return err
+	}
+	if err := walk(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("trailing data")
+	}
+	return nil
+}
+
 func readReceipt(root string) (Receipt, bool, error) {
 	path, present, expectedInfo, err := inspectReceiptPath(root)
 	if err != nil {
@@ -1184,6 +1249,9 @@ func readReceipt(root string) (Receipt, bool, error) {
 	}
 	if closeErr != nil {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot close initialization receipt: %w", closeErr)
+	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %w", err)
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()

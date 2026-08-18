@@ -94,6 +94,9 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	if err != nil {
 		return Evidence{}, err
 	}
+	if err := verifyProjectInventory(ctx, contract, projectOwner, projectNumber, runner); err != nil {
+		return Evidence{}, err
+	}
 
 	issueOutput, err := runner.Run(ctx, "", "gh", "issue", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.IssueTitle+" in:title", "--json", "number,url,title,body")
 	if err != nil {
@@ -121,23 +124,12 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		if projectErr != nil {
 			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: cannot inspect deployment Project items: %w", projectErr)
 		}
-		var inventory struct {
-			TotalCount int `json:"totalCount"`
-			Items      []struct {
-				ID      string `json:"id"`
-				Content struct {
-					URL string `json:"url"`
-				} `json:"content"`
-			} `json:"items"`
-		}
-		if err := decodeJSON(projectOutput, &inventory); err != nil {
+		items, err := decodeProjectItems(projectOutput)
+		if err != nil {
 			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: invalid deployment Project item inventory: %w", err)
 		}
-		if inventory.TotalCount > len(inventory.Items) {
-			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: deployment Project item inventory is truncated")
-		}
-		for _, item := range inventory.Items {
-			if strings.EqualFold(item.Content.URL, evidence.IssueURL) && item.ID != "" {
+		for _, item := range items {
+			if item.URL == evidence.IssueURL {
 				evidence.ProjectItem = item.ID
 				break
 			}
@@ -309,29 +301,236 @@ func hasExactYAMLLine(content, expected string) bool {
 	return false
 }
 
+type projectItem struct {
+	ID  string
+	URL string
+}
+
+func decodeProjectItems(data []byte) ([]projectItem, error) {
+	var fields struct {
+		Items      json.RawMessage `json:"items"`
+		TotalCount json.RawMessage `json:"totalCount"`
+	}
+	if err := decodeJSON(data, &fields); err != nil || len(fields.Items) == 0 || len(fields.TotalCount) == 0 || string(fields.Items) == "null" || string(fields.TotalCount) == "null" {
+		return nil, fmt.Errorf("missing Project item inventory fields")
+	}
+	var itemsRaw []json.RawMessage
+	var total int
+	if err := decodeJSON(fields.Items, &itemsRaw); err != nil {
+		return nil, fmt.Errorf("invalid items field")
+	}
+	if err := decodeJSON(fields.TotalCount, &total); err != nil || total < 0 || total != len(itemsRaw) {
+		return nil, fmt.Errorf("invalid totalCount field")
+	}
+	items := make([]projectItem, len(itemsRaw))
+	for index, raw := range itemsRaw {
+		var itemFields struct {
+			ID      json.RawMessage `json:"id"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := decodeJSON(raw, &itemFields); err != nil || len(itemFields.ID) == 0 || len(itemFields.Content) == 0 || string(itemFields.Content) == "null" {
+			return nil, fmt.Errorf("invalid Project item at index %d", index)
+		}
+		var contentFields struct {
+			URL json.RawMessage `json:"url"`
+		}
+		if err := decodeJSON(itemFields.Content, &contentFields); err != nil || len(contentFields.URL) == 0 {
+			return nil, fmt.Errorf("invalid Project item content at index %d", index)
+		}
+		if err := decodeJSON(itemFields.ID, &items[index].ID); err != nil || !validNodeID(items[index].ID) {
+			return nil, fmt.Errorf("invalid Project item id at index %d", index)
+		}
+		if err := decodeJSON(contentFields.URL, &items[index].URL); err != nil || !validGitHubURL(items[index].URL) {
+			return nil, fmt.Errorf("invalid Project item URL at index %d", index)
+		}
+	}
+	return items, nil
+}
+
+func validNodeID(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func verifyProjectInventory(ctx context.Context, contract Contract, owner string, number int, runner Runner) error {
+	limit := 100
+	for attempts := 0; attempts < 8; attempts++ {
+		output, err := runner.Run(ctx, "", "gh", "project", "list", "--owner", owner, "--limit", strconv.Itoa(limit), "--format", "json")
+		if err != nil {
+			return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: cannot inspect owner Project inventory: %w", err)
+		}
+		projects, total, err := decodeProjectInventory(output)
+		if err != nil {
+			return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: invalid owner Project inventory: %w", err)
+		}
+		if total > len(projects) {
+			if total <= limit {
+				return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: Project inventory is truncated")
+			}
+			limit = total
+			continue
+		}
+		if total != len(projects) {
+			return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: Project inventory count is inconsistent")
+		}
+		matches := 0
+		for _, item := range projects {
+			if item.Number == number && item.Title == contract.ProjectTitle && item.URL == contract.ProjectURL {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: expected exactly one canonical Project match, found %d", matches)
+		}
+		return nil
+	}
+	return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: Project inventory changed during pagination")
+}
+
+type inventoryProject struct {
+	Number int
+	Title  string
+	URL    string
+}
+
+func decodeProjectInventory(data []byte) ([]inventoryProject, int, error) {
+	var fields struct {
+		Projects   json.RawMessage `json:"projects"`
+		TotalCount json.RawMessage `json:"totalCount"`
+	}
+	if err := decodeJSON(data, &fields); err != nil || len(fields.Projects) == 0 || len(fields.TotalCount) == 0 {
+		return nil, 0, fmt.Errorf("missing Project inventory fields")
+	}
+	var projectsRaw []json.RawMessage
+	var total int
+	if err := decodeJSON(fields.Projects, &projectsRaw); err != nil {
+		return nil, 0, fmt.Errorf("invalid projects field")
+	}
+	if err := decodeJSON(fields.TotalCount, &total); err != nil || total < 0 {
+		return nil, 0, fmt.Errorf("invalid totalCount field")
+	}
+	projects := make([]inventoryProject, len(projectsRaw))
+	for index, raw := range projectsRaw {
+		var required struct {
+			Number json.RawMessage `json:"number"`
+			Title  json.RawMessage `json:"title"`
+			URL    json.RawMessage `json:"url"`
+		}
+		if err := decodeJSON(raw, &required); err != nil || len(required.Number) == 0 || len(required.Title) == 0 || len(required.URL) == 0 {
+			return nil, 0, fmt.Errorf("invalid Project at index %d", index)
+		}
+		if err := decodeJSON(raw, &projects[index]); err != nil {
+			return nil, 0, fmt.Errorf("invalid Project at index %d", index)
+		}
+		_, projectNumber, err := projectCoordinates(projects[index].URL)
+		if err != nil || projectNumber != projects[index].Number || strings.TrimSpace(projects[index].Title) != projects[index].Title || projects[index].Title == "" {
+			return nil, 0, fmt.Errorf("invalid Project at index %d", index)
+		}
+	}
+	return projects, total, nil
+}
+
 func projectCoordinates(value string) (string, int, error) {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil {
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawPath != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.Opaque != "" {
 		return "", 0, fmt.Errorf("AGX-SMOKE-CONTRACT: invalid Project URL")
 	}
-	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(parts) != 4 || (parts[0] != "orgs" && parts[0] != "users") || parts[1] == "" || parts[2] != "projects" {
+	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 4 || (parts[0] != "orgs" && parts[0] != "users") || !validProjectOwner(parts[1]) || parts[2] != "projects" {
 		return "", 0, fmt.Errorf("AGX-SMOKE-CONTRACT: invalid Project URL")
 	}
 	number, err := strconv.Atoi(parts[3])
-	if err != nil || number <= 0 {
+	if err != nil || number <= 0 || strconv.Itoa(number) != parts[3] {
 		return "", 0, fmt.Errorf("AGX-SMOKE-CONTRACT: invalid Project URL")
 	}
 	return parts[1], number, nil
 }
 
+func validProjectOwner(value string) bool {
+	if value == "" || len(value) > 39 || value == "." || value == ".." {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func decodeJSON(data []byte, target any) error {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("trailing data")
+	}
+	return nil
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delimiter, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delimiter {
+		case '{':
+			keys := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return fmt.Errorf("invalid object key")
+				}
+				if _, duplicate := keys[key]; duplicate {
+					return fmt.Errorf("duplicate object key %q", key)
+				}
+				keys[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for decoder.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("unexpected JSON delimiter")
+		}
+		_, err = decoder.Token()
+		return err
+	}
+	if err := walk(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
 		return fmt.Errorf("trailing data")
 	}
 	return nil

@@ -682,22 +682,23 @@ func runDiagnose(args []string, stdout, stderr io.Writer, dependencies runtimeDe
 	return exitcode.Success
 }
 
-func diagnoseNextSteps(root string, installation installer.State, initialization activation.State) []string {
+func diagnoseNextSteps(_ string, installation installer.State, initialization activation.State) []string {
+	quotedRoot := quoteCommandArg("<installation-root>")
 	var next []string
 	if installation.Phase == "absent" {
-		return []string{"run agx apply --root " + quoteCommandArg(root)}
+		return []string{"run agx apply --root " + quotedRoot}
 	}
 	if installation.Phase == "drifted" {
 		next = append(next, "repair the listed missing or modified AGX-owned files")
 	}
 	if initialization.Status == activation.StatusAbsent {
-		next = append(next, "run agx init --guided --root "+quoteCommandArg(root)+" for a guided, read-only preview")
+		next = append(next, "run agx init --guided --root "+quotedRoot+" for a guided, read-only preview")
 	}
 	if initialization.Status == activation.PhaseNeedsResume || initialization.Status == activation.PhaseProvisioning {
 		next = append(next, "resolve the initialization problem and rerun the original agx init ... --apply command unchanged")
 	}
 	if initialization.Smoke.Status == smoke.StatusAwaiting {
-		next = append(next, "run one first-use Agent prompt from the initialization result, then run agx status --root "+quoteCommandArg(root))
+		next = append(next, "run one first-use Agent prompt from the initialization result, then run agx status --root "+quotedRoot)
 	}
 	return next
 }
