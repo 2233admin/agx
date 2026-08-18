@@ -152,6 +152,13 @@ func RuntimeReadback(
 func parseRuntimes(data []byte) ([]runtimeEntry, error) {
 	var direct []runtimeEntry
 	if err := strictJSON(data, &direct); err == nil {
+		// A bare `null` decodes cleanly into a nil slice. Returning it here
+		// would surface an unsupported CLI shape as ErrAbsent -- "could not
+		// read" masquerading as "not there", which is the one confusion this
+		// package exists to prevent.
+		if direct == nil {
+			return nil, fmt.Errorf("unrecognised `multica runtime list --output json` shape: top-level null")
+		}
 		return direct, nil
 	}
 

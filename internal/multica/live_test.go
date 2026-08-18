@@ -17,6 +17,14 @@ import (
 //
 //	AGX_LIVE_MULTICA_RUNTIME="Claude (AU-5090)" go test ./internal/multica/ -run Live -v
 func TestLiveRuntimeReadback(t *testing.T) {
+	// Guard on CI before reading the opt-in variable: if CI ever exports
+	// AGX_LIVE_MULTICA_RUNTIME, the env check alone would let this reach a live
+	// deployment from a build agent. The doc comment claims this is disabled in
+	// CI -- this is what makes that claim true.
+	if os.Getenv("CI") != "" {
+		t.Skip("live Multica test is disabled in CI")
+	}
+
 	runtimeName := os.Getenv("AGX_LIVE_MULTICA_RUNTIME")
 	if runtimeName == "" {
 		t.Skip("set AGX_LIVE_MULTICA_RUNTIME to run against a real deployment")

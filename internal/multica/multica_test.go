@@ -3,6 +3,8 @@ package multica
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -158,11 +160,12 @@ func TestRuntimeReadbackRequiresCLIOnPath(t *testing.T) {
 // output must fail loudly rather than degrade to "no runtimes".
 func TestRuntimeReadbackRejectsUnparseableOutput(t *testing.T) {
 	for name, payload := range map[string]string{
-		"garbage":       `not json`,
-		"trailing":      arrayShape + ` {"extra":1}`,
-		"wrong shape":   `{"items":[]}`,
-		"scalar":        `42`,
-		"null runtimes": `{"runtimes":null}`,
+		"garbage":        `not json`,
+		"trailing":       arrayShape + ` {"extra":1}`,
+		"wrong shape":    `{"items":[]}`,
+		"scalar":         `42`,
+		"null runtimes":  `{"runtimes":null}`,
+		"top-level null": `null`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner := &fakeRunner{output: []byte(payload)}
@@ -176,21 +179,46 @@ func TestRuntimeReadbackRejectsUnparseableOutput(t *testing.T) {
 	}
 }
 
-func TestOSRunnerErrorOmitsCommandStderr(t *testing.T) {
+// leakedSecret is written to stderr by the helper process below. If OSRunner
+// ever starts folding stderr into its error, this exact string shows up.
+const leakedSecret = "mul_AGXTESTTOKENSHOULDNOTLEAK"
+
+// TestHelperProcess is not a real test. Re-executed by
+// TestOSRunnerErrorOmitsStartedCommandStderr as a child process that writes a
+// token to stderr and exits nonzero -- the only way to exercise the stderr path
+// of a command that actually started.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("AGX_MULTICA_HELPER_PROCESS") != "1" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "multica: auth failed for token "+leakedSecret)
+	os.Exit(1)
+}
+
+func TestOSRunnerErrorOmitsStartedCommandStderr(t *testing.T) {
 	// Credentials can appear in Multica CLI stderr; AGENTS.md keeps them out of
-	// logs and receipts. Verify the failure path never grows a stderr field.
-	_, err := OSRunner{}.Run(context.Background(), "agx-multica-does-not-exist", "runtime", "list")
+	// logs and receipts.
+	//
+	// An earlier version of this test invoked a nonexistent binary, which fails
+	// before the process starts and therefore can never emit stderr at all -- it
+	// would have passed even if OSRunner started leaking. This drives the real
+	// OSRunner.Run against a child that writes a known token to stderr and exits
+	// nonzero, so the assertion covers the shipped formatting rather than a copy
+	// of it.
+	t.Setenv("AGX_MULTICA_HELPER_PROCESS", "1")
+
+	_, err := OSRunner{}.Run(context.Background(), os.Args[0], "-test.run=TestHelperProcess")
 	if err == nil {
-		t.Skip("unexpected: placeholder binary resolved on this host")
+		t.Fatal("expected the helper process to fail")
+	}
+	if strings.Contains(err.Error(), leakedSecret) {
+		t.Errorf("error text leaked the token from stderr: %v", err)
 	}
 	if strings.Contains(err.Error(), "stderr") {
 		t.Errorf("error text must not carry stderr: %v", err)
 	}
 }
 
-// The point of the whole adapter: a Multica readback is one of the two halves
-// domain.NewVerifiedReceipt requires, and a refusal must make `verified`
-// unreachable.
 func TestReadbackFeedsVerifiedReceipt(t *testing.T) {
 	runner := &fakeRunner{output: []byte(arrayShape)}
 
