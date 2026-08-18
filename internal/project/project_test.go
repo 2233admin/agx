@@ -564,6 +564,30 @@ func TestProvisionCreatesVisibleLinkedProjectAndJournalsEveryMutation(t *testing
 	}
 }
 
+func TestProvisionLinksCaseInsensitiveOwnerWithRepositoryNameOnly(t *testing.T) {
+	runner := &fakeRunner{}
+	target := Target{
+		Owner:            "octo-lab",
+		Title:            "agent-control deployment (install-test)",
+		Visibility:       VisibilityPublic,
+		LinkedRepository: "Octo-Lab/agent-control",
+		InstallationID:   "install-test",
+	}
+	if _, err := Provision(context.Background(), target, nil, runner, func(Receipt) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	var links []recordedCall
+	for _, call := range runner.calls {
+		if len(call.args) >= 2 && call.args[0] == "project" && call.args[1] == "link" {
+			links = append(links, call)
+		}
+	}
+	want := []string{"project", "link", "7", "--owner", "octo-lab", "--repo", "agent-control"}
+	if len(links) != 1 || !reflect.DeepEqual(links[0].args, want) {
+		t.Fatalf("project link calls = %#v, want %#v", links, want)
+	}
+}
+
 func TestProvisionRecoversSuccessfulEditWithInvalidResponse(t *testing.T) {
 	for name, editOutput := range map[string][]byte{
 		"malformed":      []byte(`{"id":`),

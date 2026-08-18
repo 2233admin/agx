@@ -294,6 +294,62 @@ func TestValidateContractRejectsProjectOwnerDifferentFromControlRepository(t *te
 	}
 }
 
+func TestValidateContractRequiresCanonicalDeploymentRepositoryURLs(t *testing.T) {
+	invalid := map[string]string{
+		"http scheme":        "http://github.com/octo-lab/agent-control",
+		"userinfo":           "https://user@github.com/octo-lab/agent-control",
+		"port":               "https://github.com:443/octo-lab/agent-control",
+		"query":              "https://github.com/octo-lab/agent-control?tab=readme",
+		"force query":        "https://github.com/octo-lab/agent-control?",
+		"fragment":           "https://github.com/octo-lab/agent-control#readme",
+		"opaque":             "https:github.com/octo-lab/agent-control",
+		"encoded path":       "https://github.com/octo-lab%2Fagent-control",
+		"parent traversal":   "https://github.com/octo-lab/../agent-control",
+		"current traversal":  "https://github.com/octo-lab/./agent-control",
+		"trailing slash":     "https://github.com/octo-lab/agent-control/",
+		"extra path":         "https://github.com/octo-lab/agent-control/settings",
+		"invalid owner":      "https://github.com/bad_owner/agent-control",
+		"invalid repository": "https://github.com/octo-lab/agent~control",
+		"git suffix":         "https://github.com/octo-lab/agent-control.git",
+	}
+	for name, repositoryURL := range invalid {
+		t.Run("control "+name, func(t *testing.T) {
+			contract := testContract()
+			contract.ControlRepositoryURL = repositoryURL
+			if _, err := validateContract(contract); err == nil {
+				t.Fatalf("validateContract() accepted control repository URL %q", repositoryURL)
+			}
+		})
+		t.Run("contracts "+name, func(t *testing.T) {
+			contract := testContract()
+			contract.ContractsRepositoryURL = repositoryURL
+			if _, err := validateContract(contract); err == nil {
+				t.Fatalf("validateContract() accepted contracts repository URL %q", repositoryURL)
+			}
+		})
+	}
+}
+
+func TestValidateContractRequiresMatchingDeploymentRepositoryOwners(t *testing.T) {
+	contract := testContract()
+	contract.ContractsRepositoryURL = "https://github.com/other-owner/agent-contracts"
+	if _, err := validateContract(contract); err == nil {
+		t.Fatal("validateContract() accepted deployment repositories with different owners")
+	}
+}
+
+func TestValidateContractAcceptsCaseInsensitiveDeploymentOwnerMatch(t *testing.T) {
+	contract := testContract()
+	contract.ContractsRepositoryURL = "https://github.com/OCTO-LAB/agent-contracts"
+	slug, err := validateContract(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "octo-lab/agent-control" {
+		t.Fatalf("validateContract() slug = %q", slug)
+	}
+}
+
 func TestProjectCoordinatesRequireCanonicalBoundURL(t *testing.T) {
 	invalid := []string{
 		"https://github.com/orgs/octo-lab/projects/7/extra",
