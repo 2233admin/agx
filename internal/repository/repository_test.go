@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -45,6 +46,7 @@ type fakeRunner struct {
 	landOnCreate     bool
 	createErr        error
 	gitErrCommand    string
+	absentOutput     []byte
 	absentReturnsErr bool
 }
 
@@ -87,10 +89,14 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 		}
 		repository, present := runner.repositories[key]
 		if !present {
-			if runner.absentReturnsErr {
-				return []byte(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"not found"}]}`), errors.New("gh exited 1")
+			output := runner.absentOutput
+			if output == nil {
+				output = []byte(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"not found"}]}`)
 			}
-			return []byte(`{"data":{"repository":null}}`), nil
+			if runner.absentReturnsErr {
+				return output, errors.New("gh exited 1")
+			}
+			return output, nil
 		}
 		if commit == "" {
 			return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{
@@ -249,16 +255,39 @@ func TestProvisionDoesNotOpenStagingUntilAllPreflightsPass(t *testing.T) {
 }
 
 func TestPreflightAcceptsOnlyStructuredRepositoryNotFoundAsAbsent(t *testing.T) {
-	runner := newFakeRunner()
-	runner.absentReturnsErr = true
-	if err := Preflight(context.Background(), []Target{testTarget("agent-control"), testTarget("agent-contracts")}, runner); err != nil {
-		t.Fatalf("Preflight() rejected structured NOT_FOUND: %v", err)
+	for _, commandFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("command-fails-%t", commandFails), func(t *testing.T) {
+			runner := newFakeRunner()
+			runner.absentReturnsErr = commandFails
+			if err := Preflight(context.Background(), []Target{testTarget("agent-control")}, runner); err != nil {
+				t.Fatalf("Preflight() rejected structured NOT_FOUND: %v", err)
+			}
+		})
 	}
+}
 
-	runner = newFakeRunner()
-	runner.malformedName = "agent-control"
-	if err := Preflight(context.Background(), []Target{testTarget("agent-control")}, runner); err == nil {
-		t.Fatal("Preflight() accepted structurally ambiguous inventory")
+func TestProvisionFailsClosedForInconclusiveRepositoryAbsence(t *testing.T) {
+	tests := map[string]string{
+		"missing errors":      `{"data":{"repository":null}}`,
+		"null errors":         `{"data":{"repository":null},"errors":null}`,
+		"empty errors":        `{"data":{"repository":null},"errors":[]}`,
+		"non absence error":   `{"data":{"repository":null},"errors":[{"type":"FORBIDDEN","path":["repository"]}]}`,
+		"mixed errors":        `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"]},{"type":"FORBIDDEN","path":["repository"]}]}`,
+		"wrong error path":    `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["viewer"]}]}`,
+		"missing data":        `{"errors":[{"type":"NOT_FOUND","path":["repository"]}]}`,
+		"missing repository":  `{"data":{},"errors":[{"type":"NOT_FOUND","path":["repository"]}]}`,
+		"malformed":           `{"data":{"repository":null}`,
+		"trailing JSON value": `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"]}]} {"extra":true}`,
+	}
+	for name, output := range tests {
+		t.Run(name, func(t *testing.T) {
+			runner := newFakeRunner()
+			runner.absentOutput = []byte(output)
+			if _, err := Provision(context.Background(), []Target{testTarget("agent-control")}, runner); err == nil {
+				t.Fatal("Provision() accepted inconclusive repository absence")
+			}
+			assertNoWrites(t, runner.calls)
+		})
 	}
 }
 

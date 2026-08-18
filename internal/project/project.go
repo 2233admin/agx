@@ -109,12 +109,22 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 			}
 			return recovered, fmt.Errorf("AGX-PROJECT-CREATE-PARTIAL: gh reported an error, but the uniquely marked Project was discovered: %w", err)
 		}
-		observed, err := decodeProject(output)
-		if err != nil {
-			return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE: invalid create response: %w", err)
+		observed, decodeErr := decodeProject(output)
+		if decodeErr != nil {
+			var found bool
+			observed, found, err = findTargetProject(ctx, target, runner)
+			if err != nil {
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid: %w; inventory: %w", decodeErr, err)
+			}
+			if !found {
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid and the Project was not found: %w", decodeErr)
+			}
 		}
 		receipt, err = receiptFromProject(target, observed)
 		if err != nil {
+			if decodeErr != nil {
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid: %w; readback: %w", decodeErr, err)
+			}
 			return Receipt{}, err
 		}
 		receipt.Verification = VerificationCreated
@@ -135,7 +145,7 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 			if readbackErr != nil {
 				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY-UNCERTAIN: edit failed and readback was inconclusive: %v; readback: %w", editErr, readbackErr)
 			}
-			if updated.NodeID != receipt.NodeID || !strings.EqualFold(updated.URL, receipt.URL) {
+			if !sameProjectIdentity(updated, receipt) {
 				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY-UNCERTAIN: edit failed and readback Project identity changed: %w", editErr)
 			}
 			if updated.Visibility != target.Visibility {
@@ -147,13 +157,29 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 			}
 			return updated, fmt.Errorf("AGX-PROJECT-VISIBILITY-PARTIAL: gh reported an error, but Project visibility was confirmed: %w", editErr)
 		}
-		observed, err := decodeProject(output)
-		if err != nil {
-			return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY: invalid edit response: %w", err)
+		observed, responseErr := decodeProject(output)
+		var updated Receipt
+		if responseErr == nil {
+			updated, responseErr = receiptFromProject(target, observed)
+			if responseErr == nil && !sameProjectIdentity(updated, receipt) {
+				responseErr = fmt.Errorf("edit response Project identity changed")
+			}
+			if responseErr == nil && updated.Visibility != target.Visibility {
+				responseErr = fmt.Errorf("edit response confirmed visibility %s", updated.Visibility)
+			}
 		}
-		updated, err := receiptFromProject(target, observed)
-		if err != nil {
-			return receipt, err
+		if responseErr != nil {
+			recovered, readbackErr := readProject(ctx, target, receipt.Number, runner)
+			if readbackErr != nil {
+				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY-UNCERTAIN: edit response was inconclusive: %w; readback: %w", responseErr, readbackErr)
+			}
+			if !sameProjectIdentity(recovered, receipt) {
+				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY-UNCERTAIN: readback Project identity changed after inconclusive edit response: %w", responseErr)
+			}
+			if recovered.Visibility != target.Visibility {
+				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY: readback confirmed visibility %s after inconclusive edit response: %w", recovered.Visibility, responseErr)
+			}
+			updated = recovered
 		}
 		updated.Verification = VerificationConfigured
 		receipt = updated
@@ -213,17 +239,11 @@ func Preflight(ctx context.Context, target Target, runner Runner) error {
 	if err != nil {
 		return fmt.Errorf("AGX-PROJECT-INVENTORY: cannot list Projects for %s: %w", target.Owner, err)
 	}
-	var inventory struct {
-		Projects   []projectJSON `json:"projects"`
-		TotalCount int           `json:"totalCount"`
-	}
-	if err := decodeJSON(output, &inventory); err != nil {
+	projects, err := decodeProjectInventory(output)
+	if err != nil {
 		return fmt.Errorf("AGX-PROJECT-INVENTORY: invalid Project inventory: %w", err)
 	}
-	if inventory.TotalCount > len(inventory.Projects) {
-		return fmt.Errorf("AGX-PROJECT-INVENTORY: Project inventory is truncated; refusing mutation")
-	}
-	for _, item := range inventory.Projects {
+	for _, item := range projects {
 		if strings.EqualFold(strings.TrimSpace(item.Title), target.Title) {
 			return fmt.Errorf("AGX-PROJECT-COLLISION: Project %q already exists for %s; AGX will not adopt it", target.Title, target.Owner)
 		}
@@ -236,18 +256,12 @@ func findTargetProject(ctx context.Context, target Target, runner Runner) (proje
 	if err != nil {
 		return projectJSON{}, false, err
 	}
-	var inventory struct {
-		Projects   []projectJSON `json:"projects"`
-		TotalCount int           `json:"totalCount"`
-	}
-	if err := decodeJSON(output, &inventory); err != nil {
+	projects, err := decodeProjectInventory(output)
+	if err != nil {
 		return projectJSON{}, false, err
 	}
-	if inventory.TotalCount > len(inventory.Projects) {
-		return projectJSON{}, false, fmt.Errorf("Project inventory is truncated")
-	}
 	var matches []projectJSON
-	for _, item := range inventory.Projects {
+	for _, item := range projects {
 		if item.Title == target.Title && strings.EqualFold(item.Owner.Login, target.Owner) {
 			matches = append(matches, item)
 		}
@@ -366,6 +380,10 @@ func receiptFromProject(target Target, observed projectJSON) (Receipt, error) {
 	}, nil
 }
 
+func sameProjectIdentity(left, right Receipt) bool {
+	return left.Owner == right.Owner && left.Number == right.Number && left.NodeID == right.NodeID && left.Title == right.Title && strings.EqualFold(left.URL, right.URL)
+}
+
 func validateTarget(target Target) error {
 	if !validName(target.Owner, 39) || strings.TrimSpace(target.Title) != target.Title || target.Title == "" || utf8.RuneCountInString(target.Title) > 256 || hasControl(target.Title) ||
 		(target.Visibility != VisibilityPrivate && target.Visibility != VisibilityPublic) || strings.TrimSpace(target.InstallationID) != target.InstallationID || target.InstallationID == "" || hasControl(target.InstallationID) {
@@ -416,11 +434,65 @@ func hasProjectScope(data []byte) bool {
 }
 
 func decodeProject(data []byte) (projectJSON, error) {
+	var fields struct {
+		ID     json.RawMessage `json:"id"`
+		Number json.RawMessage `json:"number"`
+		Owner  json.RawMessage `json:"owner"`
+		Public json.RawMessage `json:"public"`
+		Title  json.RawMessage `json:"title"`
+		URL    json.RawMessage `json:"url"`
+	}
+	if err := decodeJSON(data, &fields); err != nil {
+		return projectJSON{}, err
+	}
+	if len(fields.ID) == 0 || len(fields.Number) == 0 || len(fields.Owner) == 0 || len(fields.Public) == 0 || len(fields.Title) == 0 || len(fields.URL) == 0 {
+		return projectJSON{}, fmt.Errorf("Project response is missing required fields")
+	}
 	var value projectJSON
 	if err := decodeJSON(data, &value); err != nil {
 		return projectJSON{}, err
 	}
+	if value.Public == nil || value.ID == "" || value.Number <= 0 || !validName(value.Owner.Login, 39) ||
+		strings.TrimSpace(value.Title) != value.Title || value.Title == "" || utf8.RuneCountInString(value.Title) > 256 || hasControl(value.Title) || !validURL(value.URL) {
+		return projectJSON{}, fmt.Errorf("Project response has invalid required fields")
+	}
 	return value, nil
+}
+
+func decodeProjectInventory(data []byte) ([]projectJSON, error) {
+	var fields struct {
+		Projects   json.RawMessage `json:"projects"`
+		TotalCount json.RawMessage `json:"totalCount"`
+	}
+	if err := decodeJSON(data, &fields); err != nil {
+		return nil, err
+	}
+	if len(fields.Projects) == 0 || len(fields.TotalCount) == 0 || string(fields.Projects) == "null" || string(fields.TotalCount) == "null" {
+		return nil, fmt.Errorf("Project inventory is missing required fields")
+	}
+	var projectsRaw []json.RawMessage
+	if err := decodeJSON(fields.Projects, &projectsRaw); err != nil {
+		return nil, fmt.Errorf("invalid projects field")
+	}
+	var totalCount int
+	if err := decodeJSON(fields.TotalCount, &totalCount); err != nil || totalCount < 0 {
+		return nil, fmt.Errorf("invalid totalCount field")
+	}
+	if totalCount > len(projectsRaw) {
+		return nil, fmt.Errorf("Project inventory is truncated")
+	}
+	if totalCount != len(projectsRaw) {
+		return nil, fmt.Errorf("Project inventory count is inconsistent")
+	}
+	projects := make([]projectJSON, len(projectsRaw))
+	for index, raw := range projectsRaw {
+		project, err := decodeProject(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Project at index %d", index)
+		}
+		projects[index] = project
+	}
+	return projects, nil
 }
 
 func decodeJSON(data []byte, target any) error {

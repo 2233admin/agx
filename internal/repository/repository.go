@@ -638,7 +638,7 @@ func queryRepository(ctx context.Context, owner, name, commit, query string, run
 		return Inspection{}, false, fmt.Errorf("GraphQL response has no repository field")
 	}
 	if bytes.Equal(bytes.TrimSpace(data.Repository), []byte("null")) {
-		if len(envelope.Errors) == 0 || repositoryNotFound(envelope.Errors) {
+		if repositoryNotFound(envelope.Errors) {
 			return Inspection{}, false, nil
 		}
 		return Inspection{}, false, fmt.Errorf("GraphQL response contains non-absence errors")

@@ -219,7 +219,7 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 		}
 		item, present := runner.repositories[slug]
 		if !present {
-			return []byte(`{"data":{"repository":null}}`), nil
+			return []byte(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"not found"}]}`), nil
 		}
 		if commit == "" {
 			return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"nameWithOwner": item.nameWithOwner}}})
