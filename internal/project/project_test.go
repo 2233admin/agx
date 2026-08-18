@@ -94,6 +94,8 @@ func (runner *fakeRunner) Run(_ context.Context, _ string, name string, args ...
 			return []byte(`{"public":`), nil
 		case "unavailable":
 			return nil, errors.New("project view unavailable")
+		case "duplicate-key":
+			return []byte(`{"id":"PVT_untrusted","id":"PVT_kwDOA","number":7,"owner":{"login":"octo-lab"},"public":false,"title":"agent-control deployment (install-test)","url":"https://github.com/users/octo-lab/projects/7"}`), nil
 		case "missing-public":
 			return json.Marshal(map[string]any{
 				"id": "PVT_kwDOA", "number": 7, "owner": map[string]any{"login": "octo-lab"},
@@ -195,6 +197,38 @@ func TestPreflightAcceptsCompleteNonTruncatedInventory(t *testing.T) {
 	}
 }
 
+func TestPreflightClassifiesProjectTitleMatches(t *testing.T) {
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	tests := map[string]struct {
+		inventory []byte
+		wantErr   bool
+	}{
+		"missing":         {inventory: inventoryPayload()},
+		"exact duplicate": {inventory: inventoryPayload(projectPayload(false)), wantErr: true},
+		"case variant": {
+			inventory: inventoryPayload(projectPayloadWithIdentity("PVT_other", 8, strings.ToUpper(target.Title), false)),
+			wantErr:   true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeRunner{inventoryOutput: test.inventory}
+			err := Preflight(context.Background(), target, runner)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Preflight() err = %v, wantErr = %v", err, test.wantErr)
+			}
+			for _, call := range runner.calls {
+				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "create" || call.args[1] == "edit" || call.args[1] == "link") {
+					t.Fatalf("mutation ran during preflight: %+v", call)
+				}
+			}
+		})
+	}
+}
+
 func TestDecodeJSONRejectsTrailingValues(t *testing.T) {
 	var value map[string]any
 	if err := decodeJSON([]byte(`{"ok":true}{"unexpected":true}`), &value); err == nil {
@@ -219,13 +253,17 @@ func TestVerifyRejectsReceiptThatDoesNotMatchProjectReadback(t *testing.T) {
 }
 
 func projectPayload(public bool) []byte {
+	return projectPayloadWithIdentity("PVT_kwDOA", 7, "agent-control deployment (install-test)", public)
+}
+
+func projectPayloadWithIdentity(id string, number int, title string, public bool) []byte {
 	data, _ := json.Marshal(map[string]any{
-		"id":     "PVT_kwDOA",
-		"number": 7,
+		"id":     id,
+		"number": number,
 		"owner":  map[string]any{"login": "octo-lab", "type": "User"},
 		"public": public,
-		"title":  "agent-control deployment (install-test)",
-		"url":    "https://github.com/users/octo-lab/projects/7",
+		"title":  title,
+		"url":    "https://github.com/users/octo-lab/projects/" + strconv.Itoa(number),
 	})
 	return data
 }
@@ -243,6 +281,7 @@ func TestProvisionRejectsSuccessfulCreateWithInvalidResponse(t *testing.T) {
 	for name, createOutput := range map[string][]byte{
 		"malformed":      []byte(`{"id":`),
 		"missing fields": []byte(`{"id":"PVT_kwDOA"}`),
+		"duplicate key":  []byte(`{"id":"PVT_untrusted","id":"PVT_kwDOA","number":7,"owner":{"login":"octo-lab"},"public":false,"title":"agent-control deployment (install-test)","url":"https://github.com/users/octo-lab/projects/7"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner := &fakeRunner{
@@ -301,9 +340,10 @@ func TestProvisionFailsClosedWhenSuccessfulCreateReadbackIsInconclusive(t *testi
 	tests := map[string]*fakeRunner{
 		"unavailable":    {viewMode: "unavailable"},
 		"malformed":      {viewMode: "malformed"},
+		"duplicate key":  {viewMode: "duplicate-key"},
 		"missing fields": {viewMode: "missing-public"},
 		"identity drift": {viewMode: "identity-changed"},
-		"response drift": {
+		"second lookup mismatch": {
 			createOutput: []byte(`{"id":"PVT_untrusted","number":8,"owner":{"login":"octo-lab"},"public":false,"title":"agent-control deployment (install-test)","url":"https://github.com/users/octo-lab/projects/8"}`),
 		},
 	}

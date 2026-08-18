@@ -209,6 +209,11 @@ func TestInspectRejectsIncompleteProjectItemInventory(t *testing.T) {
 		"malformed item id":     `{"items":[{"id":"bad\\nitem","content":{"url":"https://github.com/octo-lab/agent-control/issues/12"}}],"totalCount":1}`,
 		"missing content url":   `{"items":[{"id":"PVTI_item","content":{}}],"totalCount":1}`,
 		"malformed content url": `{"items":[{"id":"PVTI_item","content":{"url":"https://example.com/octo-lab/agent-control/issues/12"}}],"totalCount":1}`,
+		"root content url":      `{"items":[{"id":"PVTI_item","content":{"url":"https://github.com"}}],"totalCount":1}`,
+		"query content url":     `{"items":[{"id":"PVTI_item","content":{"url":"https://github.com/octo-lab/agent-control/issues/12?tracked=true"}}],"totalCount":1}`,
+		"pull content url":      `{"items":[{"id":"PVTI_item","content":{"url":"https://github.com/octo-lab/agent-control/pull/12"}}],"totalCount":1}`,
+		"invalid owner":         `{"items":[{"id":"PVTI_item","content":{"url":"https://github.com/bad_owner/agent-control/issues/12"}}],"totalCount":1}`,
+		"git suffix repository": `{"items":[{"id":"PVTI_item","content":{"url":"https://github.com/octo-lab/agent-control.git/issues/12"}}],"totalCount":1}`,
 	}
 	for name, output := range invalid {
 		t.Run(name, func(t *testing.T) {
@@ -217,6 +222,14 @@ func TestInspectRejectsIncompleteProjectItemInventory(t *testing.T) {
 				t.Fatalf("Inspect() evidence=%+v err=%v, want fail closed", evidence, err)
 			}
 		})
+	}
+}
+
+func TestValidateContractRejectsProjectOwnerDifferentFromControlRepository(t *testing.T) {
+	contract := testContract()
+	contract.ProjectURL = "https://github.com/orgs/other-owner/projects/7"
+	if _, err := validateContract(contract); err == nil {
+		t.Fatal("validateContract() accepted a Project owned outside the control repository owner")
 	}
 }
 

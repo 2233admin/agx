@@ -354,12 +354,23 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 		}
 		verified := make([]repository.Receipt, 0, len(existing.Repositories))
 		for _, item := range existing.Repositories {
-			if err := repository.Verify(ctx, item, options.RepositoryRunner); err != nil {
-				// An uncertain mutation followed by a conclusive absent readback is
-				// safe to retry. Other failures remain fail-closed.
-				if item.Verification == repository.VerificationUncertain && strings.Contains(err.Error(), " is absent") {
+			if item.Verification == repository.VerificationUncertain {
+				owner, name, ok := strings.Cut(item.NameWithOwner, "/")
+				if !ok {
+					return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: uncertain repository identity is invalid")
+				}
+				_, inspectErr := repository.Inspect(ctx, owner, name, options.RepositoryRunner)
+				if confirmedRepositoryAbsent(inspectErr) {
+					// Direct confirmed absence is the sole retryable uncertain case;
+					// omit it so normal preflight/create can retry.
 					continue
 				}
+				if inspectErr != nil {
+					return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: uncertain repository absence could not be confirmed: %w", inspectErr)
+				}
+				return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: uncertain repository is present")
+			}
+			if err := repository.Verify(ctx, item, options.RepositoryRunner); err != nil {
 				return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: %w", err)
 			}
 			verified = append(verified, item)
@@ -783,10 +794,12 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 			owner, name, ok := strings.Cut(item.NameWithOwner, "/")
 			if ok {
 				_, inspectErr := repository.Inspect(ctx, owner, name, repositoryRunner)
-				if inspectErr != nil && strings.Contains(inspectErr.Error(), "AGX-REPOSITORY-ABSENT") {
+				if confirmedRepositoryAbsent(inspectErr) {
 					continue
 				}
 			}
+			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
+			continue
 		}
 		if err := repository.Verify(ctx, item, repositoryRunner); err != nil {
 			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
@@ -1136,6 +1149,10 @@ func resolveInstallation(root string, requireConfigured bool) (installer.Receipt
 	return installer.Receipt{}, "", fmt.Errorf("AGX-INIT-INSTALLATION: receipt has no agent-plugins component")
 }
 
+func confirmedRepositoryAbsent(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "AGX-REPOSITORY-ABSENT:")
+}
+
 func normalizeProviders(values []provider.Name) ([]provider.Name, error) {
 	seen := map[provider.Name]bool{}
 	for _, name := range values {
@@ -1250,9 +1267,6 @@ func readReceipt(root string) (Receipt, bool, error) {
 	if closeErr != nil {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot close initialization receipt: %w", closeErr)
 	}
-	if err := rejectDuplicateJSONKeys(data); err != nil {
-		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %w", err)
-	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	var receipt Receipt
@@ -1262,6 +1276,9 @@ func readReceipt(root string) (Receipt, bool, error) {
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: trailing data")
+	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %w", err)
 	}
 	if receipt.SchemaVersion == receiptSchemaV2 {
 		if err := migrateReceiptV2(&receipt); err != nil {

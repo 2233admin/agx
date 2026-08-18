@@ -260,8 +260,13 @@ func validateContract(contract Contract) (string, error) {
 	if strings.Count(slug, "/") != 1 {
 		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: invalid control repository URL")
 	}
-	if _, _, err := projectCoordinates(contract.ProjectURL); err != nil {
+	projectOwner, _, err := projectCoordinates(contract.ProjectURL)
+	controlOwner, _, _ := strings.Cut(slug, "/")
+	if err != nil {
 		return "", err
+	}
+	if !strings.EqualFold(projectOwner, controlOwner) {
+		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: Project owner does not match control repository owner")
 	}
 	return slug, nil
 }
@@ -340,7 +345,7 @@ func decodeProjectItems(data []byte) ([]projectItem, error) {
 		if err := decodeJSON(itemFields.ID, &items[index].ID); err != nil || !validNodeID(items[index].ID) {
 			return nil, fmt.Errorf("invalid Project item id at index %d", index)
 		}
-		if err := decodeJSON(contentFields.URL, &items[index].URL); err != nil || !validGitHubURL(items[index].URL) {
+		if err := decodeJSON(contentFields.URL, &items[index].URL); err != nil || !validIssueURL(items[index].URL) {
 			return nil, fmt.Errorf("invalid Project item URL at index %d", index)
 		}
 	}
@@ -456,22 +461,19 @@ func projectCoordinates(value string) (string, int, error) {
 }
 
 func validProjectOwner(value string) bool {
-	if value == "" || len(value) > 39 || value == "." || value == ".." {
+	if len(value) == 0 || len(value) > 39 || value[0] == '-' || value[len(value)-1] == '-' || strings.Contains(value, "--") {
 		return false
 	}
 	for _, character := range value {
-		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.' {
-			continue
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '-' {
+			return false
 		}
-		return false
 	}
 	return true
 }
 
 func decodeJSON(data []byte, target any) error {
-	if err := rejectDuplicateJSONKeys(data); err != nil {
-		return err
-	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -480,7 +482,7 @@ func decodeJSON(data []byte, target any) error {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return fmt.Errorf("trailing data")
 	}
-	return nil
+	return rejectDuplicateJSONKeys(data)
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
@@ -534,6 +536,33 @@ func rejectDuplicateJSONKeys(data []byte) error {
 		return fmt.Errorf("trailing data")
 	}
 	return nil
+}
+
+func validIssueURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawPath != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.Opaque != "" {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 4 || !validProjectOwner(parts[0]) || !validRepositoryName(parts[1]) || parts[2] != "issues" {
+		return false
+	}
+	number, err := strconv.Atoi(parts[3])
+	return err == nil && number > 0 && strconv.Itoa(number) == parts[3]
+}
+
+func validRepositoryName(value string) bool {
+	if len(value) == 0 || len(value) > 100 || value == "." || value == ".." || strings.HasSuffix(strings.ToLower(value), ".git") {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '-' && character != '_' && character != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func validGitHubURL(value string) bool {
