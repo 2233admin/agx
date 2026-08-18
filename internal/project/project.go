@@ -129,9 +129,23 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 	}
 
 	if receipt.Visibility != target.Visibility {
-		output, err := runner.Run(ctx, "", "gh", "project", "edit", strconv.Itoa(receipt.Number), "--owner", target.Owner, "--visibility", strings.ToUpper(string(target.Visibility)), "--format", "json")
-		if err != nil {
-			return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY: cannot set Project visibility: %w", err)
+		output, editErr := runner.Run(ctx, "", "gh", "project", "edit", strconv.Itoa(receipt.Number), "--owner", target.Owner, "--visibility", strings.ToUpper(string(target.Visibility)), "--format", "json")
+		if editErr != nil {
+			updated, readbackErr := readProject(ctx, target, receipt.Number, runner)
+			if readbackErr != nil {
+				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY-UNCERTAIN: edit failed and readback was inconclusive: %v; readback: %w", editErr, readbackErr)
+			}
+			if updated.NodeID != receipt.NodeID || !strings.EqualFold(updated.URL, receipt.URL) {
+				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY-UNCERTAIN: edit failed and readback Project identity changed: %w", editErr)
+			}
+			if updated.Visibility != target.Visibility {
+				return receipt, fmt.Errorf("AGX-PROJECT-VISIBILITY: edit failed and readback confirmed visibility %s: %w", updated.Visibility, editErr)
+			}
+			updated.Verification = VerificationConfigured
+			if journalErr := journal(updated); journalErr != nil {
+				return updated, fmt.Errorf("AGX-PROJECT-JOURNAL: cannot persist recovered visibility receipt: %w", journalErr)
+			}
+			return updated, fmt.Errorf("AGX-PROJECT-VISIBILITY-PARTIAL: gh reported an error, but Project visibility was confirmed: %w", editErr)
 		}
 		observed, err := decodeProject(output)
 		if err != nil {
@@ -279,25 +293,17 @@ type projectJSON struct {
 	Owner  struct {
 		Login string `json:"login"`
 	} `json:"owner"`
-	Public bool   `json:"public"`
+	Public *bool  `json:"public"`
 	Title  string `json:"title"`
 	URL    string `json:"url"`
 }
 
 func inspect(ctx context.Context, target Target, number int, runner Runner) (Receipt, error) {
-	output, err := runner.Run(ctx, "", "gh", "project", "view", strconv.Itoa(number), "--owner", target.Owner, "--format", "json")
-	if err != nil {
-		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: cannot read Project: %w", err)
-	}
-	observed, err := decodeProject(output)
-	if err != nil {
-		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: invalid Project response: %w", err)
-	}
-	receipt, err := receiptFromProject(target, observed)
+	receipt, err := readProject(ctx, target, number, runner)
 	if err != nil {
 		return Receipt{}, err
 	}
-	output, err = runner.Run(ctx, "", "gh", "repo", "view", target.LinkedRepository, "--json", "hasIssuesEnabled,projectsV2")
+	output, err := runner.Run(ctx, "", "gh", "repo", "view", target.LinkedRepository, "--json", "hasIssuesEnabled,projectsV2")
 	if err != nil {
 		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: cannot read control repository Project links: %w", err)
 	}
@@ -327,13 +333,32 @@ func inspect(ctx context.Context, target Target, number int, runner Runner) (Rec
 	return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: Project is not linked to %s", target.LinkedRepository)
 }
 
-func receiptFromProject(target Target, observed projectJSON) (Receipt, error) {
-	visibility := VisibilityPrivate
-	if observed.Public {
-		visibility = VisibilityPublic
+func readProject(ctx context.Context, target Target, number int, runner Runner) (Receipt, error) {
+	output, err := runner.Run(ctx, "", "gh", "project", "view", strconv.Itoa(number), "--owner", target.Owner, "--format", "json")
+	if err != nil {
+		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: cannot read Project: %w", err)
 	}
-	if observed.ID == "" || observed.Number <= 0 || !strings.EqualFold(observed.Owner.Login, target.Owner) || observed.Title != target.Title || !validURL(observed.URL) {
+	observed, err := decodeProject(output)
+	if err != nil {
+		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: invalid Project response: %w", err)
+	}
+	receipt, err := receiptFromProject(target, observed)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if receipt.Number != number {
+		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: Project number does not match target")
+	}
+	return receipt, nil
+}
+
+func receiptFromProject(target Target, observed projectJSON) (Receipt, error) {
+	if observed.Public == nil || observed.ID == "" || observed.Number <= 0 || !strings.EqualFold(observed.Owner.Login, target.Owner) || observed.Title != target.Title || !validURL(observed.URL) {
 		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: Project identity does not match target")
+	}
+	visibility := VisibilityPrivate
+	if *observed.Public {
+		visibility = VisibilityPublic
 	}
 	return Receipt{
 		Owner: target.Owner, Number: observed.Number, NodeID: observed.ID, URL: observed.URL, Title: observed.Title,

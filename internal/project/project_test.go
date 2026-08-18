@@ -16,11 +16,12 @@ type recordedCall struct {
 }
 
 type fakeRunner struct {
-	calls      []recordedCall
-	linked     bool
-	public     bool
-	scopes     string
-	totalCount int
+	calls                 []recordedCall
+	linked                bool
+	public                bool
+	scopes                string
+	totalCount            int
+	visibilityFailureMode string
 }
 
 func (runner *fakeRunner) LookPath(name string) (string, error) {
@@ -49,12 +50,32 @@ func (runner *fakeRunner) Run(_ context.Context, _ string, name string, args ...
 	case len(args) >= 2 && args[0] == "project" && args[1] == "create":
 		return projectPayload(false), nil
 	case len(args) >= 2 && args[0] == "project" && args[1] == "edit":
+		if runner.visibilityFailureMode != "" {
+			runner.public = runner.visibilityFailureMode == "landed"
+			return nil, errors.New("visibility edit failed")
+		}
 		runner.public = true
 		return projectPayload(true), nil
 	case len(args) >= 2 && args[0] == "project" && args[1] == "link":
 		runner.linked = true
 		return nil, nil
 	case len(args) >= 2 && args[0] == "project" && args[1] == "view":
+		switch runner.visibilityFailureMode {
+		case "malformed":
+			return []byte(`{"public":`), nil
+		case "unavailable":
+			return nil, errors.New("project view unavailable")
+		case "missing-public":
+			return json.Marshal(map[string]any{
+				"id": "PVT_kwDOA", "number": 7, "owner": map[string]any{"login": "octo-lab"},
+				"title": "agent-control deployment (install-test)", "url": "https://github.com/users/octo-lab/projects/7",
+			})
+		case "identity-changed":
+			return json.Marshal(map[string]any{
+				"id": "PVT_other", "number": 7, "owner": map[string]any{"login": "octo-lab"}, "public": true,
+				"title": "agent-control deployment (install-test)", "url": "https://github.com/users/octo-lab/projects/8",
+			})
+		}
 		return projectPayload(runner.public), nil
 	case len(args) >= 2 && args[0] == "repo" && args[1] == "view":
 		nodes := []map[string]any{}
@@ -174,5 +195,107 @@ func TestProvisionCreatesVisibleLinkedProjectAndJournalsEveryMutation(t *testing
 	}
 	if got := strconv.Itoa(receipt.Number); got != "7" {
 		t.Fatalf("number = %s", got)
+	}
+}
+
+func TestProvisionRecoversLandedVisibilityEditFailure(t *testing.T) {
+	runner := &fakeRunner{visibilityFailureMode: "landed"}
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPublic,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	var journal []Receipt
+	receipt, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
+		journal = append(journal, value)
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-VISIBILITY-PARTIAL") {
+		t.Fatalf("Provision() err = %v", err)
+	}
+	if receipt.Visibility != VisibilityPublic || receipt.Verification != VerificationConfigured || receipt.Linked {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	if len(journal) != 2 || journal[1] != receipt {
+		t.Fatalf("journal = %+v, receipt = %+v", journal, receipt)
+	}
+	for _, call := range runner.calls {
+		if len(call.args) >= 2 && call.args[0] == "project" && call.args[1] == "link" {
+			t.Fatalf("link ran after partial visibility edit: %+v", call)
+		}
+	}
+}
+
+func TestProvisionFailsClosedWhenVisibilityEditDidNotLand(t *testing.T) {
+	runner := &fakeRunner{visibilityFailureMode: "not-landed"}
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPublic,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	var journal []Receipt
+	receipt, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
+		journal = append(journal, value)
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-VISIBILITY") || strings.Contains(err.Error(), "PARTIAL") {
+		t.Fatalf("Provision() err = %v", err)
+	}
+	if receipt.Visibility != VisibilityPrivate || receipt.Verification != VerificationCreated || len(journal) != 1 {
+		t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
+	}
+	var views int
+	for _, call := range runner.calls {
+		if len(call.args) >= 2 && call.args[0] == "project" && call.args[1] == "view" {
+			views++
+		}
+	}
+	if views != 1 {
+		t.Fatalf("project view calls = %d, want 1", views)
+	}
+}
+
+func TestProvisionFailsClosedWhenVisibilityReadbackIsInconclusive(t *testing.T) {
+	for _, mode := range []string{"malformed", "unavailable", "identity-changed"} {
+		t.Run(mode, func(t *testing.T) {
+			runner := &fakeRunner{visibilityFailureMode: mode}
+			target := Target{
+				Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPublic,
+				LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+			}
+			var journal []Receipt
+			receipt, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
+				journal = append(journal, value)
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-VISIBILITY-UNCERTAIN") {
+				t.Fatalf("Provision() err = %v", err)
+			}
+			if receipt.Visibility != VisibilityPrivate || receipt.Verification != VerificationCreated || len(journal) != 1 {
+				t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
+			}
+		})
+	}
+}
+
+func TestProvisionFailsClosedWhenVisibilityReadbackOmitsPublic(t *testing.T) {
+	runner := &fakeRunner{visibilityFailureMode: "missing-public"}
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	existing := &Receipt{
+		Owner: target.Owner, Number: 7, NodeID: "PVT_kwDOA", URL: "https://github.com/users/octo-lab/projects/7",
+		Title: target.Title, Visibility: VisibilityPublic, LinkedRepository: target.LinkedRepository,
+		InstallationID: target.InstallationID, Created: true, Verification: VerificationCreated,
+	}
+	var journal []Receipt
+	receipt, err := Provision(context.Background(), target, existing, runner, func(value Receipt) error {
+		journal = append(journal, value)
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-VISIBILITY-UNCERTAIN") {
+		t.Fatalf("Provision() err = %v", err)
+	}
+	if receipt != *existing || len(journal) != 0 {
+		t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
 	}
 }
