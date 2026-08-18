@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,26 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestAgentControlValidationWorkflowDigest(t *testing.T) {
+	rendered, err := Render(KindAgentControl, Params{
+		Owner: "octo-lab", Repository: "agent-control", PluginSource: AgentPluginsReferenceRepository,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range rendered.Files {
+		if file.Path != ".github/workflows/validate.yml" {
+			continue
+		}
+		digest := sha256.Sum256(file.Content)
+		if got := hex.EncodeToString(digest[:]); got != AgentControlValidationWorkflowSHA256 {
+			t.Fatalf("validation workflow digest = %q, constant = %q", got, AgentControlValidationWorkflowSHA256)
+		}
+		return
+	}
+	t.Fatal("agent-control validation workflow is missing")
+}
 
 var goldenPaths = map[Kind][]string{
 	KindAgentControl: {

@@ -7,13 +7,18 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/2233admin/agx/internal/bootstrap"
 )
 
 type fakeRunner struct {
-	merged         bool
-	missingPointer bool
-	wrongProject   bool
-	unrelatedCheck bool
+	merged          bool
+	missingPointer  bool
+	wrongProject    bool
+	unrelatedCheck  bool
+	impostorCheck   bool
+	wrongWorkflow   bool
+	changesWorkflow bool
 }
 
 func (fakeRunner) LookPath(name string) (string, error) {
@@ -52,17 +57,26 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			mergedAt = "2026-08-18T00:00:00Z"
 		}
 		checkName := "validate"
+		workflowName := "Validate control baseline"
 		if runner.unrelatedCheck {
 			checkName = "unrelated tests"
+		}
+		if runner.impostorCheck {
+			workflowName = "Validate docs"
+		}
+		files := []map[string]any{{"path": "work/current.md"}}
+		if runner.changesWorkflow {
+			files = append(files, map[string]any{"path": ".github/workflows/validate.yml"})
 		}
 		return json.Marshal([]map[string]any{{
 			"number": 13, "url": "https://github.com/octo-lab/agent-control/pull/13",
 			"title":       "Bootstrap Verification [install-test]",
 			"body":        marker + "\nValidation-Command: python tools/validate.py\nValidation-Result: passed",
 			"headRefName": "agx/bootstrap-verification-install-test",
-			"state":       state, "mergedAt": mergedAt, "files": []map[string]any{{"path": "work/current.md"}},
+			"state":       state, "mergedAt": mergedAt, "files": files,
 			"statusCheckRollup": []map[string]any{{
-				"__typename": "CheckRun", "name": checkName, "status": "COMPLETED", "conclusion": "SUCCESS",
+				"__typename": "CheckRun", "name": checkName, "workflowName": workflowName,
+				"status": "COMPLETED", "conclusion": "SUCCESS",
 			}},
 		}})
 	}
@@ -72,6 +86,13 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			content = "No bootstrap Issue pointer\n"
 		}
 		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content))})
+	}
+	if args[0] == "api" && strings.Contains(args[1], "/contents/.github/workflows/validate.yml") {
+		workflow := "name: Validate control baseline\n\non:\n  pull_request:\n  push:\n    branches:\n      - main\n\npermissions:\n  contents: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Check out repository\n        uses: actions/checkout@v4\n      - name: Set up Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: \"3.11\"\n      - name: Validate repository baseline\n        run: python tools/validate.py\n"
+		if runner.wrongWorkflow {
+			workflow = "name: Validate control baseline\njobs:\n  validate:\n    steps:\n      - name: Skip validation\n        run: echo skipped\n"
+		}
+		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(workflow))})
 	}
 	return nil, errors.New("unexpected gh command")
 }
@@ -87,6 +108,18 @@ func TestInspectRejectsWrongProjectAndUnrelatedSuccessfulCheck(t *testing.T) {
 	}
 }
 
+func TestInspectRejectsImpostorOrChangedValidationWorkflow(t *testing.T) {
+	for _, runner := range []fakeRunner{{impostorCheck: true}, {wrongWorkflow: true}, {changesWorkflow: true}} {
+		evidence, err := Inspect(context.Background(), testContract(), runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if evidence.Status == StatusEffective || evidence.ValidationResult == "passed" {
+			t.Fatalf("impostor validation evidence became effective: %+v", evidence)
+		}
+	}
+}
+
 func testContract() Contract {
 	return Contract{
 		SchemaVersion: ContractVersionV1, InstallationID: "install-test",
@@ -96,7 +129,9 @@ func testContract() Contract {
 		IssueTitle: "Bootstrap Verification [install-test]", PullRequestTitle: "Bootstrap Verification [install-test]",
 		Marker: "AGX-Installation: install-test", Branch: "agx/bootstrap-verification-install-test",
 		ValidationCommand: "python tools/validate.py", RequiredActions: []string{"run bootstrap verification"},
-		RequiredOutputs: []string{"issue_url", "project_item", "pull_request_url", "validation_result"}, Cleanup: "operator-owned",
+		ValidationWorkflow: "Validate control baseline", ValidationCheck: "validate",
+		ValidationWorkflowSHA256: bootstrap.AgentControlValidationWorkflowSHA256,
+		RequiredOutputs:          []string{"issue_url", "project_item", "pull_request_url", "validation_result"}, Cleanup: "operator-owned",
 	}
 }
 

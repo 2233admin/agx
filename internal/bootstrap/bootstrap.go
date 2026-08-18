@@ -30,6 +30,9 @@ const (
 	// TemplateSetContentSHA256 is the canonical digest of the embedded,
 	// unrendered template files, including their deployment placeholders.
 	TemplateSetContentSHA256 = "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca"
+	// AgentControlValidationWorkflowSHA256 binds first-use validation evidence
+	// to the exact workflow shipped in the agent-control template.
+	AgentControlValidationWorkflowSHA256 = "ee7c4c2f5c54f1d3670ed9016659463bf885d75a88a64a6549e3226e4e016870"
 
 	AgentPluginsReferenceRepository   = "zaurakworks/agent-plugins"
 	AgentPluginsReferenceCommit       = "ad07742ade0f0039ed1df1a9262e8f087117fca0"

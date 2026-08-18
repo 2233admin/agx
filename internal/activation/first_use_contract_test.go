@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/2233admin/agx/internal/activation"
+	"github.com/2233admin/agx/internal/bootstrap"
 	"github.com/2233admin/agx/internal/smoke"
 )
 
@@ -28,7 +29,11 @@ func TestFirstUseContractBindsDeploymentResourcesAndRequiredOutputs(t *testing.T
 		contract.Profile != "core" || contract.Objective != "complete bootstrap verification" ||
 		contract.IssueTitle != "Bootstrap Verification [install-test]" ||
 		contract.PullRequestTitle != contract.IssueTitle || contract.Marker != "AGX-Installation: install-test" ||
-		contract.Branch != "agx/bootstrap-verification-install-test" || len(contract.RequiredActions) != 6 ||
+		contract.Branch != "agx/bootstrap-verification-install-test" ||
+		contract.ValidationCommand != "python tools/validate.py" ||
+		contract.ValidationWorkflow != "Validate control baseline" || contract.ValidationCheck != "validate" ||
+		contract.ValidationWorkflowSHA256 != bootstrap.AgentControlValidationWorkflowSHA256 ||
+		len(contract.RequiredActions) != 6 ||
 		contract.Cleanup != "operator-owned" {
 		t.Fatalf("contract = %+v", contract)
 	}

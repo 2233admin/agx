@@ -268,8 +268,11 @@ func FirstUseContract(receipt Receipt) (smoke.Contract, error) {
 		ControlRepositoryURL: controlURL, ContractsRepositoryURL: contractsURL,
 		Profile: string(receipt.Profile), Objective: "complete bootstrap verification",
 		IssueTitle: title, PullRequestTitle: title, Marker: marker,
-		Branch:            "agx/bootstrap-verification-" + receipt.InstallationID,
-		ValidationCommand: "python tools/validate.py",
+		Branch:                   "agx/bootstrap-verification-" + receipt.InstallationID,
+		ValidationCommand:        "python tools/validate.py",
+		ValidationWorkflow:       "Validate control baseline",
+		ValidationCheck:          "validate",
+		ValidationWorkflowSHA256: bootstrap.AgentControlValidationWorkflowSHA256,
 		RequiredActions: []string{
 			"read README.md, AGENTS.md, and authority/00-map.md in the control repository",
 			"create the bounded Bootstrap Verification Issue with the contract marker",

@@ -155,7 +155,10 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 			"body":        "AGX-Installation: install-test\nValidation-Command: python tools/validate.py\nValidation-Result: passed",
 			"headRefName": "agx/bootstrap-verification-install-test",
 			"state":       "OPEN", "mergedAt": nil, "files": []map[string]any{{"path": "work/current.md"}},
-			"statusCheckRollup": []map[string]any{{"name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}},
+			"statusCheckRollup": []map[string]any{{
+				"name": "validate", "workflowName": "Validate control baseline",
+				"status": "COMPLETED", "conclusion": "SUCCESS",
+			}},
 		}})
 	}
 	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "create" {
@@ -190,6 +193,10 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 	}
 	if name == "gh" && len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "/contents/work/current.md") {
 		content := "Current work: https://github.com/octo-lab/agent-control/issues/12\nAGX-Installation: install-test\n"
+		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content))})
+	}
+	if name == "gh" && len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "/contents/.github/workflows/validate.yml") {
+		content := "name: Validate control baseline\n\non:\n  pull_request:\n  push:\n    branches:\n      - main\n\npermissions:\n  contents: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Check out repository\n        uses: actions/checkout@v4\n      - name: Set up Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: \"3.11\"\n      - name: Validate repository baseline\n        run: python tools/validate.py\n"
 		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content))})
 	}
 	if name == "gh" && len(args) >= 2 && args[0] == "api" && strings.HasPrefix(args[1], "repos/") {
