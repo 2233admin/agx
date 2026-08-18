@@ -793,11 +793,18 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 			owner, name, ok := strings.Cut(item.NameWithOwner, "/")
 			if ok {
 				_, inspectErr := repository.Inspect(ctx, owner, name, repositoryRunner)
+				if statusErr := statusContextError(ctx); statusErr != nil {
+					return state, statusErr
+				}
 				if confirmedRepositoryAbsent(inspectErr) {
 					continue
 				}
 				if inspectErr == nil {
-					if verifyErr := repository.Verify(ctx, item, repositoryRunner); verifyErr == nil {
+					verifyErr := repository.Verify(ctx, item, repositoryRunner)
+					if statusErr := statusContextError(ctx); statusErr != nil {
+						return state, statusErr
+					}
+					if verifyErr == nil {
 						continue
 					}
 				}
@@ -805,7 +812,11 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
 			continue
 		}
-		if err := repository.Verify(ctx, item, repositoryRunner); err != nil {
+		verifyErr := repository.Verify(ctx, item, repositoryRunner)
+		if statusErr := statusContextError(ctx); statusErr != nil {
+			return state, statusErr
+		}
+		if verifyErr != nil {
 			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
 		}
 	}
@@ -819,13 +830,23 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 				GitHubOwner: receipt.GitHubOwner, ControlRepository: receipt.ControlRepository, Visibility: receipt.Visibility,
 			}, receipt.InstallationID)
 			if receipt.Project.Linked && receipt.Project.Verification == project.VerificationReadback {
-				if err := project.Verify(ctx, target, *receipt.Project, repositoryRunner); err != nil {
+				verifyErr := project.Verify(ctx, target, *receipt.Project, repositoryRunner)
+				if statusErr := statusContextError(ctx); statusErr != nil {
+					return state, statusErr
+				}
+				if verifyErr != nil {
 					state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
 				}
-			} else if err := project.Revalidate(ctx, target, *receipt.Project, repositoryRunner); err != nil {
-				state.Problems = append(state.Problems, "GitHub Project identity or visibility drifted")
-			} else if receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseProvisioning {
-				state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
+			} else {
+				revalidateErr := project.Revalidate(ctx, target, *receipt.Project, repositoryRunner)
+				if statusErr := statusContextError(ctx); statusErr != nil {
+					return state, statusErr
+				}
+				if revalidateErr != nil {
+					state.Problems = append(state.Problems, "GitHub Project identity or visibility drifted")
+				} else if receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseProvisioning {
+					state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
+				}
 			}
 		}
 	}
@@ -849,7 +870,11 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 	if runner == nil {
 		runner = provider.OSRunner{}
 	}
-	state.Problems = append(state.Problems, verifyReceipt(ctx, receipt, source, runner)...)
+	providerProblems := verifyReceipt(ctx, receipt, source, runner)
+	if statusErr := statusContextError(ctx); statusErr != nil {
+		return state, statusErr
+	}
+	state.Problems = append(state.Problems, providerProblems...)
 	if len(state.Problems) > 0 {
 		state.Status = StatusDrifted
 		return state, nil
@@ -858,16 +883,26 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 		contract, contractErr := FirstUseContract(receipt)
 		if contractErr != nil {
 			state.Smoke = smoke.Evidence{Status: smoke.StatusAwaiting, Problems: []string{contractErr.Error()}}
-			return state, nil
+		} else {
+			evidence, smokeErr := smoke.Inspect(ctx, contract, repositoryRunner)
+			if statusErr := statusContextError(ctx); statusErr != nil {
+				return state, statusErr
+			}
+			if smokeErr != nil {
+				state.Smoke = smoke.Evidence{Status: smoke.StatusAwaiting, Problems: []string{smokeErr.Error()}}
+			} else {
+				state.Smoke = evidence
+			}
 		}
-		evidence, smokeErr := smoke.Inspect(ctx, contract, repositoryRunner)
-		if smokeErr != nil {
-			state.Smoke = smoke.Evidence{Status: smoke.StatusAwaiting, Problems: []string{smokeErr.Error()}}
-			return state, nil
-		}
-		state.Smoke = evidence
 	}
 	return state, nil
+}
+
+func statusContextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("AGX-STATUS-INCONCLUSIVE: remote readback was canceled or timed out; rerun agx status or agx diagnose; no changes were made: %w", err)
+	}
+	return nil
 }
 
 // UninitializeDetailed reverses only AGX-owned provider mutations and reports

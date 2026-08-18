@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,21 +22,30 @@ import (
 
 func TestFirstUsePrompts(t *testing.T) {
 	receipt := firstUseReceipt([]provider.Name{provider.Codex, provider.Claude}, activation.ProfileFull)
-	got := firstUsePrompts(receipt)
+	firstUse, err := newFirstUseOutput(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := firstUse.prompts
 	if len(got) != 2 || got[0].Provider != provider.Codex || got[1].Provider != provider.Claude {
 		t.Fatalf("firstUsePrompts() = %#v, want one prompt per selected Agent", got)
 	}
 	for _, item := range got {
 		if !strings.Contains(item.Prompt, "grilling") || !strings.Contains(item.Prompt, smoke.ContractVersionV1) ||
-			!strings.Contains(item.Prompt, receipt.Project.URL) || strings.Contains(item.Prompt, "帮我创建一个 Project") {
-			t.Fatalf("prompt = %q, want self-contained bootstrap verification contract", item.Prompt)
+			!strings.Contains(item.Prompt, receipt.Project.URL) || !strings.HasSuffix(item.Prompt, string(firstUse.payload)) ||
+			strings.Contains(item.Prompt, "帮我创建一个 Project") {
+			t.Fatalf("prompt = %q, want shared self-contained bootstrap verification payload %s", item.Prompt, firstUse.payload)
 		}
 	}
 }
 
 func TestInitResultSerializesStructuredFirstUse(t *testing.T) {
 	receipt := firstUseReceipt([]provider.Name{provider.Codex, provider.Claude}, activation.ProfileFull)
-	result := newInitResult(receipt, true)
+	firstUse, err := newFirstUseOutput(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := newInitResult(receipt, true, firstUse)
 
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -48,33 +58,57 @@ func TestInitResultSerializesStructuredFirstUse(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(init result) error = %v", err)
 	}
-	if !reflect.DeepEqual(decoded.FirstUse, firstUsePrompts(receipt)) {
-		t.Fatalf("decoded first_use = %#v, want %#v", decoded.FirstUse, firstUsePrompts(receipt))
+	if !reflect.DeepEqual(decoded.FirstUse, firstUse.prompts) {
+		t.Fatalf("decoded first_use = %#v, want %#v", decoded.FirstUse, firstUse.prompts)
 	}
 	if decoded.FirstUseContract.SchemaVersion != smoke.ContractVersionV1 ||
 		decoded.FirstUseContract.ProjectURL != receipt.Project.URL || decoded.FirstUseContract.InstallationID != receipt.InstallationID {
 		t.Fatalf("decoded first_use_contract = %+v", decoded.FirstUseContract)
 	}
-	if !strings.Contains(string(data), `"first_use":[{"provider":"codex","prompt":"$grilling:grilling 请严格按以下 agx.first-use/v1`) {
-		t.Fatalf("init result JSON does not contain machine-readable first_use prompts: %s", data)
+	if !strings.Contains(string(data), `"first_use":[{"provider":"codex","prompt":"$grilling:grilling 请严格按以下 agx.first-use/v1`) ||
+		!strings.Contains(string(data), `"first_use_contract":`+string(firstUse.payload)) {
+		t.Fatalf("init result JSON does not contain the shared machine-readable first-use payload: %s", data)
 	}
 }
 
 func TestHumanFirstUseUsesStructuredPrompts(t *testing.T) {
 	receipt := firstUseReceipt([]provider.Name{provider.Codex, provider.Claude}, activation.ProfileFull)
+	firstUse, err := newFirstUseOutput(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stdout := new(bytes.Buffer)
 
-	printFirstUse(stdout, receipt)
+	printFirstUse(stdout, firstUse)
 
 	for _, want := range []string{
 		"GitHub Project: " + receipt.Project.URL,
 		"First-use contract: " + smoke.ContractVersionV1,
+		"  " + string(firstUse.payload),
 		`"required_outputs":["issue_url","project_item","pull_request_url","validation_result"]`,
 		"Codex:", "Claude:", "Bootstrap Verification", "agx status",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("printFirstUse() = %q, want %q", stdout.String(), want)
 		}
+	}
+}
+
+func TestInitReturnsSoftwareWhenFirstUseContractCannotBeDerived(t *testing.T) {
+	receipt := firstUseReceipt([]provider.Name{provider.Codex}, activation.ProfileCore)
+	receipt.Project.Verification = project.VerificationCreated
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+
+	code := runWithDependencies(
+		[]string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--apply", "--output", "json"},
+		"0.0.0-test", stdout, stderr,
+		runtimeDependencies{initApply: func(context.Context, activation.Options) (activation.Receipt, bool, error) {
+			return receipt, false, nil
+		}},
+	)
+
+	if code != exitcode.Software || stdout.Len() != 0 || !strings.Contains(stderr.String(), "AGX-INIT-FIRST-USE-CONTRACT") {
+		t.Fatalf("code=%d stdout=%q stderr=%q, want stable software error without partial success output", code, stdout.String(), stderr.String())
 	}
 }
 

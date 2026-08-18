@@ -40,6 +40,7 @@ type runtimeDependencies struct {
 	providerRunner   provider.Runner
 	repositoryRunner repository.Runner
 	initPlan         func(context.Context, activation.Options) (activation.InitializationPlan, error)
+	initApply        func(context.Context, activation.Options) (activation.Receipt, bool, error)
 	goos             string
 }
 
@@ -179,7 +180,11 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 		return exitcode.Success
 	}
 
-	receipt, unchanged, err := activation.Initialize(ctx, options)
+	initialize := dependencies.initApply
+	if initialize == nil {
+		initialize = activation.Initialize
+	}
+	receipt, unchanged, err := initialize(ctx, options)
 	if err != nil {
 		if receipt.SchemaVersion != "" {
 			if values["--output"] == "json" {
@@ -198,9 +203,18 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 		printInitError(stderr, err, values["--output"])
 		return exitcode.Software
 	}
+	firstUse, err := newFirstUseOutput(receipt)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-INIT-FIRST-USE-CONTRACT: successful initialization did not produce a valid first-use contract: %v\n", err)
+		return exitcode.Software
+	}
 	if values["--output"] == "json" {
-		result := newInitResult(receipt, unchanged)
-		data, _ := json.Marshal(result)
+		result := newInitResult(receipt, unchanged, firstUse)
+		data, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			fmt.Fprintln(stderr, "AGX-INIT-RESULT-ENCODE: cannot encode initialization result")
+			return exitcode.Software
+		}
 		fmt.Fprintln(stdout, string(data))
 		return exitcode.Success
 	}
@@ -211,7 +225,7 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 	}
 	fmt.Fprintln(stdout, "Installation phase remains configured; provider activation is not verified.")
 	printInitializedRepositories(stdout, receipt.Repositories)
-	printFirstUse(stdout, receipt)
+	printFirstUse(stdout, firstUse)
 	return exitcode.Success
 }
 
@@ -403,8 +417,29 @@ type firstUsePrompt struct {
 	Prompt   string        `json:"prompt"`
 }
 
-func newInitResult(receipt activation.Receipt, unchanged bool) initResult {
-	contract, _ := activation.FirstUseContract(receipt)
+type firstUseOutput struct {
+	contract smoke.Contract
+	payload  []byte
+	prompts  []firstUsePrompt
+}
+
+func newFirstUseOutput(receipt activation.Receipt) (firstUseOutput, error) {
+	contract, err := activation.FirstUseContract(receipt)
+	if err != nil {
+		return firstUseOutput{}, err
+	}
+	payload, err := json.Marshal(contract)
+	if err != nil {
+		return firstUseOutput{}, fmt.Errorf("encode first-use contract: %w", err)
+	}
+	return firstUseOutput{
+		contract: contract,
+		payload:  payload,
+		prompts:  firstUsePrompts(receipt.Providers, payload),
+	}, nil
+}
+
+func newInitResult(receipt activation.Receipt, unchanged bool, firstUse firstUseOutput) initResult {
 	return initResult{
 		Status:            receipt.Phase,
 		Unchanged:         unchanged,
@@ -416,8 +451,8 @@ func newInitResult(receipt activation.Receipt, unchanged bool) initResult {
 		TemplateVersion:   receipt.TemplateVersion,
 		TemplateDigest:    receipt.TemplateContentSHA256,
 		InstallationPhase: "configured",
-		FirstUse:          firstUsePrompts(receipt),
-		FirstUseContract:  contract,
+		FirstUse:          firstUse.prompts,
+		FirstUseContract:  firstUse.contract,
 	}
 }
 
@@ -434,38 +469,20 @@ func parseProviders(value string) ([]provider.Name, error) {
 	}
 }
 
-func printFirstUse(stdout io.Writer, receipt activation.Receipt) {
-	contract, err := activation.FirstUseContract(receipt)
-	if err != nil {
-		fmt.Fprintf(stdout, "First-use contract unavailable: %v\n", err)
-		return
-	}
-	payload, err := json.Marshal(contract)
-	if err != nil {
-		fmt.Fprintln(stdout, "First-use contract unavailable: cannot encode contract")
-		return
-	}
-	fmt.Fprintf(stdout, "GitHub Project: %s\n", contract.ProjectURL)
-	fmt.Fprintf(stdout, "First-use contract: %s\n", contract.SchemaVersion)
-	fmt.Fprintf(stdout, "  %s\n", payload)
+func printFirstUse(stdout io.Writer, firstUse firstUseOutput) {
+	fmt.Fprintf(stdout, "GitHub Project: %s\n", firstUse.contract.ProjectURL)
+	fmt.Fprintf(stdout, "First-use contract: %s\n", firstUse.contract.SchemaVersion)
+	fmt.Fprintf(stdout, "  %s\n", firstUse.payload)
 	fmt.Fprintln(stdout, "Start a new Agent session and run one matching prompt:")
-	for _, item := range firstUsePrompts(receipt) {
+	for _, item := range firstUse.prompts {
 		fmt.Fprintf(stdout, "  %-7s %s\n", providerDisplayName(item.Provider)+":", item.Prompt)
 	}
 	fmt.Fprintln(stdout, "After the Agent opens the Issue and PR, rerun agx status to read Project, Project item, PR, and validation evidence.")
 }
 
-func firstUsePrompts(receipt activation.Receipt) []firstUsePrompt {
-	contract, err := activation.FirstUseContract(receipt)
-	if err != nil {
-		return nil
-	}
-	payload, err := json.Marshal(contract)
-	if err != nil {
-		return nil
-	}
-	prompts := make([]firstUsePrompt, 0, len(receipt.Providers))
-	for _, item := range receipt.Providers {
+func firstUsePrompts(providers []activation.ProviderReceipt, payload []byte) []firstUsePrompt {
+	prompts := make([]firstUsePrompt, 0, len(providers))
+	for _, item := range providers {
 		invocation := ""
 		switch item.Name {
 		case provider.Codex:

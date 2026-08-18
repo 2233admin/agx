@@ -112,11 +112,26 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content))})
 	}
 	if args[0] == "api" && strings.Contains(args[1], "/contents/.github/workflows/validate.yml") {
-		workflow := "name: Validate control baseline\n\non:\n  pull_request:\n  push:\n    branches:\n      - main\n\npermissions:\n  contents: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Check out repository\n        uses: actions/checkout@v4\n      - name: Set up Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: \"3.11\"\n      - name: Validate repository baseline\n        run: python tools/validate.py\n"
-		if runner.wrongWorkflow {
-			workflow = "name: Validate control baseline\njobs:\n  validate:\n    steps:\n      - name: Skip validation\n        run: echo skipped\n"
+		rendered, err := bootstrap.Render(bootstrap.KindAgentControl, bootstrap.Params{
+			Owner: "octo-lab", Repository: "agent-control", PluginSource: bootstrap.AgentPluginsReferenceRepository,
+		})
+		if err != nil {
+			return nil, err
 		}
-		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(workflow))})
+		var workflow []byte
+		for _, file := range rendered.Files {
+			if file.Path == ".github/workflows/validate.yml" {
+				workflow = file.Content
+				break
+			}
+		}
+		if workflow == nil {
+			return nil, errors.New("validation workflow fixture is missing")
+		}
+		if runner.wrongWorkflow {
+			workflow = []byte("name: Validate control baseline\njobs:\n  validate:\n    steps:\n      - name: Skip validation\n        run: echo skipped\n")
+		}
+		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString(workflow)})
 	}
 	return nil, errors.New("unexpected gh command")
 }

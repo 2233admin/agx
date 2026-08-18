@@ -62,6 +62,7 @@ T03 新 Agent Session
 T04 agx status / diagnose
   -> 显示 Project URL、模板仓 URL、Agent 配置态和 smoke evidence
   -> 没有外部验收证据时仍保持 configured/awaiting
+  -> 远端回读达到 deadline 或被取消时返回 AGX-STATUS-INCONCLUSIVE，不把部分观察误判为 drift，也不执行写入
 ```
 
 ## D01 — GitHub Project 是部署资源
@@ -87,7 +88,7 @@ T04 agx status / diagnose
 - 所有 repository、Project 和 provider 检查在第一次写入前完成；
 - 缺少 scope 时不尝试自动扩大权限，只输出精确修复命令：`gh auth refresh -s project`。
 
-GitHub CLI 官方说明 `gh project` 需要 `project` scope，并提供 `project create`、`view`、`link` 和 JSON 输出：[gh project](https://cli.github.com/manual/gh_project)、[create](https://cli.github.com/manual/gh_project_create)、[link](https://cli.github.com/manual/gh_project_link)。
+GitHub CLI 官方说明 `gh project` 需要 `project` scope，并提供 `project create`、`view`、`link` 和 JSON 输出：[gh project command](https://cli.github.com/manual/gh_project)、[gh project create command](https://cli.github.com/manual/gh_project_create)、[gh project link command](https://cli.github.com/manual/gh_project_link)。
 
 ### Apply 与回读
 
@@ -181,7 +182,7 @@ first-use 不再只是一个自然语言字符串，而是版本化结构化合�
 
 ### AC5 — 可诊断
 
-`agx status` / `diagnose` 输出 Project URL、repository URL、template digest、provider/profile、缺失步骤和精确下一步。用户不需要读取 `.agx` 文件或原始日志。
+`agx status` / `diagnose` 输出 Project URL、repository URL、template digest、provider/profile、缺失步骤和精确下一步。远端回读 deadline/cancellation 必须返回稳定的 `AGX-STATUS-INCONCLUSIVE` 软件错误，提示远端状态可能已变化并重新运行 `status` / `diagnose`；不得把部分观察报告为 drift，且该路径不得写入。用户不需要读取 `.agx` 文件或原始日志。
 
 ### AC6 — 权限和凭据安全
 
@@ -197,7 +198,7 @@ Project、模板和 Agent smoke 均成功时，最高只能记录对应的 initi
 - `internal/repository` 已把 Issues 开关与远端 HEAD 必需模板路径纳入 readback；
 - initialization receipt 已升级为 v3，并能将 v2 在不重建部署仓的情况下迁移；
 - `agx.first-use/v1` 已绑定 Project、两个仓库、Issue/PR 标题、marker、branch、验证命令、六步 action 和四项 required output；
-- `status` / `diagnose` 已能显示 Project、仓库/template digest 与 `awaiting` / `effective` smoke evidence；
+- `status` / `diagnose` 已能显示 Project、仓库/template digest 与 `awaiting` / `effective` smoke evidence，并在 repository、Project、provider 或 smoke 回读被 deadline/cancellation 中断时返回 `AGX-STATUS-INCONCLUSIVE`；
 - 单元与隔离 adapter 测试覆盖 Project create/link 命令报错但远端已落地后的无重复恢复。
 
 尚未关闭的发布 Gate：在临时真实 owner 中执行一次 GitHub Project 创建、真实 Agent Issue/Project item/PR 写入，以及 Windows 11 / Ubuntu 24.04 双平台模板验证。该 Gate 完成前不得声称外部 `verified`。

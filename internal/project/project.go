@@ -201,7 +201,7 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 	}
 
 	if !receipt.Linked {
-		repositoryName := strings.TrimPrefix(target.LinkedRepository, target.Owner+"/")
+		_, repositoryName, _ := strings.Cut(target.LinkedRepository, "/")
 		_, linkErr := runner.Run(ctx, "", "gh", "project", "link", strconv.Itoa(receipt.Number), "--owner", target.Owner, "--repo", repositoryName)
 		verified, readbackErr := inspect(ctx, target, receipt.Number, runner)
 		if readbackErr != nil {
@@ -491,7 +491,7 @@ func decodeProject(data []byte) (projectJSON, error) {
 		return projectJSON{}, err
 	}
 	if len(fields.ID) == 0 || len(fields.Number) == 0 || len(fields.Owner) == 0 || len(fields.Public) == 0 || len(fields.Title) == 0 || len(fields.URL) == 0 {
-		return projectJSON{}, fmt.Errorf("Project response is missing required fields")
+		return projectJSON{}, fmt.Errorf("project response is missing required fields")
 	}
 	var value projectJSON
 	if err := decodeJSON(data, &value); err != nil {
@@ -501,7 +501,7 @@ func decodeProject(data []byte) (projectJSON, error) {
 	if value.Public == nil || value.ID == "" || value.Number <= 0 || !validName(value.Owner.Login, 39) ||
 		strings.TrimSpace(value.Title) != value.Title || value.Title == "" || utf8.RuneCountInString(value.Title) > 256 || hasControl(value.Title) ||
 		!validProjectURL || !strings.EqualFold(urlOwner, value.Owner.Login) || urlNumber != value.Number {
-		return projectJSON{}, fmt.Errorf("Project response has invalid required fields")
+		return projectJSON{}, fmt.Errorf("project response has invalid required fields")
 	}
 	return value, nil
 }
@@ -515,7 +515,7 @@ func decodeProjectInventory(data []byte) ([]projectJSON, error) {
 		return nil, err
 	}
 	if len(fields.Projects) == 0 || len(fields.TotalCount) == 0 || string(fields.Projects) == "null" || string(fields.TotalCount) == "null" {
-		return nil, fmt.Errorf("Project inventory is missing required fields")
+		return nil, fmt.Errorf("project inventory is missing required fields")
 	}
 	var projectsRaw []json.RawMessage
 	if err := decodeJSON(fields.Projects, &projectsRaw); err != nil {
@@ -526,10 +526,10 @@ func decodeProjectInventory(data []byte) ([]projectJSON, error) {
 		return nil, fmt.Errorf("invalid totalCount field")
 	}
 	if totalCount > len(projectsRaw) {
-		return nil, fmt.Errorf("Project inventory is truncated")
+		return nil, fmt.Errorf("project inventory is truncated")
 	}
 	if totalCount != len(projectsRaw) {
-		return nil, fmt.Errorf("Project inventory count is inconsistent")
+		return nil, fmt.Errorf("project inventory count is inconsistent")
 	}
 	projects := make([]projectJSON, len(projectsRaw))
 	for index, raw := range projectsRaw {
