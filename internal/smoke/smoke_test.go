@@ -18,6 +18,7 @@ type fakeRunner struct {
 	missingProjectItemID bool
 	wrongProject         bool
 	issueURL             string
+	pullRequestURL       string
 	unrelatedCheck       bool
 	impostorCheck        bool
 	wrongWorkflow        bool
@@ -69,6 +70,10 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 		})
 	}
 	if args[0] == "pr" && args[1] == "list" {
+		pullRequestURL := runner.pullRequestURL
+		if pullRequestURL == "" {
+			pullRequestURL = "https://github.com/octo-lab/agent-control/pull/13"
+		}
 		state := "OPEN"
 		var mergedAt any
 		if runner.merged {
@@ -88,7 +93,7 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			files = append(files, map[string]any{"path": ".github/workflows/validate.yml"})
 		}
 		return json.Marshal([]map[string]any{{
-			"number": 13, "url": "https://github.com/octo-lab/agent-control/pull/13",
+			"number": 13, "url": pullRequestURL,
 			"title":       "Bootstrap Verification [install-test]",
 			"body":        marker + "\nValidation-Command: python tools/validate.py\nValidation-Result: passed",
 			"headRefName": "agx/bootstrap-verification-install-test",
@@ -139,6 +144,23 @@ func TestInspectRejectsBootstrapIssueOutsideControlRepository(t *testing.T) {
 			}
 			if evidence.Status == StatusEffective || evidence.IssueURL != "" || evidence.ProjectItem != "" {
 				t.Fatalf("out-of-repository Issue became bootstrap evidence: %+v", evidence)
+			}
+		})
+	}
+}
+
+func TestInspectRejectsBootstrapPROutsideControlRepository(t *testing.T) {
+	for _, pullRequestURL := range []string{
+		"https://github.com/other-owner/agent-control/pull/13",
+		"https://github.com/octo-lab/other-repository/pull/13",
+	} {
+		t.Run(pullRequestURL, func(t *testing.T) {
+			evidence, err := Inspect(context.Background(), testContract(), fakeRunner{pullRequestURL: pullRequestURL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Status == StatusEffective || evidence.PullRequestURL != "" {
+				t.Fatalf("out-of-repository PR became bootstrap evidence: %+v", evidence)
 			}
 		})
 	}

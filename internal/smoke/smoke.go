@@ -169,8 +169,10 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-PR: invalid PR inventory: %w", err)
 	}
 	for _, pullRequest := range pullRequests {
-		if pullRequest.Title != contract.PullRequestTitle || !strings.Contains(pullRequest.Body, marker) || !validGitHubURL(pullRequest.URL) ||
-			pullRequest.HeadRefName != contract.Branch || !strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.MergedAt != nil {
+		owner, repositoryName, validURL := pullRequestCoordinates(pullRequest.URL)
+		if pullRequest.Title != contract.PullRequestTitle || !strings.Contains(pullRequest.Body, marker) || !validURL ||
+			!strings.EqualFold(owner+"/"+repositoryName, slug) || pullRequest.HeadRefName != contract.Branch ||
+			!strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.MergedAt != nil {
 			continue
 		}
 		evidence.PullRequestURL = pullRequest.URL
@@ -575,13 +577,21 @@ func rejectDuplicateJSONKeys(data []byte) error {
 }
 
 func issueCoordinates(value string) (string, string, bool) {
+	return repositoryResourceCoordinates(value, "issues")
+}
+
+func pullRequestCoordinates(value string) (string, string, bool) {
+	return repositoryResourceCoordinates(value, "pull")
+}
+
+func repositoryResourceCoordinates(value, resource string) (string, string, bool) {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawPath != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.Opaque != "" {
 		return "", "", false
 	}
 	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
-	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 4 || !validProjectOwner(parts[0]) || !validRepositoryName(parts[1]) || parts[2] != "issues" {
+	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 4 || !validProjectOwner(parts[0]) || !validRepositoryName(parts[1]) || parts[2] != resource {
 		return "", "", false
 	}
 	number, err := strconv.Atoi(parts[3])
@@ -602,9 +612,4 @@ func validRepositoryName(value string) bool {
 		}
 	}
 	return true
-}
-
-func validGitHubURL(value string) bool {
-	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && strings.EqualFold(parsed.Host, "github.com") && parsed.User == nil
 }
