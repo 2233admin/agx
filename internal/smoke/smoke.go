@@ -4,6 +4,7 @@
 package smoke
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const ContractVersionV1 = "agx.first-use/v1"
@@ -111,7 +113,9 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-ISSUE: invalid Issue inventory: %w", err)
 	}
 	for _, issue := range issues {
-		if issue.Title != contract.IssueTitle || !strings.Contains(issue.Body, marker) || !validGitHubURL(issue.URL) {
+		owner, repositoryName, validURL := issueCoordinates(issue.URL)
+		if issue.Title != contract.IssueTitle || !strings.Contains(issue.Body, marker) || !validURL ||
+			!strings.EqualFold(owner+"/"+repositoryName, slug) {
 			continue
 		}
 		evidence.IssueURL = issue.URL
@@ -124,7 +128,7 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		if projectErr != nil {
 			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: cannot inspect deployment Project items: %w", projectErr)
 		}
-		items, err := decodeProjectItems(projectOutput)
+		items, err := decodeProjectItems(projectOutput, slug)
 		if err != nil {
 			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: invalid deployment Project item inventory: %w", err)
 		}
@@ -311,7 +315,7 @@ type projectItem struct {
 	URL string
 }
 
-func decodeProjectItems(data []byte) ([]projectItem, error) {
+func decodeProjectItems(data []byte, controlRepository string) ([]projectItem, error) {
 	var fields struct {
 		Items      json.RawMessage `json:"items"`
 		TotalCount json.RawMessage `json:"totalCount"`
@@ -328,6 +332,8 @@ func decodeProjectItems(data []byte) ([]projectItem, error) {
 		return nil, fmt.Errorf("invalid totalCount field")
 	}
 	items := make([]projectItem, len(itemsRaw))
+	seenIDs := make(map[string]struct{}, len(itemsRaw))
+	seenURLs := make(map[string]struct{}, len(itemsRaw))
 	for index, raw := range itemsRaw {
 		var itemFields struct {
 			ID      json.RawMessage `json:"id"`
@@ -345,9 +351,22 @@ func decodeProjectItems(data []byte) ([]projectItem, error) {
 		if err := decodeJSON(itemFields.ID, &items[index].ID); err != nil || !validNodeID(items[index].ID) {
 			return nil, fmt.Errorf("invalid Project item id at index %d", index)
 		}
-		if err := decodeJSON(contentFields.URL, &items[index].URL); err != nil || !validIssueURL(items[index].URL) {
+		if err := decodeJSON(contentFields.URL, &items[index].URL); err != nil {
 			return nil, fmt.Errorf("invalid Project item URL at index %d", index)
 		}
+		owner, repositoryName, validURL := issueCoordinates(items[index].URL)
+		if !validURL || !strings.EqualFold(owner+"/"+repositoryName, controlRepository) {
+			return nil, fmt.Errorf("invalid Project item URL at index %d", index)
+		}
+		if _, duplicate := seenIDs[items[index].ID]; duplicate {
+			return nil, fmt.Errorf("duplicate Project item id at index %d", index)
+		}
+		urlKey := strings.ToLower(items[index].URL)
+		if _, duplicate := seenURLs[urlKey]; duplicate {
+			return nil, fmt.Errorf("duplicate Project item URL at index %d", index)
+		}
+		seenIDs[items[index].ID] = struct{}{}
+		seenURLs[urlKey] = struct{}{}
 	}
 	return items, nil
 }
@@ -357,10 +376,9 @@ func validNodeID(value string) bool {
 		return false
 	}
 	for _, character := range value {
-		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-' {
-			continue
+		if unicode.IsControl(character) || unicode.IsSpace(character) {
+			return false
 		}
-		return false
 	}
 	return true
 }
@@ -401,9 +419,10 @@ func verifyProjectInventory(ctx context.Context, contract Contract, owner string
 }
 
 type inventoryProject struct {
-	Number int
-	Title  string
-	URL    string
+	ID     string `json:"id"`
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	URL    string `json:"url"`
 }
 
 func decodeProjectInventory(data []byte) ([]inventoryProject, int, error) {
@@ -423,22 +442,39 @@ func decodeProjectInventory(data []byte) ([]inventoryProject, int, error) {
 		return nil, 0, fmt.Errorf("invalid totalCount field")
 	}
 	projects := make([]inventoryProject, len(projectsRaw))
+	seenIDs := make(map[string]struct{}, len(projectsRaw))
+	seenNumbers := make(map[int]struct{}, len(projectsRaw))
+	seenURLs := make(map[string]struct{}, len(projectsRaw))
 	for index, raw := range projectsRaw {
 		var required struct {
+			ID     json.RawMessage `json:"id"`
 			Number json.RawMessage `json:"number"`
 			Title  json.RawMessage `json:"title"`
 			URL    json.RawMessage `json:"url"`
 		}
-		if err := decodeJSON(raw, &required); err != nil || len(required.Number) == 0 || len(required.Title) == 0 || len(required.URL) == 0 {
+		if err := decodeJSON(raw, &required); err != nil || len(required.ID) == 0 || len(required.Number) == 0 || len(required.Title) == 0 || len(required.URL) == 0 {
 			return nil, 0, fmt.Errorf("invalid Project at index %d", index)
 		}
 		if err := decodeJSON(raw, &projects[index]); err != nil {
 			return nil, 0, fmt.Errorf("invalid Project at index %d", index)
 		}
 		_, projectNumber, err := projectCoordinates(projects[index].URL)
-		if err != nil || projectNumber != projects[index].Number || strings.TrimSpace(projects[index].Title) != projects[index].Title || projects[index].Title == "" {
+		if err != nil || projectNumber != projects[index].Number || strings.TrimSpace(projects[index].Title) != projects[index].Title || projects[index].Title == "" || !validNodeID(projects[index].ID) {
 			return nil, 0, fmt.Errorf("invalid Project at index %d", index)
 		}
+		if _, duplicate := seenIDs[projects[index].ID]; duplicate {
+			return nil, 0, fmt.Errorf("duplicate Project id at index %d", index)
+		}
+		seenIDs[projects[index].ID] = struct{}{}
+		urlKey := strings.ToLower(projects[index].URL)
+		if _, duplicate := seenURLs[urlKey]; duplicate {
+			return nil, 0, fmt.Errorf("duplicate Project URL at index %d", index)
+		}
+		seenURLs[urlKey] = struct{}{}
+		if _, duplicate := seenNumbers[projects[index].Number]; duplicate {
+			return nil, 0, fmt.Errorf("duplicate Project number at index %d", index)
+		}
+		seenNumbers[projects[index].Number] = struct{}{}
 	}
 	return projects, total, nil
 }
@@ -474,7 +510,7 @@ func validProjectOwner(value string) bool {
 }
 
 func decodeJSON(data []byte, target any) error {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
@@ -486,7 +522,7 @@ func decodeJSON(data []byte, target any) error {
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	var walk func() error
 	walk = func() error {
 		token, err := decoder.Token()
@@ -538,18 +574,21 @@ func rejectDuplicateJSONKeys(data []byte) error {
 	return nil
 }
 
-func validIssueURL(value string) bool {
+func issueCoordinates(value string) (string, string, bool) {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawPath != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.Opaque != "" {
-		return false
+		return "", "", false
 	}
 	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
 	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 4 || !validProjectOwner(parts[0]) || !validRepositoryName(parts[1]) || parts[2] != "issues" {
-		return false
+		return "", "", false
 	}
 	number, err := strconv.Atoi(parts[3])
-	return err == nil && number > 0 && strconv.Itoa(number) == parts[3]
+	if err != nil || number <= 0 || strconv.Itoa(number) != parts[3] {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func validRepositoryName(value string) bool {

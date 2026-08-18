@@ -634,7 +634,7 @@ func TestInitializeRetainsRepositoriesAndResumesAfterProviderFailure(t *testing.
 	}
 }
 
-func TestInitializeTreatsPresentUncertainRepositoryAsDrift(t *testing.T) {
+func TestInitializeAcceptsPresentUncertainRepositoryAfterVerify(t *testing.T) {
 	root := makeInstallation(t)
 	providerRunner := newRunner()
 	repositoryRunner := newDeploymentRepositoryRunner()
@@ -653,12 +653,53 @@ func TestInitializeTreatsPresentUncertainRepositoryAsDrift(t *testing.T) {
 	}
 	createCalls := len(repositoryRunner.createCalls)
 	delete(repositoryRunner.failCreate, slug)
-	_, _, err = activation.Initialize(context.Background(), options)
-	if err == nil || !strings.Contains(err.Error(), "AGX-INIT-REPOSITORY-DRIFT") {
-		t.Fatalf("resume Initialize() err=%v, want present uncertain repository drift", err)
+	receipt, unchanged, err = activation.Initialize(context.Background(), options)
+	if err != nil || unchanged || receipt.Phase != activation.PhaseInitialized {
+		t.Fatalf("resume Initialize() receipt=%+v unchanged=%v err=%v", receipt, unchanged, err)
 	}
-	if len(repositoryRunner.createCalls) != createCalls || len(providerRunner.mutations) != 0 {
-		t.Fatalf("mutation ran after present uncertain repository: creates=%v providers=%v", repositoryRunner.createCalls, providerRunner.mutations)
+	if len(repositoryRunner.createCalls) != createCalls || len(providerRunner.mutations) == 0 {
+		t.Fatalf("verified present repository was not resumed safely: creates=%v providers=%v", repositoryRunner.createCalls, providerRunner.mutations)
+	}
+}
+
+func TestInitializeRejectsPresentUncertainRepositoryWhenVerifyFails(t *testing.T) {
+	for _, mode := range []string{"commit mismatch", "template mismatch", "readback failure", "inventory failure"} {
+		t.Run(mode, func(t *testing.T) {
+			root := makeInstallation(t)
+			providerRunner := newRunner()
+			repositoryRunner := newDeploymentRepositoryRunner()
+			slug := "octo-lab/agent-contracts"
+			repositoryRunner.failCreate[slug] = true
+			repositoryRunner.landOnFailure[slug] = true
+			repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			options := deploymentOptions(root, providerRunner, repositoryRunner)
+
+			receipt, _, err := activation.Initialize(context.Background(), options)
+			if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+				t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+			}
+			item := repositoryRunner.repositories[strings.ToLower(slug)]
+			switch mode {
+			case "commit mismatch":
+				item.commit = strings.Repeat("c", 40)
+			case "template mismatch":
+				delete(item.files, ".gitattributes")
+			case "readback failure":
+				repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			case "inventory failure":
+				repositoryRunner.inspectErrors[strings.ToLower(slug)] = errors.New("inventory unavailable")
+			}
+			repositoryRunner.repositories[strings.ToLower(slug)] = item
+			createCalls := len(repositoryRunner.createCalls)
+
+			_, _, resumeErr := activation.Initialize(context.Background(), options)
+			if resumeErr == nil || !strings.Contains(resumeErr.Error(), "AGX-INIT-REPOSITORY-DRIFT") {
+				t.Fatalf("resume Initialize() err=%v, want Verify drift", resumeErr)
+			}
+			if len(repositoryRunner.createCalls) != createCalls || len(providerRunner.mutations) != 0 {
+				t.Fatalf("mutation ran after failed Verify: creates=%v providers=%v", repositoryRunner.createCalls, providerRunner.mutations)
+			}
+		})
 	}
 }
 
@@ -703,7 +744,7 @@ func TestStatusKeepsConfirmedAbsentUncertainRepositoryRecoverable(t *testing.T) 
 	}
 }
 
-func TestStatusTreatsPresentUncertainRepositoryAsDrift(t *testing.T) {
+func TestStatusAcceptsMatchingPresentUncertainRepository(t *testing.T) {
 	root := makeInstallation(t)
 	providerRunner := newRunner()
 	repositoryRunner := newDeploymentRepositoryRunner()
@@ -717,8 +758,45 @@ func TestStatusTreatsPresentUncertainRepositoryAsDrift(t *testing.T) {
 		t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
 	}
 	state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
-	if statusErr != nil || state.Status != activation.StatusDrifted || !strings.Contains(strings.Join(state.Problems, "\n"), "repository "+slug+" drifted") {
-		t.Fatalf("Status() state=%+v err=%v, want present uncertain repository drift", state, statusErr)
+	if statusErr != nil || state.Status != activation.PhaseNeedsResume || len(state.Problems) != 0 {
+		t.Fatalf("Status() state=%+v err=%v, want matching present repository without drift", state, statusErr)
+	}
+}
+
+func TestStatusTreatsMismatchedOrInconclusiveUncertainRepositoryAsDrift(t *testing.T) {
+	for _, mode := range []string{"mismatch", "template mismatch", "readback failure", "inventory failure"} {
+		t.Run(mode, func(t *testing.T) {
+			root := makeInstallation(t)
+			providerRunner := newRunner()
+			repositoryRunner := newDeploymentRepositoryRunner()
+			slug := "octo-lab/agent-contracts"
+			repositoryRunner.failCreate[slug] = true
+			repositoryRunner.landOnFailure[slug] = true
+			repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+
+			receipt, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner))
+			if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+				t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+			}
+			switch mode {
+			case "mismatch":
+				item := repositoryRunner.repositories[strings.ToLower(slug)]
+				item.visibility = repository.VisibilityPublic
+				repositoryRunner.repositories[strings.ToLower(slug)] = item
+			case "template mismatch":
+				item := repositoryRunner.repositories[strings.ToLower(slug)]
+				delete(item.files, ".gitattributes")
+				repositoryRunner.repositories[strings.ToLower(slug)] = item
+			case "readback failure":
+				repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			default:
+				repositoryRunner.inspectErrors[strings.ToLower(slug)] = errors.New("inventory unavailable")
+			}
+			state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
+			if statusErr != nil || state.Status != activation.StatusDrifted || !strings.Contains(strings.Join(state.Problems, "\n"), "repository "+slug+" drifted") {
+				t.Fatalf("Status() state=%+v err=%v, want uncertain repository drift", state, statusErr)
+			}
+		})
 	}
 }
 

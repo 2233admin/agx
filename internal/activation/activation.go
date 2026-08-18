@@ -368,7 +368,6 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 				if inspectErr != nil {
 					return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: uncertain repository absence could not be confirmed: %w", inspectErr)
 				}
-				return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: uncertain repository is present")
 			}
 			if err := repository.Verify(ctx, item, options.RepositoryRunner); err != nil {
 				return preparedDeployment{}, fmt.Errorf("AGX-INIT-REPOSITORY-DRIFT: %w", err)
@@ -796,6 +795,11 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 				_, inspectErr := repository.Inspect(ctx, owner, name, repositoryRunner)
 				if confirmedRepositoryAbsent(inspectErr) {
 					continue
+				}
+				if inspectErr == nil {
+					if verifyErr := repository.Verify(ctx, item, repositoryRunner); verifyErr == nil {
+						continue
+					}
 				}
 			}
 			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))

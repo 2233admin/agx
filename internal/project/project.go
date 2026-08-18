@@ -90,28 +90,41 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 		if err := Preflight(ctx, target, runner); err != nil {
 			return Receipt{}, err
 		}
-		output, err := runner.Run(ctx, "", "gh", "project", "create", "--owner", target.Owner, "--title", target.Title, "--format", "json")
-		if err != nil {
+		recoverCreate := func(cause error, commandFailed bool) (Receipt, error) {
 			observed, found, recoveryErr := findTargetProject(ctx, target, runner)
 			if recoveryErr != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create failed and inventory was inconclusive: %v; inventory: %w", err, recoveryErr)
+				if commandFailed {
+					return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create failed and inventory was inconclusive: %v; inventory: %w", cause, recoveryErr)
+				}
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response was invalid and inventory was inconclusive: %v; inventory: %w", cause, recoveryErr)
 			}
 			if !found {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE: cannot create Project: %w", err)
+				if commandFailed {
+					return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE: cannot create Project: %w", cause)
+				}
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response was invalid and no matching Project was found: %w", cause)
 			}
 			recovered, receiptErr := receiptFromProject(target, observed)
 			if receiptErr != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create failed and discovered Project did not match: %v; readback: %w", err, receiptErr)
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: discovered Project did not match after uncertain create: %v; readback: %w", cause, receiptErr)
 			}
 			recovered.Verification = VerificationCreated
 			if journalErr := journal(recovered); journalErr != nil {
 				return recovered, fmt.Errorf("AGX-PROJECT-JOURNAL: cannot persist recovered create receipt: %w", journalErr)
 			}
-			return recovered, fmt.Errorf("AGX-PROJECT-CREATE-PARTIAL: gh reported an error, but the uniquely marked Project was discovered: %w", err)
+			if commandFailed {
+				return recovered, fmt.Errorf("AGX-PROJECT-CREATE-PARTIAL: gh reported an error, but the uniquely marked Project was discovered: %w", cause)
+			}
+			return recovered, fmt.Errorf("AGX-PROJECT-CREATE-PARTIAL: successful create response was invalid, but the uniquely marked Project was discovered: %w", cause)
+		}
+
+		output, err := runner.Run(ctx, "", "gh", "project", "create", "--owner", target.Owner, "--title", target.Title, "--format", "json")
+		if err != nil {
+			return recoverCreate(err, true)
 		}
 		observed, decodeErr := decodeProject(output)
 		if decodeErr != nil {
-			return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response was invalid: %w", decodeErr)
+			return recoverCreate(decodeErr, false)
 		}
 		created, receiptErr := receiptFromProject(target, observed)
 		if receiptErr != nil {

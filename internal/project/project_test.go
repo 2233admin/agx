@@ -277,7 +277,7 @@ func inventoryPayload(projects ...[]byte) []byte {
 	return data
 }
 
-func TestProvisionRejectsSuccessfulCreateWithInvalidResponse(t *testing.T) {
+func TestProvisionRecoversSuccessfulCreateWithInvalidResponseFromUniqueInventory(t *testing.T) {
 	for name, createOutput := range map[string][]byte{
 		"malformed":      []byte(`{"id":`),
 		"missing fields": []byte(`{"id":"PVT_kwDOA"}`),
@@ -293,19 +293,102 @@ func TestProvisionRejectsSuccessfulCreateWithInvalidResponse(t *testing.T) {
 				LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
 			}
 			var journal []Receipt
-			_, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
+			receipt, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
 				journal = append(journal, value)
 				return nil
 			})
-			if err == nil || len(journal) != 0 {
-				t.Fatalf("Provision() err = %v, journal = %+v", err, journal)
+			if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-CREATE-PARTIAL") {
+				t.Fatalf("Provision() err = %v", err)
+			}
+			if receipt.Verification != VerificationCreated || receipt.Linked || len(journal) != 1 || journal[0] != receipt {
+				t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
 			}
 			for _, call := range runner.calls {
 				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "edit" || call.args[1] == "link") {
-					t.Fatalf("later mutation ran after invalid successful create output: %+v", call)
+					t.Fatalf("later mutation ran after recovered successful create: %+v", call)
 				}
 			}
 		})
+	}
+}
+
+func TestProvisionFailsClosedWhenSuccessfulCreateRecoveryInventoryIsInconclusive(t *testing.T) {
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	ambiguous := inventoryPayload(
+		projectPayload(false),
+		projectPayloadWithIdentity("PVT_other", 8, target.Title, false),
+	)
+	for name, recoveryInventory := range map[string][]byte{
+		"malformed": []byte(`{"projects":`),
+		"truncated": []byte(`{"projects":[],"totalCount":1}`),
+		"ambiguous": ambiguous,
+		"absent":    inventoryPayload(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeRunner{
+				createOutput:     []byte(`{"id":`),
+				inventoryOutputs: [][]byte{inventoryPayload(), recoveryInventory},
+			}
+			var journal []Receipt
+			receipt, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
+				journal = append(journal, value)
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-CREATE-UNCERTAIN") {
+				t.Fatalf("Provision() err = %v", err)
+			}
+			if receipt != (Receipt{}) || len(journal) != 0 {
+				t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
+			}
+			for _, call := range runner.calls {
+				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "edit" || call.args[1] == "link") {
+					t.Fatalf("later mutation ran after inconclusive create recovery: %+v", call)
+				}
+			}
+		})
+	}
+}
+
+func TestProvisionRevalidatesRecoveredMalformedCreateBeforeMutation(t *testing.T) {
+	runner := &fakeRunner{
+		createOutput:     []byte(`{"id":`),
+		inventoryOutputs: [][]byte{inventoryPayload(), inventoryPayload(projectPayload(false))},
+	}
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	receipt, err := Provision(context.Background(), target, nil, runner, func(Receipt) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-CREATE-PARTIAL") {
+		t.Fatalf("first Provision() err = %v", err)
+	}
+	firstRunCalls := len(runner.calls)
+	verified, err := Provision(context.Background(), target, &receipt, runner, func(Receipt) error { return nil })
+	if err != nil || !verified.Linked || verified.Verification != VerificationReadback {
+		t.Fatalf("resume Provision() receipt = %+v, err = %v", verified, err)
+	}
+	viewIndex, linkIndex := -1, -1
+	for index, call := range runner.calls[firstRunCalls:] {
+		if len(call.args) < 2 || call.args[0] != "project" {
+			continue
+		}
+		switch call.args[1] {
+		case "view":
+			if !reflect.DeepEqual(call.args, []string{"project", "view", "7", "--owner", "octo-lab", "--format", "json"}) {
+				t.Fatalf("Project view args = %v", call.args)
+			}
+			if viewIndex == -1 {
+				viewIndex = index
+			}
+		case "link":
+			linkIndex = index
+		}
+	}
+	if viewIndex < 0 || linkIndex < 0 || viewIndex >= linkIndex {
+		t.Fatalf("resume calls = %+v, want number-based Project view before mutation", runner.calls[firstRunCalls:])
 	}
 }
 
