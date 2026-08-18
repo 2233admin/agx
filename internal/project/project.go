@@ -90,51 +90,63 @@ func Provision(ctx context.Context, target Target, existing *Receipt, runner Run
 		if err := Preflight(ctx, target, runner); err != nil {
 			return Receipt{}, err
 		}
-		output, err := runner.Run(ctx, "", "gh", "project", "create", "--owner", target.Owner, "--title", target.Title, "--format", "json")
-		if err != nil {
+		recoverCreate := func(cause error, commandFailed bool) (Receipt, error) {
 			observed, found, recoveryErr := findTargetProject(ctx, target, runner)
 			if recoveryErr != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create failed and inventory was inconclusive: %v; inventory: %w", err, recoveryErr)
+				if commandFailed {
+					return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create failed and inventory was inconclusive: %v; inventory: %w", cause, recoveryErr)
+				}
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response was invalid and inventory was inconclusive: %v; inventory: %w", cause, recoveryErr)
 			}
 			if !found {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE: cannot create Project: %w", err)
+				if commandFailed {
+					return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE: cannot create Project: %w", cause)
+				}
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response was invalid and no matching Project was found: %w", cause)
 			}
 			recovered, receiptErr := receiptFromProject(target, observed)
 			if receiptErr != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create failed and discovered Project did not match: %v; readback: %w", err, receiptErr)
+				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: discovered Project did not match after uncertain create: %v; readback: %w", cause, receiptErr)
 			}
 			recovered.Verification = VerificationCreated
 			if journalErr := journal(recovered); journalErr != nil {
 				return recovered, fmt.Errorf("AGX-PROJECT-JOURNAL: cannot persist recovered create receipt: %w", journalErr)
 			}
-			return recovered, fmt.Errorf("AGX-PROJECT-CREATE-PARTIAL: gh reported an error, but the uniquely marked Project was discovered: %w", err)
+			if commandFailed {
+				return recovered, fmt.Errorf("AGX-PROJECT-CREATE-PARTIAL: gh reported an error, but the uniquely marked Project was discovered: %w", cause)
+			}
+			return recovered, fmt.Errorf("AGX-PROJECT-CREATE-PARTIAL: successful create response was invalid, but the uniquely marked Project was discovered: %w", cause)
+		}
+
+		output, err := runner.Run(ctx, "", "gh", "project", "create", "--owner", target.Owner, "--title", target.Title, "--format", "json")
+		if err != nil {
+			return recoverCreate(err, true)
 		}
 		observed, decodeErr := decodeProject(output)
 		if decodeErr != nil {
-			var found bool
-			observed, found, err = findTargetProject(ctx, target, runner)
-			if err != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid: %w; inventory: %w", decodeErr, err)
-			}
-			if !found {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid and the Project was not found: %w", decodeErr)
-			}
+			return recoverCreate(decodeErr, false)
 		}
-		receipt, err = receiptFromProject(target, observed)
-		if err != nil {
-			if decodeErr != nil {
-				return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: create response was invalid: %w; readback: %w", decodeErr, err)
-			}
-			return Receipt{}, err
+		created, receiptErr := receiptFromProject(target, observed)
+		if receiptErr != nil {
+			return Receipt{}, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create response did not match target: %w", receiptErr)
 		}
+		created.Verification = VerificationCreated
+		if err := journal(created); err != nil {
+			return created, fmt.Errorf("AGX-PROJECT-JOURNAL: cannot persist create receipt: %w", err)
+		}
+		confirmed, readbackErr := readProject(ctx, target, created.Number, runner)
+		if readbackErr != nil {
+			return created, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create readback was inconclusive: %w", readbackErr)
+		}
+		if !sameProjectIdentity(confirmed, created) || confirmed.Visibility != created.Visibility {
+			return created, fmt.Errorf("AGX-PROJECT-CREATE-UNCERTAIN: successful create readback did not match create response")
+		}
+		receipt = confirmed
 		receipt.Verification = VerificationCreated
-		if err := journal(receipt); err != nil {
-			return receipt, fmt.Errorf("AGX-PROJECT-JOURNAL: cannot persist create receipt: %w", err)
-		}
 	} else {
 		receipt = *existing
-		if err := ValidateReceipt(receipt, target); err != nil {
-			return Receipt{}, err
+		if err := Revalidate(ctx, target, receipt, runner); err != nil {
+			return receipt, err
 		}
 	}
 
@@ -293,9 +305,39 @@ func Verify(ctx context.Context, target Target, receipt Receipt, runner Runner) 
 	if err != nil {
 		return err
 	}
-	if observed.Number != receipt.Number || observed.NodeID != receipt.NodeID || !strings.EqualFold(observed.URL, receipt.URL) ||
+	if observed.Number != receipt.Number || observed.NodeID != receipt.NodeID || observed.URL != receipt.URL ||
 		observed.Title != receipt.Title || observed.Visibility != receipt.Visibility || observed.LinkedRepository != receipt.LinkedRepository ||
 		observed.InstallationID != receipt.InstallationID || !observed.Linked {
+		return fmt.Errorf("AGX-PROJECT-DRIFT: Project readback no longer matches receipt")
+	}
+	return nil
+}
+
+// Revalidate proves project scope and exact receipt-bound Project identity and
+// visibility without requiring the repository link to be complete.
+func Revalidate(ctx context.Context, target Target, receipt Receipt, runner Runner) error {
+	runner = defaultRunner(runner)
+	if err := validateTarget(target); err != nil {
+		return err
+	}
+	if err := ValidateReceipt(receipt, target); err != nil {
+		return err
+	}
+	if err := requireCLI(runner); err != nil {
+		return err
+	}
+	output, err := runner.Run(ctx, "", "gh", "auth", "status", "--active", "--json", "hosts")
+	if err != nil {
+		return fmt.Errorf("AGX-PROJECT-AUTH: cannot inspect GitHub CLI authentication: %w", err)
+	}
+	if !hasProjectScope(output) {
+		return fmt.Errorf("AGX-PROJECT-SCOPE: active GitHub CLI token lacks project scope; run gh auth refresh -s project")
+	}
+	observed, err := readProject(ctx, target, receipt.Number, runner)
+	if err != nil {
+		return err
+	}
+	if !sameProjectIdentity(observed, receipt) || observed.Visibility != receipt.Visibility {
 		return fmt.Errorf("AGX-PROJECT-DRIFT: Project readback no longer matches receipt")
 	}
 	return nil
@@ -339,7 +381,7 @@ func inspect(ctx context.Context, target Target, number int, runner Runner) (Rec
 		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: Issues are disabled for %s", target.LinkedRepository)
 	}
 	for _, item := range repository.ProjectsV2.Nodes {
-		if item.ID == receipt.NodeID && item.Number == receipt.Number && item.Title == receipt.Title && strings.EqualFold(item.URL, receipt.URL) {
+		if item.ID == receipt.NodeID && item.Number == receipt.Number && item.Title == receipt.Title && item.URL == receipt.URL {
 			receipt.Linked = true
 			return receipt, nil
 		}
@@ -367,7 +409,9 @@ func readProject(ctx context.Context, target Target, number int, runner Runner) 
 }
 
 func receiptFromProject(target Target, observed projectJSON) (Receipt, error) {
-	if observed.Public == nil || observed.ID == "" || observed.Number <= 0 || !strings.EqualFold(observed.Owner.Login, target.Owner) || observed.Title != target.Title || !validURL(observed.URL) {
+	urlOwner, urlNumber, ok := projectCoordinates(observed.URL)
+	if observed.Public == nil || observed.ID == "" || observed.Number <= 0 || !strings.EqualFold(observed.Owner.Login, target.Owner) || observed.Title != target.Title ||
+		!ok || !strings.EqualFold(urlOwner, target.Owner) || urlNumber != observed.Number {
 		return Receipt{}, fmt.Errorf("AGX-PROJECT-READBACK: Project identity does not match target")
 	}
 	visibility := VisibilityPrivate
@@ -381,7 +425,7 @@ func receiptFromProject(target Target, observed projectJSON) (Receipt, error) {
 }
 
 func sameProjectIdentity(left, right Receipt) bool {
-	return left.Owner == right.Owner && left.Number == right.Number && left.NodeID == right.NodeID && left.Title == right.Title && strings.EqualFold(left.URL, right.URL)
+	return left.Owner == right.Owner && left.Number == right.Number && left.NodeID == right.NodeID && left.Title == right.Title && left.URL == right.URL
 }
 
 func validateTarget(target Target) error {
@@ -400,8 +444,9 @@ func validateTarget(target Target) error {
 func ValidateReceipt(receipt Receipt, target Target) error {
 	validEvidence := (receipt.Verification == VerificationCreated || receipt.Verification == VerificationConfigured) && !receipt.Linked ||
 		receipt.Verification == VerificationReadback && receipt.Linked
+	urlOwner, urlNumber, validProjectURL := projectCoordinates(receipt.URL)
 	if receipt.Owner != target.Owner || receipt.Title != target.Title || receipt.LinkedRepository != target.LinkedRepository || receipt.InstallationID != target.InstallationID ||
-		receipt.Number <= 0 || receipt.NodeID == "" || !validURL(receipt.URL) || !receipt.Created ||
+		receipt.Number <= 0 || receipt.NodeID == "" || !validProjectURL || !strings.EqualFold(urlOwner, receipt.Owner) || urlNumber != receipt.Number || !receipt.Created ||
 		(receipt.Visibility != VisibilityPrivate && receipt.Visibility != VisibilityPublic) || !validEvidence {
 		return fmt.Errorf("AGX-PROJECT-RECEIPT: Project receipt does not match target")
 	}
@@ -452,8 +497,10 @@ func decodeProject(data []byte) (projectJSON, error) {
 	if err := decodeJSON(data, &value); err != nil {
 		return projectJSON{}, err
 	}
+	urlOwner, urlNumber, validProjectURL := projectCoordinates(value.URL)
 	if value.Public == nil || value.ID == "" || value.Number <= 0 || !validName(value.Owner.Login, 39) ||
-		strings.TrimSpace(value.Title) != value.Title || value.Title == "" || utf8.RuneCountInString(value.Title) > 256 || hasControl(value.Title) || !validURL(value.URL) {
+		strings.TrimSpace(value.Title) != value.Title || value.Title == "" || utf8.RuneCountInString(value.Title) > 256 || hasControl(value.Title) ||
+		!validProjectURL || !strings.EqualFold(urlOwner, value.Owner.Login) || urlNumber != value.Number {
 		return projectJSON{}, fmt.Errorf("Project response has invalid required fields")
 	}
 	return value, nil
@@ -495,6 +542,59 @@ func decodeProjectInventory(data []byte) ([]projectJSON, error) {
 	return projects, nil
 }
 
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delimiter, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delimiter {
+		case '{':
+			keys := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return fmt.Errorf("invalid object key")
+				}
+				if _, duplicate := keys[key]; duplicate {
+					return fmt.Errorf("duplicate object key %q", key)
+				}
+				keys[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for decoder.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("unexpected JSON delimiter")
+		}
+		_, err = decoder.Token()
+		return err
+	}
+	if err := walk(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("trailing data")
+	}
+	return nil
+}
+
 func decodeJSON(data []byte, target any) error {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	if err := decoder.Decode(target); err != nil {
@@ -504,7 +604,7 @@ func decodeJSON(data []byte, target any) error {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return fmt.Errorf("trailing data")
 	}
-	return nil
+	return rejectDuplicateJSONKeys(data)
 }
 
 func requireCLI(runner Runner) error {
@@ -521,9 +621,21 @@ func defaultRunner(runner Runner) Runner {
 	return runner
 }
 
-func validURL(value string) bool {
+func projectCoordinates(value string) (string, int, bool) {
 	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && strings.EqualFold(parsed.Host, "github.com") && parsed.User == nil
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawPath != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.Opaque != "" {
+		return "", 0, false
+	}
+	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 4 || (parts[0] != "users" && parts[0] != "orgs") || !validName(parts[1], 39) || parts[2] != "projects" {
+		return "", 0, false
+	}
+	number, err := strconv.Atoi(parts[3])
+	if err != nil || number <= 0 || strconv.Itoa(number) != parts[3] {
+		return "", 0, false
+	}
+	return parts[1], number, true
 }
 
 func validName(value string, limit int) bool {

@@ -28,6 +28,7 @@ type fakeRunner struct {
 	createErr             error
 	editOutput            []byte
 	viewMode              string
+	viewModes             []string
 	visibilityFailureMode string
 }
 
@@ -82,7 +83,10 @@ func (runner *fakeRunner) Run(_ context.Context, _ string, name string, args ...
 		return nil, nil
 	case len(args) >= 2 && args[0] == "project" && args[1] == "view":
 		mode := runner.viewMode
-		if mode == "" {
+		if len(runner.viewModes) != 0 {
+			mode = runner.viewModes[0]
+			runner.viewModes = runner.viewModes[1:]
+		} else if mode == "" {
 			mode = runner.visibilityFailureMode
 		}
 		switch mode {
@@ -90,6 +94,8 @@ func (runner *fakeRunner) Run(_ context.Context, _ string, name string, args ...
 			return []byte(`{"public":`), nil
 		case "unavailable":
 			return nil, errors.New("project view unavailable")
+		case "duplicate-key":
+			return []byte(`{"id":"PVT_untrusted","id":"PVT_kwDOA","number":7,"owner":{"login":"octo-lab"},"public":false,"title":"agent-control deployment (install-test)","url":"https://github.com/users/octo-lab/projects/7"}`), nil
 		case "missing-public":
 			return json.Marshal(map[string]any{
 				"id": "PVT_kwDOA", "number": 7, "owner": map[string]any{"login": "octo-lab"},
@@ -191,6 +197,38 @@ func TestPreflightAcceptsCompleteNonTruncatedInventory(t *testing.T) {
 	}
 }
 
+func TestPreflightClassifiesProjectTitleMatches(t *testing.T) {
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	tests := map[string]struct {
+		inventory []byte
+		wantErr   bool
+	}{
+		"missing":         {inventory: inventoryPayload()},
+		"exact duplicate": {inventory: inventoryPayload(projectPayload(false)), wantErr: true},
+		"case variant": {
+			inventory: inventoryPayload(projectPayloadWithIdentity("PVT_other", 8, strings.ToUpper(target.Title), false)),
+			wantErr:   true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeRunner{inventoryOutput: test.inventory}
+			err := Preflight(context.Background(), target, runner)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Preflight() err = %v, wantErr = %v", err, test.wantErr)
+			}
+			for _, call := range runner.calls {
+				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "create" || call.args[1] == "edit" || call.args[1] == "link") {
+					t.Fatalf("mutation ran during preflight: %+v", call)
+				}
+			}
+		})
+	}
+}
+
 func TestDecodeJSONRejectsTrailingValues(t *testing.T) {
 	var value map[string]any
 	if err := decodeJSON([]byte(`{"ok":true}{"unexpected":true}`), &value); err == nil {
@@ -215,13 +253,17 @@ func TestVerifyRejectsReceiptThatDoesNotMatchProjectReadback(t *testing.T) {
 }
 
 func projectPayload(public bool) []byte {
+	return projectPayloadWithIdentity("PVT_kwDOA", 7, "agent-control deployment (install-test)", public)
+}
+
+func projectPayloadWithIdentity(id string, number int, title string, public bool) []byte {
 	data, _ := json.Marshal(map[string]any{
-		"id":     "PVT_kwDOA",
-		"number": 7,
+		"id":     id,
+		"number": number,
 		"owner":  map[string]any{"login": "octo-lab", "type": "User"},
 		"public": public,
-		"title":  "agent-control deployment (install-test)",
-		"url":    "https://github.com/users/octo-lab/projects/7",
+		"title":  title,
+		"url":    "https://github.com/users/octo-lab/projects/" + strconv.Itoa(number),
 	})
 	return data
 }
@@ -235,10 +277,11 @@ func inventoryPayload(projects ...[]byte) []byte {
 	return data
 }
 
-func TestProvisionRecoversSuccessfulCreateWithInvalidResponse(t *testing.T) {
+func TestProvisionRecoversSuccessfulCreateWithInvalidResponseFromUniqueInventory(t *testing.T) {
 	for name, createOutput := range map[string][]byte{
 		"malformed":      []byte(`{"id":`),
 		"missing fields": []byte(`{"id":"PVT_kwDOA"}`),
+		"duplicate key":  []byte(`{"id":"PVT_untrusted","id":"PVT_kwDOA","number":7,"owner":{"login":"octo-lab"},"public":false,"title":"agent-control deployment (install-test)","url":"https://github.com/users/octo-lab/projects/7"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner := &fakeRunner{
@@ -254,22 +297,98 @@ func TestProvisionRecoversSuccessfulCreateWithInvalidResponse(t *testing.T) {
 				journal = append(journal, value)
 				return nil
 			})
-			if err != nil {
-				t.Fatalf("Provision() failed recovered create: %v", err)
+			if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-CREATE-PARTIAL") {
+				t.Fatalf("Provision() err = %v", err)
 			}
-			if !receipt.Linked || receipt.Verification != VerificationReadback || len(journal) != 2 || journal[0].Verification != VerificationCreated {
+			if receipt.Verification != VerificationCreated || receipt.Linked || len(journal) != 1 || journal[0] != receipt {
 				t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
 			}
-			writes := []string{}
 			for _, call := range runner.calls {
-				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "create" || call.args[1] == "edit" || call.args[1] == "link") {
-					writes = append(writes, call.args[1])
+				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "edit" || call.args[1] == "link") {
+					t.Fatalf("later mutation ran after recovered successful create: %+v", call)
 				}
 			}
-			if !reflect.DeepEqual(writes, []string{"create", "link"}) {
-				t.Fatalf("project writes = %v", writes)
+		})
+	}
+}
+
+func TestProvisionFailsClosedWhenSuccessfulCreateRecoveryInventoryIsInconclusive(t *testing.T) {
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	ambiguous := inventoryPayload(
+		projectPayload(false),
+		projectPayloadWithIdentity("PVT_other", 8, target.Title, false),
+	)
+	for name, recoveryInventory := range map[string][]byte{
+		"malformed": []byte(`{"projects":`),
+		"truncated": []byte(`{"projects":[],"totalCount":1}`),
+		"ambiguous": ambiguous,
+		"absent":    inventoryPayload(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeRunner{
+				createOutput:     []byte(`{"id":`),
+				inventoryOutputs: [][]byte{inventoryPayload(), recoveryInventory},
+			}
+			var journal []Receipt
+			receipt, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
+				journal = append(journal, value)
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-CREATE-UNCERTAIN") {
+				t.Fatalf("Provision() err = %v", err)
+			}
+			if receipt != (Receipt{}) || len(journal) != 0 {
+				t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
+			}
+			for _, call := range runner.calls {
+				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "edit" || call.args[1] == "link") {
+					t.Fatalf("later mutation ran after inconclusive create recovery: %+v", call)
+				}
 			}
 		})
+	}
+}
+
+func TestProvisionRevalidatesRecoveredMalformedCreateBeforeMutation(t *testing.T) {
+	runner := &fakeRunner{
+		createOutput:     []byte(`{"id":`),
+		inventoryOutputs: [][]byte{inventoryPayload(), inventoryPayload(projectPayload(false))},
+	}
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	receipt, err := Provision(context.Background(), target, nil, runner, func(Receipt) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-CREATE-PARTIAL") {
+		t.Fatalf("first Provision() err = %v", err)
+	}
+	firstRunCalls := len(runner.calls)
+	verified, err := Provision(context.Background(), target, &receipt, runner, func(Receipt) error { return nil })
+	if err != nil || !verified.Linked || verified.Verification != VerificationReadback {
+		t.Fatalf("resume Provision() receipt = %+v, err = %v", verified, err)
+	}
+	viewIndex, linkIndex := -1, -1
+	for index, call := range runner.calls[firstRunCalls:] {
+		if len(call.args) < 2 || call.args[0] != "project" {
+			continue
+		}
+		switch call.args[1] {
+		case "view":
+			if !reflect.DeepEqual(call.args, []string{"project", "view", "7", "--owner", "octo-lab", "--format", "json"}) {
+				t.Fatalf("Project view args = %v", call.args)
+			}
+			if viewIndex == -1 {
+				viewIndex = index
+			}
+		case "link":
+			linkIndex = index
+		}
+	}
+	if viewIndex < 0 || linkIndex < 0 || viewIndex >= linkIndex {
+		t.Fatalf("resume calls = %+v, want number-based Project view before mutation", runner.calls[firstRunCalls:])
 	}
 }
 
@@ -300,55 +419,102 @@ func TestProvisionPreservesFailedCreateRecoverySemantics(t *testing.T) {
 	}
 }
 
-func TestProvisionFailsClosedWhenSuccessfulCreateRecoveryIsInconclusive(t *testing.T) {
-	tests := map[string][]byte{
-		"absent":         inventoryPayload(),
-		"ambiguous":      inventoryPayload(projectPayload(false), projectPayload(false)),
-		"malformed":      []byte(`{"projects":`),
-		"truncated":      []byte(`{"projects":[],"totalCount":1}`),
-		"missing fields": []byte(`{"projects":[{"title":"agent-control deployment (install-test)"}],"totalCount":1}`),
-		"identity drift": []byte(`{"projects":[{"id":"PVT_other","number":8,"owner":{"login":"octo-lab"},"public":false,"title":"agent-control deployment (install-test)","url":"https://example.com/project/8"}],"totalCount":1}`),
+func TestProvisionFailsClosedWhenSuccessfulCreateReadbackIsInconclusive(t *testing.T) {
+	tests := map[string]*fakeRunner{
+		"unavailable":    {viewMode: "unavailable"},
+		"malformed":      {viewMode: "malformed"},
+		"duplicate key":  {viewMode: "duplicate-key"},
+		"missing fields": {viewMode: "missing-public"},
+		"identity drift": {viewMode: "identity-changed"},
+		"second lookup mismatch": {
+			createOutput: []byte(`{"id":"PVT_untrusted","number":8,"owner":{"login":"octo-lab"},"public":false,"title":"agent-control deployment (install-test)","url":"https://github.com/users/octo-lab/projects/8"}`),
+		},
 	}
 	target := Target{
 		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
 		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
 	}
-	for name, recoveryOutput := range tests {
+	for name, runner := range tests {
 		t.Run(name, func(t *testing.T) {
-			runner := &fakeRunner{
-				createOutput:     []byte(`{"id":`),
-				inventoryOutputs: [][]byte{inventoryPayload(), recoveryOutput},
-			}
 			var journal []Receipt
-			_, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
+			receipt, err := Provision(context.Background(), target, nil, runner, func(value Receipt) error {
 				journal = append(journal, value)
 				return nil
 			})
-			if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-CREATE-UNCERTAIN") {
-				t.Fatalf("Provision() err = %v", err)
+			if err == nil || receipt.Verification != VerificationCreated || len(journal) != 1 || journal[0] != receipt {
+				t.Fatalf("Provision() receipt = %+v, err = %v, journal = %+v", receipt, err, journal)
 			}
-			if !errors.Is(err, io.ErrUnexpectedEOF) {
-				t.Fatalf("Provision() did not preserve create response error: %v", err)
-			}
-			if len(journal) != 0 {
-				t.Fatalf("journal = %+v", journal)
-			}
-			var lists, creates int
 			for _, call := range runner.calls {
-				if len(call.args) < 2 || call.args[0] != "project" {
-					continue
-				}
-				switch call.args[1] {
-				case "list":
-					lists++
-				case "create":
-					creates++
-				case "edit", "link":
-					t.Fatalf("later mutation ran after inconclusive create recovery: %+v", call)
+				if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "edit" || call.args[1] == "link") {
+					t.Fatalf("later mutation ran after inconclusive successful create readback: %+v", call)
 				}
 			}
-			if lists != 2 || creates != 1 {
-				t.Fatalf("list calls = %d, create calls = %d", lists, creates)
+		})
+	}
+}
+
+func TestProvisionRevalidatesExistingReceiptBeforeMutation(t *testing.T) {
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	existing := &Receipt{
+		Owner: target.Owner, Number: 7, NodeID: "PVT_kwDOA", URL: "https://github.com/users/octo-lab/projects/7",
+		Title: target.Title, Visibility: target.Visibility, LinkedRepository: target.LinkedRepository,
+		InstallationID: target.InstallationID, Created: true, Verification: VerificationCreated,
+	}
+	runner := &fakeRunner{viewMode: "identity-changed"}
+	if _, err := Provision(context.Background(), target, existing, runner, func(Receipt) error { return nil }); err == nil {
+		t.Fatal("Provision() accepted remote drift for an existing receipt")
+	}
+	for _, call := range runner.calls {
+		if len(call.args) >= 2 && call.args[0] == "project" && (call.args[1] == "edit" || call.args[1] == "link") {
+			t.Fatalf("mutation ran before existing receipt readback: %+v", call)
+		}
+	}
+}
+
+func TestProjectURLsAreCanonicalAndBound(t *testing.T) {
+	target := Target{
+		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPrivate,
+		LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
+	}
+	invalid := []string{
+		"https://github.com/users/other/projects/7",
+		"https://github.com/users/octo-lab/projects/8",
+		"https://github.com/users/octo-lab/projects/7/extra",
+		"https://github.com/octo-lab/agent-control",
+		"https://github.com/users/octo-lab/projects/7?tab=items",
+		"https://github.com/users/octo-lab/projects/7#items",
+		"https://github.com:443/users/octo-lab/projects/7",
+		"https://github.com/users/octo-lab/projects/7/",
+		"https://user@github.com/users/octo-lab/projects/7",
+	}
+	for _, value := range invalid {
+		t.Run(value, func(t *testing.T) {
+			payload := projectPayload(false)
+			var observed map[string]any
+			if err := json.Unmarshal(payload, &observed); err != nil {
+				t.Fatal(err)
+			}
+			observed["url"] = value
+			encoded, err := json.Marshal(observed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, decodeErr := decodeProject(encoded)
+			if decodeErr == nil {
+				if _, err := receiptFromProject(target, decoded); err == nil {
+					t.Fatalf("readback accepted Project URL %q", value)
+				}
+			}
+			receipt := Receipt{
+				Owner: target.Owner, Number: 7, NodeID: "PVT_kwDOA", URL: value, Title: target.Title,
+				Visibility: target.Visibility, LinkedRepository: target.LinkedRepository,
+				InstallationID: target.InstallationID, Created: true, Verification: VerificationCreated,
+			}
+			if err := ValidateReceipt(receipt, target); err == nil {
+				t.Fatalf("receipt accepted Project URL %q", value)
 			}
 		})
 	}
@@ -489,7 +655,7 @@ func TestProvisionRecoversMismatchedEditResponseBeforeLink(t *testing.T) {
 func TestProvisionRejectsMismatchedEditResponseWhenReadbackDrifts(t *testing.T) {
 	runner := &fakeRunner{
 		editOutput: []byte(`{"id":"PVT_other","number":7,"owner":{"login":"octo-lab"},"public":true,"title":"agent-control deployment (install-test)","url":"https://github.com/users/octo-lab/projects/7"}`),
-		viewMode:   "identity-changed",
+		viewModes:  []string{"normal", "identity-changed"},
 	}
 	target := Target{
 		Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPublic,
@@ -520,7 +686,7 @@ func TestProvisionRejectsMismatchedEditResponseWhenReadbackDrifts(t *testing.T) 
 			t.Fatalf("link ran after inconclusive edit recovery: %+v", call)
 		}
 	}
-	if edits != 1 || views != 1 {
+	if edits != 1 || views != 2 {
 		t.Fatalf("edit calls = %d, view calls = %d", edits, views)
 	}
 }
@@ -528,7 +694,7 @@ func TestProvisionRejectsMismatchedEditResponseWhenReadbackDrifts(t *testing.T) 
 func TestProvisionFailsClosedWhenSuccessfulEditRecoveryIsInconclusive(t *testing.T) {
 	for _, mode := range []string{"not-landed", "unavailable", "malformed", "missing-public", "identity-changed"} {
 		t.Run(mode, func(t *testing.T) {
-			runner := &fakeRunner{editOutput: []byte(`{"id":`), viewMode: mode}
+			runner := &fakeRunner{editOutput: []byte(`{"id":`), viewModes: []string{"normal", mode}}
 			target := Target{
 				Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPublic,
 				LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
@@ -556,8 +722,8 @@ func TestProvisionFailsClosedWhenSuccessfulEditRecoveryIsInconclusive(t *testing
 					t.Fatalf("link ran after inconclusive edit recovery: %+v", call)
 				}
 			}
-			if views != 1 {
-				t.Fatalf("project view calls = %d, want 1", views)
+			if views != 2 {
+				t.Fatalf("project view calls = %d, want 2", views)
 			}
 		})
 	}
@@ -613,15 +779,15 @@ func TestProvisionFailsClosedWhenVisibilityEditDidNotLand(t *testing.T) {
 			views++
 		}
 	}
-	if views != 1 {
-		t.Fatalf("project view calls = %d, want 1", views)
+	if views != 2 {
+		t.Fatalf("project view calls = %d, want 2", views)
 	}
 }
 
 func TestProvisionFailsClosedWhenVisibilityReadbackIsInconclusive(t *testing.T) {
 	for _, mode := range []string{"malformed", "unavailable", "identity-changed"} {
 		t.Run(mode, func(t *testing.T) {
-			runner := &fakeRunner{visibilityFailureMode: mode}
+			runner := &fakeRunner{visibilityFailureMode: mode, viewModes: []string{"normal", mode}}
 			target := Target{
 				Owner: "octo-lab", Title: "agent-control deployment (install-test)", Visibility: VisibilityPublic,
 				LinkedRepository: "octo-lab/agent-control", InstallationID: "install-test",
@@ -657,10 +823,15 @@ func TestProvisionFailsClosedWhenVisibilityReadbackOmitsPublic(t *testing.T) {
 		journal = append(journal, value)
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-VISIBILITY-UNCERTAIN") {
+	if err == nil || !strings.Contains(err.Error(), "AGX-PROJECT-READBACK") {
 		t.Fatalf("Provision() err = %v", err)
 	}
 	if receipt != *existing || len(journal) != 0 {
 		t.Fatalf("receipt = %+v, journal = %+v", receipt, journal)
+	}
+	for _, call := range runner.calls {
+		if len(call.args) >= 2 && call.args[0] == "project" && call.args[1] == "edit" {
+			t.Fatalf("visibility edit ran before Project revalidation: %+v", call)
+		}
 	}
 }

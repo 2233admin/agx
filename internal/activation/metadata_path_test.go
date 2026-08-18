@@ -43,6 +43,21 @@ func TestReadReceiptRejectsUnsafeReceiptEntry(t *testing.T) {
 	})
 }
 
+func TestReadReceiptRejectsDuplicateRequiredKey(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, ".agx")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"schema_version":"agx.initialization/v3","installation_id":"install-test","phase":"needs_resume","phase":"initialized","profile":"core","providers":[]}`)
+	if err := os.WriteFile(filepath.Join(directory, initializationFile), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readReceipt(root); err == nil || !strings.Contains(err.Error(), "duplicate object key") {
+		t.Fatalf("readReceipt() err=%v, want duplicate-key rejection", err)
+	}
+}
+
 func TestWriteReceiptRejectsLinkedMetadataDirectory(t *testing.T) {
 	root := t.TempDir()
 	sibling := t.TempDir()

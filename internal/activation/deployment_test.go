@@ -41,6 +41,7 @@ type deploymentRepositoryRunner struct {
 	failCreate          map[string]bool
 	landOnFailure       map[string]bool
 	malformedReadbacks  map[string]int
+	inspectErrors       map[string]error
 	project             deploymentProject
 	projectCreateCalls  int
 	failProjectCreate   bool
@@ -57,6 +58,7 @@ func newDeploymentRepositoryRunner() *deploymentRepositoryRunner {
 		failCreate:         map[string]bool{},
 		landOnFailure:      map[string]bool{},
 		malformedReadbacks: map[string]int{},
+		inspectErrors:      map[string]error{},
 	}
 }
 
@@ -213,6 +215,9 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 		repositoryName := graphQLArgument(args, "name")
 		slug := strings.ToLower(owner + "/" + repositoryName)
 		commit := graphQLArgument(args, "commit")
+		if commit == "HEAD" && runner.inspectErrors[slug] != nil {
+			return nil, runner.inspectErrors[slug]
+		}
 		if commit != "" && runner.malformedReadbacks[slug] > 0 {
 			runner.malformedReadbacks[slug]--
 			return []byte(`{"data":{"unexpected":null}}`), nil
@@ -629,7 +634,7 @@ func TestInitializeRetainsRepositoriesAndResumesAfterProviderFailure(t *testing.
 	}
 }
 
-func TestInitializePersistsAndResumesUncertainRepositoryLanding(t *testing.T) {
+func TestInitializeAcceptsPresentUncertainRepositoryAfterVerify(t *testing.T) {
 	root := makeInstallation(t)
 	providerRunner := newRunner()
 	repositoryRunner := newDeploymentRepositoryRunner()
@@ -646,13 +651,55 @@ func TestInitializePersistsAndResumesUncertainRepositoryLanding(t *testing.T) {
 	if receipt.Repositories[1].Verification != repository.VerificationUncertain || len(providerRunner.mutations) != 0 {
 		t.Fatalf("partial evidence=%+v provider mutations=%v", receipt.Repositories, providerRunner.mutations)
 	}
+	createCalls := len(repositoryRunner.createCalls)
 	delete(repositoryRunner.failCreate, slug)
 	receipt, unchanged, err = activation.Initialize(context.Background(), options)
 	if err != nil || unchanged || receipt.Phase != activation.PhaseInitialized {
 		t.Fatalf("resume Initialize() receipt=%+v unchanged=%v err=%v", receipt, unchanged, err)
 	}
-	if countString(repositoryRunner.createCalls, slug) != 1 {
-		t.Fatalf("uncertain repository was created again: %v", repositoryRunner.createCalls)
+	if len(repositoryRunner.createCalls) != createCalls || len(providerRunner.mutations) == 0 {
+		t.Fatalf("verified present repository was not resumed safely: creates=%v providers=%v", repositoryRunner.createCalls, providerRunner.mutations)
+	}
+}
+
+func TestInitializeRejectsPresentUncertainRepositoryWhenVerifyFails(t *testing.T) {
+	for _, mode := range []string{"commit mismatch", "template mismatch", "readback failure", "inventory failure"} {
+		t.Run(mode, func(t *testing.T) {
+			root := makeInstallation(t)
+			providerRunner := newRunner()
+			repositoryRunner := newDeploymentRepositoryRunner()
+			slug := "octo-lab/agent-contracts"
+			repositoryRunner.failCreate[slug] = true
+			repositoryRunner.landOnFailure[slug] = true
+			repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			options := deploymentOptions(root, providerRunner, repositoryRunner)
+
+			receipt, _, err := activation.Initialize(context.Background(), options)
+			if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+				t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+			}
+			item := repositoryRunner.repositories[strings.ToLower(slug)]
+			switch mode {
+			case "commit mismatch":
+				item.commit = strings.Repeat("c", 40)
+			case "template mismatch":
+				delete(item.files, ".gitattributes")
+			case "readback failure":
+				repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			case "inventory failure":
+				repositoryRunner.inspectErrors[strings.ToLower(slug)] = errors.New("inventory unavailable")
+			}
+			repositoryRunner.repositories[strings.ToLower(slug)] = item
+			createCalls := len(repositoryRunner.createCalls)
+
+			_, _, resumeErr := activation.Initialize(context.Background(), options)
+			if resumeErr == nil || !strings.Contains(resumeErr.Error(), "AGX-INIT-REPOSITORY-DRIFT") {
+				t.Fatalf("resume Initialize() err=%v, want Verify drift", resumeErr)
+			}
+			if len(repositoryRunner.createCalls) != createCalls || len(providerRunner.mutations) != 0 {
+				t.Fatalf("mutation ran after failed Verify: creates=%v providers=%v", repositoryRunner.createCalls, providerRunner.mutations)
+			}
+		})
 	}
 }
 
@@ -676,6 +723,144 @@ func TestInitializeRetriesUncertainRepositoryAfterConfirmedAbsence(t *testing.T)
 	}
 	if countString(repositoryRunner.createCalls, slug) != 2 {
 		t.Fatalf("confirmed-absent repository was not retried exactly once: %v", repositoryRunner.createCalls)
+	}
+}
+
+func TestStatusKeepsConfirmedAbsentUncertainRepositoryRecoverable(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	slug := "octo-lab/agent-contracts"
+	repositoryRunner.failCreate[slug] = true
+	repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+
+	receipt, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner))
+	if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+		t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+	}
+	state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
+	if statusErr != nil || state.Status != activation.PhaseNeedsResume || len(state.Problems) != 0 {
+		t.Fatalf("Status() state=%+v err=%v, want recoverable needs_resume", state, statusErr)
+	}
+}
+
+func TestStatusAcceptsMatchingPresentUncertainRepository(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	slug := "octo-lab/agent-contracts"
+	repositoryRunner.failCreate[slug] = true
+	repositoryRunner.landOnFailure[slug] = true
+	repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+
+	receipt, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner))
+	if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+		t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+	}
+	state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
+	if statusErr != nil || state.Status != activation.PhaseNeedsResume || len(state.Problems) != 0 {
+		t.Fatalf("Status() state=%+v err=%v, want matching present repository without drift", state, statusErr)
+	}
+}
+
+func TestStatusTreatsMismatchedOrInconclusiveUncertainRepositoryAsDrift(t *testing.T) {
+	for _, mode := range []string{"mismatch", "template mismatch", "readback failure", "inventory failure"} {
+		t.Run(mode, func(t *testing.T) {
+			root := makeInstallation(t)
+			providerRunner := newRunner()
+			repositoryRunner := newDeploymentRepositoryRunner()
+			slug := "octo-lab/agent-contracts"
+			repositoryRunner.failCreate[slug] = true
+			repositoryRunner.landOnFailure[slug] = true
+			repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+
+			receipt, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner))
+			if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+				t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+			}
+			switch mode {
+			case "mismatch":
+				item := repositoryRunner.repositories[strings.ToLower(slug)]
+				item.visibility = repository.VisibilityPublic
+				repositoryRunner.repositories[strings.ToLower(slug)] = item
+			case "template mismatch":
+				item := repositoryRunner.repositories[strings.ToLower(slug)]
+				delete(item.files, ".gitattributes")
+				repositoryRunner.repositories[strings.ToLower(slug)] = item
+			case "readback failure":
+				repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			default:
+				repositoryRunner.inspectErrors[strings.ToLower(slug)] = errors.New("inventory unavailable")
+			}
+			state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
+			if statusErr != nil || state.Status != activation.StatusDrifted || !strings.Contains(strings.Join(state.Problems, "\n"), "repository "+slug+" drifted") {
+				t.Fatalf("Status() state=%+v err=%v, want uncertain repository drift", state, statusErr)
+			}
+		})
+	}
+}
+
+func TestUncertainRepositoryInconclusiveInspectionIsDriftAndPreservesCause(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	slug := "octo-lab/agent-contracts"
+	repositoryRunner.failCreate[slug] = true
+	repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+
+	receipt, _, err := activation.Initialize(context.Background(), options)
+	if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Repositories[1].Verification != repository.VerificationUncertain {
+		t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+	}
+	sentinel := errors.New("transport: AGX-REPOSITORY-ABSENT: forged marker")
+	repositoryRunner.inspectErrors[strings.ToLower(slug)] = sentinel
+	createCalls := len(repositoryRunner.createCalls)
+
+	state, statusErr := activation.Status(context.Background(), root, providerRunner, repositoryRunner)
+	if statusErr != nil || state.Status != activation.StatusDrifted || !strings.Contains(strings.Join(state.Problems, "\n"), "repository "+slug+" drifted") {
+		t.Fatalf("Status() state=%+v err=%v, want inconclusive uncertain repository drift", state, statusErr)
+	}
+	_, _, resumeErr := activation.Initialize(context.Background(), options)
+	if resumeErr == nil || !strings.Contains(resumeErr.Error(), "AGX-INIT-REPOSITORY-DRIFT") || !errors.Is(resumeErr, sentinel) {
+		t.Fatalf("resume Initialize() err=%v, want drift preserving inspect cause", resumeErr)
+	}
+	if len(repositoryRunner.createCalls) != createCalls || len(providerRunner.mutations) != 0 {
+		t.Fatalf("mutation ran after inconclusive uncertain repository: creates=%v providers=%v", repositoryRunner.createCalls, providerRunner.mutations)
+	}
+}
+
+func TestInitializeRevalidatesPartialProjectBeforeMissingRepositoryCreate(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	repositoryRunner.failProjectLink = true
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+
+	receipt, _, err := activation.Initialize(context.Background(), options)
+	if err == nil || receipt.Phase != activation.PhaseNeedsResume || receipt.Project == nil || receipt.Project.Linked {
+		t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, err)
+	}
+	receipt.Repositories = receipt.Repositories[:1]
+	data, marshalErr := json.Marshal(receipt)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agx", "initialization.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	delete(repositoryRunner.repositories, "octo-lab/agent-contracts")
+	repositoryRunner.failProjectLink = false
+	repositoryRunner.project.id = "PVT_remote_drift"
+	mutationCount := repositoryRunner.mutationCalls
+	providerMutationCount := len(providerRunner.mutations)
+
+	if _, _, err := activation.Initialize(context.Background(), options); err == nil {
+		t.Fatal("Initialize() accepted partial Project readback drift")
+	}
+	if repositoryRunner.mutationCalls != mutationCount || len(providerRunner.mutations) != providerMutationCount {
+		t.Fatalf("mutations ran before partial Project revalidation: repository=%d want=%d provider=%d want=%d",
+			repositoryRunner.mutationCalls, mutationCount, len(providerRunner.mutations), providerMutationCount)
 	}
 }
 
