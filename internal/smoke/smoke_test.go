@@ -12,13 +12,14 @@ import (
 )
 
 type fakeRunner struct {
-	merged          bool
-	missingPointer  bool
-	wrongProject    bool
-	unrelatedCheck  bool
-	impostorCheck   bool
-	wrongWorkflow   bool
-	changesWorkflow bool
+	merged               bool
+	missingPointer       bool
+	missingProjectItemID bool
+	wrongProject         bool
+	unrelatedCheck       bool
+	impostorCheck        bool
+	wrongWorkflow        bool
+	changesWorkflow      bool
 }
 
 func (fakeRunner) LookPath(name string) (string, error) {
@@ -44,9 +45,13 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 		if runner.wrongProject {
 			issueURL = "https://github.com/octo-lab/agent-control/issues/999"
 		}
+		itemID := "PVTI_item"
+		if runner.missingProjectItemID {
+			itemID = ""
+		}
 		return json.Marshal(map[string]any{
 			"totalCount": 1,
-			"items":      []map[string]any{{"id": "PVTI_item", "content": map[string]any{"url": issueURL}}},
+			"items":      []map[string]any{{"id": itemID, "content": map[string]any{"url": issueURL}}},
 		})
 	}
 	if args[0] == "pr" && args[1] == "list" {
@@ -156,6 +161,19 @@ func TestInspectDoesNotAcceptMergedPRWithoutWorkPointerEvidence(t *testing.T) {
 	}
 	if evidence.Status == StatusEffective {
 		t.Fatalf("merged PR without work pointer became effective: %+v", evidence)
+	}
+}
+
+func TestInspectKeepsAwaitingWhenMatchingProjectItemHasNoID(t *testing.T) {
+	evidence, err := Inspect(context.Background(), testContract(), fakeRunner{missingProjectItemID: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Status != StatusAwaiting || evidence.ProjectItem != "" {
+		t.Fatalf("Project item without ID became effective: %+v", evidence)
+	}
+	if !strings.Contains(strings.Join(evidence.Problems, "\n"), "not in the deployment Project") {
+		t.Fatalf("problems = %v", evidence.Problems)
 	}
 }
 

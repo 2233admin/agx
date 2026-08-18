@@ -137,11 +137,8 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 			return Evidence{}, fmt.Errorf("AGX-SMOKE-PROJECT: deployment Project item inventory is truncated")
 		}
 		for _, item := range inventory.Items {
-			if strings.EqualFold(item.Content.URL, evidence.IssueURL) {
+			if strings.EqualFold(item.Content.URL, evidence.IssueURL) && item.ID != "" {
 				evidence.ProjectItem = item.ID
-				if evidence.ProjectItem == "" {
-					evidence.ProjectItem = evidence.IssueURL
-				}
 				break
 			}
 		}
