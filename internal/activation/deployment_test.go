@@ -1325,17 +1325,19 @@ func TestVersionFourReceiptRejectsProfileOmissionAndChangedMulticaSelectorsOnRer
 		t.Fatal("external mutations ran during rejected selector drift")
 	}
 
-	missingProfile := options
-	missingProfile.EvidenceProfile = ""
-	if _, err := activation.Plan(context.Background(), missingProfile); err == nil ||
-		!strings.Contains(err.Error(), "AGX-EVIDENCE-PROFILE-REQUIRED") ||
-		!strings.Contains(err.Error(), string(domain.EvidenceProfileMulticaExecutionV1)) {
-		t.Fatalf("Plan() missing profile error = %v", err)
-	}
-	if _, _, err := activation.Initialize(context.Background(), missingProfile); err == nil ||
-		!strings.Contains(err.Error(), "AGX-EVIDENCE-PROFILE-REQUIRED") ||
-		!strings.Contains(err.Error(), string(domain.EvidenceProfileMulticaExecutionV1)) {
-		t.Fatalf("Initialize() missing profile error = %v", err)
+	for _, omittedProfile := range []domain.EvidenceProfileID{"", " \t "} {
+		missingProfile := options
+		missingProfile.EvidenceProfile = omittedProfile
+		if _, err := activation.Plan(context.Background(), missingProfile); err == nil ||
+			!strings.Contains(err.Error(), "AGX-EVIDENCE-PROFILE-REQUIRED") ||
+			!strings.Contains(err.Error(), string(domain.EvidenceProfileMulticaExecutionV1)) {
+			t.Fatalf("Plan() omitted profile %q error = %v", omittedProfile, err)
+		}
+		if _, _, err := activation.Initialize(context.Background(), missingProfile); err == nil ||
+			!strings.Contains(err.Error(), "AGX-EVIDENCE-PROFILE-REQUIRED") ||
+			!strings.Contains(err.Error(), string(domain.EvidenceProfileMulticaExecutionV1)) {
+			t.Fatalf("Initialize() omitted profile %q error = %v", omittedProfile, err)
+		}
 	}
 	afterMissingProfile, err := os.ReadFile(receiptPath)
 	if err != nil {

@@ -351,6 +351,7 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 		options.Visibility = repository.VisibilityPrivate
 	}
 	evidenceProfile := strings.TrimSpace(string(options.EvidenceProfile))
+	options.EvidenceProfile = domain.EvidenceProfileID(evidenceProfile)
 	if evidenceProfile != "" {
 		profile, err := domain.ParseEvidenceProfile(evidenceProfile)
 		if err != nil {
