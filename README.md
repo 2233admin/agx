@@ -99,7 +99,7 @@ go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-202
 
 重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。初始化中断后，重试会先验证回执记录的远端仓库及其初始提交，再只继续缺失的步骤；AGX 不把一个碰巧同名的仓库当成自己创建的仓库。
 
-`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle。两个部署仓、关联 Project、任何未知文件和预存运行端对象都会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle。两个部署仓、关联 Project、任何未知文件和预存运行端对象都会保留。此阶段最高安装状态是 `configured`；所选 Evidence Profile（`github-delivery/v1` 或 `multica-execution/v1`）要求的全部证据回读完成前不会输出 `verified`。
 
 ## 初始化能力包
 

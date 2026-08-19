@@ -1,4 +1,4 @@
-policy_version: 1
+policy_version: 2
 status: approved_by_2233admin_pending_merge
 gate_issue: 5
 approved_by: 2233admin
@@ -7,10 +7,28 @@ approval_scope:
   - release
 success:
   terminal_state: verified
-  requires:
-    - github_acceptance_issue_readback
-    - multica_task_runtime_readback
-    - matching_installation_id
+  evaluator: evidence-evaluator/v1
+  profile_selection: explicit_required
+  matching_installation_id: required
+  evidence_profiles:
+    - id: github-delivery/v1
+      requires:
+        - github_project
+        - github_contract_issue
+        - github_first_write
+        - github_delivery
+        - github_checks
+    - id: multica-execution/v1
+      requires:
+        - github_project
+        - github_contract_issue
+        - github_first_write
+        - github_delivery
+        - github_checks
+        - multica_workspace
+        - multica_runtime
+        - multica_agent
+        - multica_task_run
 states:
   - planned
   - applying
