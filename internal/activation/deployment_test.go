@@ -1278,7 +1278,7 @@ func TestExplicitEvidenceProfilePersistsVersionFourBindings(t *testing.T) {
 	}
 }
 
-func TestVersionFourReceiptRejectsChangedMulticaSelectorsOnRerun(t *testing.T) {
+func TestVersionFourReceiptRejectsProfileOmissionAndChangedMulticaSelectorsOnRerun(t *testing.T) {
 	root := makeInstallation(t)
 	installationPath := filepath.Join(root, ".agx", "receipt.json")
 	installationData, err := os.ReadFile(installationPath)
@@ -1323,6 +1323,29 @@ func TestVersionFourReceiptRejectsChangedMulticaSelectorsOnRerun(t *testing.T) {
 	}
 	if repositoryRunner.mutationCalls != repositoryMutations || len(providerRunner.mutations) != providerMutations {
 		t.Fatal("external mutations ran during rejected selector drift")
+	}
+
+	missingProfile := options
+	missingProfile.EvidenceProfile = ""
+	if _, err := activation.Plan(context.Background(), missingProfile); err == nil ||
+		!strings.Contains(err.Error(), "AGX-EVIDENCE-PROFILE-REQUIRED") ||
+		!strings.Contains(err.Error(), string(domain.EvidenceProfileMulticaExecutionV1)) {
+		t.Fatalf("Plan() missing profile error = %v", err)
+	}
+	if _, _, err := activation.Initialize(context.Background(), missingProfile); err == nil ||
+		!strings.Contains(err.Error(), "AGX-EVIDENCE-PROFILE-REQUIRED") ||
+		!strings.Contains(err.Error(), string(domain.EvidenceProfileMulticaExecutionV1)) {
+		t.Fatalf("Initialize() missing profile error = %v", err)
+	}
+	afterMissingProfile, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterMissingProfile) {
+		t.Fatal("v4 initialization receipt changed during rejected profile omission")
+	}
+	if repositoryRunner.mutationCalls != repositoryMutations || len(providerRunner.mutations) != providerMutations {
+		t.Fatal("external mutations ran during rejected profile omission")
 	}
 }
 

@@ -203,7 +203,7 @@ Project、模板和 Agent smoke 均成功时，最高只能记录对应的 initi
 - `status` / `diagnose` 已能显示 Project、仓库/template digest 与 `awaiting` / `effective` smoke evidence，并在 repository、Project、provider 或 smoke 回读被 deadline/cancellation 中断时返回 `AGX-STATUS-INCONCLUSIVE`；
 - 单元与隔离 adapter 测试覆盖 Project create/link 命令报错但远端已落地后的无重复恢复。
 
-尚未关闭的 Gate：把 GitHub readback 转成当前 `github-delivery/v1` 的完整 typed observations，并在每个精确发布版本上重复 Windows 11 / Ubuntu 24.04 模板验证。可选 Multica collector 另票实现；能力不足时保持 blocked/awaiting，不能弱化 Profile。任一 Gate 未取得匹配外部证据时都不得声称 `verified`。
+尚未关闭的 Gate：把 GitHub readback 转成当前 `github-delivery/v1` 的完整 typed observations，并在每个精确发布版本上重复 Windows 11 / Ubuntu 24.04 模板验证。可选 Multica collector 另票实现；collector 或必需 observation 缺失时保持 `awaiting_verification`，结果失败时进入 `blocked_outcome`，证据过期时进入 `blocked_freshness`，输入或能力在采集前无效时进入 `blocked_preflight`，不能弱化 Profile。任一 Gate 未取得匹配外部证据时都不得声称 `verified`。
 
 ## 后续优先级
 

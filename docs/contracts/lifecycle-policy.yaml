@@ -2,7 +2,7 @@ policy_version: 2
 status: pending_maintainer_review
 gate_issue: 54
 review_required:
-  - approve the v2 Evidence Profile split and blocked outcome/freshness states
+  - approve the github-delivery/v1 and multica-execution/v1 profile split and blocked outcome/freshness states
   - confirm that only complete external evidence may produce verified
 success:
   terminal_state: verified

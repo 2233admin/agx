@@ -584,6 +584,9 @@ func validateDeploymentIdentity(receipt Receipt, installation installer.Receipt,
 	if receipt.SchemaVersion != receiptSchemaV4 && options.EvidenceProfile != "" {
 		return fmt.Errorf("AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT: existing legacy initialization receipt cannot be upgraded in place; initialize a new deployment with a new root and unused repository names")
 	}
+	if receipt.SchemaVersion == receiptSchemaV4 && options.EvidenceProfile == "" {
+		return fmt.Errorf("AGX-EVIDENCE-PROFILE-REQUIRED: existing initialization receipt requires --evidence-profile %s; rerun the original init command with the same profile", receipt.EvidenceProfile)
+	}
 	if receipt.SchemaVersion == receiptSchemaV4 &&
 		(receipt.DeploymentDigest != deploymentDigest || receipt.SubjectDigest != subjectDigest) {
 		return fmt.Errorf("AGX-INIT-EVIDENCE-BINDING-CONFLICT: existing initialization receipt is bound to different provider or selector parameters; rerun the original init command unchanged")
