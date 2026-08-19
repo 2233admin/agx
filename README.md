@@ -29,7 +29,7 @@ AGX 交付时用户会看到几类仓库，但它们不是同一层东西：
 | --- | --- | --- |
 | `2233admin/agx` | AGX 当前分发方 | 构建并发布 `agx` CLI；用户下载它来执行 `apply`、`init`、`status`、`uninstall`。 |
 | `zaurakworks/agent-system` | 上游 Plugin **Source** | 插件与合同的公开源码仓。AGX 不 clone、不跟随其 git `main`，也不把它整树拷进部署仓。 |
-| `2233admin/agent-plugins` | 当前生产 **Distribution** | AGX 只从固定 Release artifact 安装；当前 pin 仍是 `agx-bootstrap-20260816.1` / `eb10f7f`。Codex/Claude 的 Marketplace 都指向这次安装副本。 |
+| `2233admin/agent-plugins` | 当前生产 **Distribution** | AGX 只从固定 Release artifact 安装；当前 pin 是 `agx-plugins-20260819.1` / `ef07a9f`。Codex/Claude 的 Marketplace 都指向这次安装副本。 |
 | `<owner>/agent-control` | 用户部署拥有者 | `agx init --apply` 从 AGX 内置 `agent-control/v1` 模板创建，保存该部署的控制状态与工作入口。 |
 | `<owner>/agent-contracts` | 用户部署拥有者 | `agx init --apply` 从 AGX 内置 `agent-contracts/v1` 模板创建，保存 GitHub Issue 合同表单、schema、样例和回执工具。 |
 
@@ -93,7 +93,7 @@ go run ./cmd/agx uninstall --root D:\agx\installations\default
 开发、审计或受控回归需要显式 manifest 时，仍可覆盖内置 production Bundle：
 
 ```powershell
-go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-20260816.1.json --root D:\agx\installations\review
+go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-plugins-20260819.1.json --root D:\agx\installations\review
 ```
 
 `--bundle` 与内置 production manifest 二选一；普通部署省略它，显式指定时 AGX 不会再混入内置 manifest。
@@ -168,7 +168,7 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
 ## 上游关系
 
 - [zaurakworks/agent-system](https://github.com/zaurakworks/agent-system) — Plugin 与合同的 Source。AGX 不跟随 git `main`。
-- [2233admin/agent-plugins](https://github.com/2233admin/agent-plugins) — 当前生产 Distribution：immutable Release `agx-bootstrap-20260816.1`。
+- [2233admin/agent-plugins](https://github.com/2233admin/agent-plugins) — 当前生产 Distribution：immutable Release `agx-plugins-20260819.1`。
 - [zaurakworks/agent-plugins](https://github.com/zaurakworks/agent-plugins) — 当前生产 pin 的历史上游身份，不是要跟的 live `main`。
 - [zaurakworks/agent-contracts](https://github.com/zaurakworks/agent-contracts) — 合同模板的历史蒸馏参考；部署仓由 AGX 干净模板创建。
 - [四仓部署关系研究](docs/research/zaurakworks-four-repository-deployment.md)

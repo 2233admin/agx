@@ -13,7 +13,7 @@ import (
 )
 
 func TestProductionMatchesRepositoryFixtureAndReturnsIsolatedCopies(t *testing.T) {
-	want, err := os.ReadFile(filepath.Join("..", "..", "testdata", "bundles", "v2-production-agx-bootstrap-20260816.1.json"))
+	want, err := os.ReadFile(filepath.Join("..", "..", "testdata", "bundles", "v2-production-agx-plugins-20260819.1.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestProductionMatchesRepositoryFixtureAndReturnsIsolatedCopies(t *testing.T
 	if err != nil {
 		t.Fatalf("Decode(Production()) error = %v", err)
 	}
-	if document.Mode != bundle.ModeProduction || document.BundleID != "agx-bootstrap-20260816.1" {
+	if document.Mode != bundle.ModeProduction || document.BundleID != "agx-plugins-20260819.1" {
 		t.Fatalf("production document = %#v", document)
 	}
 
@@ -43,7 +43,7 @@ func TestDecodeAcceptsProductionBundleV2(t *testing.T) {
 	if document.SchemaVersion != bundle.SchemaVersionV2 {
 		t.Fatalf("SchemaVersion = %q", document.SchemaVersion)
 	}
-	if document.BundleID != "agx-bootstrap-20260816.1" || document.Mode != bundle.ModeProduction {
+	if document.BundleID != "agx-plugins-20260819.1" || document.Mode != bundle.ModeProduction {
 		t.Fatalf("production document = %#v", document)
 	}
 	artifact := document.Sources.AgentPlugins
@@ -59,7 +59,7 @@ func TestDecodeAcceptsProductionBundleV2(t *testing.T) {
 }
 
 func TestProductionFixturePinsSinglePluginRelease(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "bundles", "v2-production-agx-bootstrap-20260816.1.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "bundles", "v2-production-agx-plugins-20260819.1.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,10 +68,10 @@ func TestProductionFixturePinsSinglePluginRelease(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	artifact := document.Sources.AgentPlugins
-	if artifact.ReleaseTag != "agx-bootstrap-20260816.1" || artifact.CommitSHA != "eb10f7f14cc05b70b6c27a121c6f72d1b3b9edb8" {
+	if artifact.ReleaseTag != "agx-plugins-20260819.1" || artifact.CommitSHA != "ef07a9fd530ebac1b85eb5b9511ebd6742d743ee" {
 		t.Fatalf("release pin = %#v", artifact)
 	}
-	if artifact.AssetSHA256 != "ba8142548d7b055b4f6faba4587b12a9c6411815431042607436676437ae2de1" || artifact.ContentSHA256 != "d4f53c2d2d45f7efcb2884d8232248434bae44f071369cc938aface47e120002" {
+	if artifact.AssetSHA256 != "d1ae80cebb7eb84c53e8d7f5b8af2f60786721219b492b5a8975e66442fbc97e" || artifact.ContentSHA256 != "c752241575cabe79018c9dc990d2425e1ecd6ac03c88799050fd5b579f32aa21" {
 		t.Fatalf("release digests = %#v", artifact)
 	}
 }
