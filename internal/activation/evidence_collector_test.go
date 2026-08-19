@@ -184,16 +184,24 @@ func TestGitHubEvidenceCollectorRejectsUnlinkedProject(t *testing.T) {
 	repositoryRunner := newDeploymentRepositoryRunner()
 	receipt := initializedGitHubDeliveryReceipt(t, root, providerRunner, repositoryRunner)
 
-	mutated := receipt
-	linkedCopy := *receipt.Project
-	linkedCopy.Verification = project.VerificationCreated
-	mutated.Project = &linkedCopy
+	tests := map[string]func(*project.Receipt){
+		"unverified linkage": func(p *project.Receipt) { p.Verification = project.VerificationCreated },
+		"not linked":         func(p *project.Receipt) { p.Linked = false },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			mutated := receipt
+			projectCopy := *receipt.Project
+			mutate(&projectCopy)
+			mutated.Project = &projectCopy
 
-	batch := activation.NewGitHubEvidenceCollector(repositoryRunner).Collect(context.Background(), mutated)
-	for _, observation := range batch.Observations {
-		if observation.Kind == domain.EvidenceGitHubProject {
-			t.Fatalf("Collect() reported the Project as matched despite unverified linkage: %+v", observation)
-		}
+			batch := activation.NewGitHubEvidenceCollector(repositoryRunner).Collect(context.Background(), mutated)
+			for _, observation := range batch.Observations {
+				if observation.Kind == domain.EvidenceGitHubProject {
+					t.Fatalf("Collect() reported the Project as matched despite %s: %+v", name, observation)
+				}
+			}
+		})
 	}
 }
 
@@ -207,8 +215,8 @@ func TestGitHubEvidenceCollectorIgnoresLegacyReceipt(t *testing.T) {
 	if len(batch.Observations) != 0 || len(batch.Diagnostics) != 0 {
 		t.Fatalf("Collect() = %+v, want an empty batch for a legacy receipt", batch)
 	}
-	if len(runner.createCalls) != 0 || runner.projectCreateCalls != 0 {
-		t.Fatalf("Collect() made GitHub calls for a legacy receipt: createCalls=%v projectCreateCalls=%d", runner.createCalls, runner.projectCreateCalls)
+	if runner.runCalls != 0 {
+		t.Fatalf("Collect() made %d GitHub calls for a legacy receipt, want zero", runner.runCalls)
 	}
 }
 

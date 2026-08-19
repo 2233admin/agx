@@ -40,6 +40,7 @@ type deploymentProject struct {
 
 type deploymentRepositoryRunner struct {
 	repositories        map[string]deploymentRepository
+	runCalls            int
 	createCalls         []string
 	mutationCalls       int
 	failCreate          map[string]bool
@@ -159,6 +160,7 @@ func (runner *deploymentRepositoryRunner) LookPath(name string) (string, error) 
 }
 
 func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name string, args ...string) ([]byte, error) {
+	runner.runCalls++
 	if name == "gh" && len(args) == 2 && args[0] == "api" && args[1] == "user" {
 		return []byte(`{"login":"octo-lab"}`), nil
 	}

@@ -3,6 +3,7 @@ package activation
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/2233admin/agx/internal/domain"
@@ -59,18 +60,24 @@ func (c githubEvidenceCollector) Collect(ctx context.Context, receipt Receipt) d
 		})
 	}
 
-	for index, item := range receipt.Repositories {
+	controlSlug := receipt.GitHubOwner + "/" + receipt.ControlRepository
+	contractsSlug := receipt.GitHubOwner + "/" + receipt.ContractsRepository
+	for _, item := range receipt.Repositories {
 		if item.Verification != repository.VerificationReadback || !item.Created || item.InitialCommit == "" {
+			continue
+		}
+		var kind domain.EvidenceKind
+		var identity string
+		switch {
+		case strings.EqualFold(item.NameWithOwner, controlSlug):
+			kind, identity = domain.EvidenceGitHubControlRepository, receipt.DeploymentBinding.ControlRepository.IdentitySHA256
+		case strings.EqualFold(item.NameWithOwner, contractsSlug):
+			kind, identity = domain.EvidenceGitHubContractsRepository, receipt.DeploymentBinding.ContractsRepository.IdentitySHA256
+		default:
 			continue
 		}
 		if repository.Verify(ctx, item, c.runner) != nil {
 			continue
-		}
-		kind := domain.EvidenceGitHubControlRepository
-		identity := receipt.DeploymentBinding.ControlRepository.IdentitySHA256
-		if index == 1 {
-			kind = domain.EvidenceGitHubContractsRepository
-			identity = receipt.DeploymentBinding.ContractsRepository.IdentitySHA256
 		}
 		add(kind, domain.ResourceRepository, identity, 0, "", item.NameWithOwner+"|"+item.InitialCommit+"|"+item.TemplateDigest)
 	}
@@ -87,7 +94,13 @@ func (c githubEvidenceCollector) Collect(ctx context.Context, receipt Receipt) d
 
 	contract, contractErr := FirstUseContract(receipt)
 	if contractErr != nil {
-		return domain.ObservationBatch{Observations: observations}
+		return domain.ObservationBatch{
+			Observations: observations,
+			Diagnostics: []domain.Diagnostic{{
+				Code: "AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED", Category: domain.DiagnosticCategoryPreflight,
+				Severity: domain.SeverityError, Message: "GitHub first-use contract could not be built",
+			}},
+		}
 	}
 	evidence, inspectErr := smoke.Inspect(ctx, contract, c.runner)
 	if inspectErr != nil {
@@ -119,7 +132,7 @@ func (c githubEvidenceCollector) Collect(ctx context.Context, receipt Receipt) d
 		add(domain.EvidenceGitHubDeliveryPROpen, domain.ResourcePullRequest, "", uint64(evidence.PullRequestNumber), evidence.Revision,
 			contract.PullRequestTitle+"|"+strconv.Itoa(evidence.PullRequestNumber))
 	}
-	if evidence.ValidationResult == "passed" && evidence.Revision != "" {
+	if evidence.ValidationResult == smoke.ValidationResultPassed && evidence.Revision != "" {
 		add(domain.EvidenceGitHubChecksPassed, domain.ResourceCheck, checkIdentity, 0, evidence.Revision,
 			contract.ValidationCheck+"|"+evidence.Revision)
 	}

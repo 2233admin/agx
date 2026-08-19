@@ -24,6 +24,10 @@ const ContractVersionV1 = "agx.first-use/v1"
 const (
 	StatusAwaiting  = "awaiting"
 	StatusEffective = "effective"
+
+	ValidationResultAwaiting        = "awaiting"
+	ValidationResultPassed          = "passed"
+	ValidationResultPendingOrFailed = "pending_or_failed"
 )
 
 type Contract struct {
@@ -93,7 +97,7 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	if _, err := runner.LookPath("gh"); err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-CLI-MISSING: gh is unavailable")
 	}
-	evidence := Evidence{Status: StatusAwaiting, ValidationResult: "awaiting"}
+	evidence := Evidence{Status: StatusAwaiting, ValidationResult: ValidationResultAwaiting}
 	marker := contract.Marker
 	projectOwner, projectNumber, err := projectCoordinates(contract.ProjectURL)
 	if err != nil {
@@ -226,9 +230,9 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 			}
 		}
 		if checksPassed && validationCheckPassed && workflowMatches && bodyHasValidation {
-			evidence.ValidationResult = "passed"
+			evidence.ValidationResult = ValidationResultPassed
 		} else {
-			evidence.ValidationResult = "pending_or_failed"
+			evidence.ValidationResult = ValidationResultPendingOrFailed
 		}
 		if changedWorkPointer && evidence.IssueURL != "" {
 			endpoint := "repos/" + slug + "/contents/work/current.md?ref=" + url.QueryEscape(contract.Branch)
@@ -246,13 +250,13 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	}
 	if evidence.PullRequestURL == "" {
 		evidence.Problems = append(evidence.Problems, "Bootstrap Verification PR is missing")
-	} else if evidence.ValidationResult != "passed" {
+	} else if evidence.ValidationResult != ValidationResultPassed {
 		evidence.Problems = append(evidence.Problems, "Bootstrap Verification validation has not passed")
 	}
 	if evidence.PullRequestURL != "" && evidence.WorkPointer == "" {
 		evidence.Problems = append(evidence.Problems, "work/current.md does not point to the Bootstrap Verification Issue")
 	}
-	if evidence.IssueURL != "" && evidence.ProjectItem != "" && evidence.PullRequestURL != "" && evidence.WorkPointer != "" && evidence.ValidationResult == "passed" {
+	if evidence.IssueURL != "" && evidence.ProjectItem != "" && evidence.PullRequestURL != "" && evidence.WorkPointer != "" && evidence.ValidationResult == ValidationResultPassed {
 		evidence.Status = StatusEffective
 		evidence.Problems = nil
 	}
