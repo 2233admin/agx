@@ -111,6 +111,7 @@ func TestGitHubEvidenceCollectorReachesVerifiedAfterFirstUseCompletes(t *testing
 		t.Fatalf("correlated revisions do not match: %+v", seen)
 	}
 
+	repositoryRunner.runCalls = 0
 	state, err := activation.StatusWithEvidence(context.Background(), root, providerRunner, activation.StatusOptions{
 		Collectors: []activation.EvidenceCollector{activation.NewGitHubEvidenceCollector(repositoryRunner)},
 	}, repositoryRunner)
@@ -122,6 +123,11 @@ func TestGitHubEvidenceCollectorReachesVerifiedAfterFirstUseCompletes(t *testing
 	}
 	if len(state.Evidence.Missing) != 0 {
 		t.Fatalf("missing = %+v, want none", state.Evidence.Missing)
+	}
+	// This fixture's single status readback has 16 distinct read commands. The
+	// collector must reuse those exact results rather than perform a second set.
+	if repositoryRunner.runCalls != 16 {
+		t.Fatalf("StatusWithEvidence made %d Run calls, want 16 for one readback", repositoryRunner.runCalls)
 	}
 }
 

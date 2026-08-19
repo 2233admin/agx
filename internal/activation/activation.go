@@ -922,14 +922,19 @@ func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner
 	if !present {
 		return State{Status: StatusAbsent}, nil
 	}
+	var repositoryRunner repository.Runner
+	if len(repositoryRunners) > 0 {
+		repositoryRunner = repositoryRunners[0]
+	}
+	memoizedRunner := newMemoizingRunner(repositoryRunner)
+	options.Collectors = append([]EvidenceCollector(nil), options.Collectors...)
+	for index, collector := range options.Collectors {
+		options.Collectors[index] = memoizeGitHubEvidenceCollector(collector, memoizedRunner)
+	}
 	state := State{Status: receipt.Phase, Profile: receipt.Profile, Project: receipt.Project}
 	state.Evidence = evaluateStatusEvidence(ctx, receipt, options)
 	for _, item := range receipt.Providers {
 		state.Providers = append(state.Providers, item.Name)
-	}
-	var repositoryRunner repository.Runner
-	if len(repositoryRunners) > 0 {
-		repositoryRunner = repositoryRunners[0]
 	}
 	for _, item := range receipt.Repositories {
 		state.Repositories = append(state.Repositories, item.NameWithOwner)
@@ -938,7 +943,7 @@ func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner
 			(receipt.Phase == PhaseNeedsResume || receipt.Phase == PhaseProvisioning) {
 			owner, name, ok := strings.Cut(item.NameWithOwner, "/")
 			if ok {
-				_, inspectErr := repository.Inspect(ctx, owner, name, repositoryRunner)
+				_, inspectErr := repository.Inspect(ctx, owner, name, memoizedRunner)
 				if statusErr := statusContextError(ctx); statusErr != nil {
 					return state, statusErr
 				}
@@ -946,7 +951,7 @@ func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner
 					continue
 				}
 				if inspectErr == nil {
-					verifyErr := repository.Verify(ctx, item, repositoryRunner)
+					verifyErr := repository.Verify(ctx, item, memoizedRunner)
 					if statusErr := statusContextError(ctx); statusErr != nil {
 						return state, statusErr
 					}
@@ -958,7 +963,7 @@ func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner
 			state.Problems = append(state.Problems, fmt.Sprintf("repository %s drifted", item.NameWithOwner))
 			continue
 		}
-		verifyErr := repository.Verify(ctx, item, repositoryRunner)
+		verifyErr := repository.Verify(ctx, item, memoizedRunner)
 		if statusErr := statusContextError(ctx); statusErr != nil {
 			return state, statusErr
 		}
@@ -976,7 +981,7 @@ func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner
 				GitHubOwner: receipt.GitHubOwner, ControlRepository: receipt.ControlRepository, Visibility: receipt.Visibility,
 			}, receipt.InstallationID)
 			if receipt.Project.Linked && receipt.Project.Verification == project.VerificationReadback {
-				verifyErr := project.Verify(ctx, target, *receipt.Project, repositoryRunner)
+				verifyErr := project.Verify(ctx, target, *receipt.Project, memoizedRunner)
 				if statusErr := statusContextError(ctx); statusErr != nil {
 					return state, statusErr
 				}
@@ -984,7 +989,7 @@ func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner
 					state.Problems = append(state.Problems, "GitHub Project or control repository link drifted")
 				}
 			} else {
-				revalidateErr := project.Revalidate(ctx, target, *receipt.Project, repositoryRunner)
+				revalidateErr := project.Revalidate(ctx, target, *receipt.Project, memoizedRunner)
 				if statusErr := statusContextError(ctx); statusErr != nil {
 					return state, statusErr
 				}
@@ -1030,7 +1035,7 @@ func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner
 		if contractErr != nil {
 			state.Smoke = smoke.Evidence{Status: smoke.StatusAwaiting, Problems: []string{contractErr.Error()}}
 		} else {
-			evidence, smokeErr := smoke.Inspect(ctx, contract, repositoryRunner)
+			evidence, smokeErr := smoke.Inspect(ctx, contract, memoizedRunner)
 			if statusErr := statusContextError(ctx); statusErr != nil {
 				return state, statusErr
 			}
