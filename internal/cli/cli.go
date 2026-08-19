@@ -125,7 +125,7 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 		printInitUsage(stderr)
 		return exitcode.Usage
 	}
-	if values["--evidence-profile"] == "" {
+	if strings.TrimSpace(values["--evidence-profile"]) == "" {
 		_, _ = fmt.Fprintln(stderr, "AGX-EVIDENCE-PROFILE-REQUIRED: --evidence-profile github-delivery/v1|multica-execution/v1 is required")
 		printInitUsage(stderr)
 		return exitcode.Usage

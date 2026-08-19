@@ -405,6 +405,9 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 	if err != nil {
 		return preparedDeployment{}, err
 	}
+	if !present && options.EvidenceProfile == "" {
+		return preparedDeployment{}, fmt.Errorf("AGX-EVIDENCE-PROFILE-REQUIRED: new deployments require --evidence-profile github-delivery/v1 or multica-execution/v1")
+	}
 	if present {
 		if err := validateDeploymentIdentity(existing, installation, options, deploymentDigest, subjectDigest); err != nil {
 			return preparedDeployment{}, err

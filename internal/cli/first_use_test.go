@@ -525,6 +525,11 @@ func TestInitRejectsInvalidEvidenceSelectionBeforePlanning(t *testing.T) {
 			code: "AGX-EVIDENCE-PROFILE-REQUIRED",
 		},
 		{
+			name: "whitespace-only profile",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", " \t "},
+			code: "AGX-EVIDENCE-PROFILE-REQUIRED",
+		},
+		{
 			name: "unsupported profile",
 			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "github-delivery/v2"},
 			code: "AGX-EVIDENCE-PROFILE-UNSUPPORTED",

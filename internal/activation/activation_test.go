@@ -748,6 +748,8 @@ func TestUninitializeRejectsInstallationIdentityMismatch(t *testing.T) {
 	}
 }
 
+const testInstallationID = "install-0123456789abcdef"
+
 func makeInstallation(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "installation")
@@ -761,7 +763,7 @@ func makeInstallation(t *testing.T) string {
 	}
 	contentDigest := fmt.Sprintf("%x", sha256.Sum256(content))
 	receipt := installer.Receipt{
-		SchemaVersion: "agx.receipt/v2", InstallationID: "install-test", BundleID: "bundle-test",
+		SchemaVersion: "agx.receipt/v2", InstallationID: testInstallationID, BundleID: "bundle-test",
 		BundleSHA256: strings.Repeat("e", 64), TemplateVersion: bootstrap.TemplateSetVersion,
 		TemplateContentSHA256: bootstrap.TemplateSetContentSHA256, Phase: "configured",
 		Components: []installer.Component{
