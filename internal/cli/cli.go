@@ -41,6 +41,7 @@ type runtimeDependencies struct {
 	repositoryRunner repository.Runner
 	initPlan         func(context.Context, activation.Options) (activation.InitializationPlan, error)
 	initApply        func(context.Context, activation.Options) (activation.Receipt, bool, error)
+	status           func(context.Context, string, provider.Runner, ...repository.Runner) (activation.State, error)
 	goos             string
 }
 
@@ -54,6 +55,9 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 	}
 	if dependencies.goos == "" {
 		dependencies.goos = runtime.GOOS
+	}
+	if dependencies.status == nil {
+		dependencies.status = activation.Status
 	}
 	if len(args) == 0 || isHelp(args[0]) {
 		if len(args) > 1 {
@@ -565,7 +569,7 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	initialization, initializationErr := activation.Status(ctx, values["--root"], dependencies.providerRunner, dependencies.repositoryRunner)
+	initialization, initializationErr := dependencies.status(ctx, values["--root"], dependencies.providerRunner, dependencies.repositoryRunner)
 	if initializationErr != nil {
 		fmt.Fprintln(stderr, initializationErr)
 		return exitcode.Data
@@ -663,7 +667,7 @@ func runDiagnose(args []string, stdout, stderr io.Writer, dependencies runtimeDe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	initialization, initializationErr := activation.Status(ctx, values["--root"], dependencies.providerRunner, dependencies.repositoryRunner)
+	initialization, initializationErr := dependencies.status(ctx, values["--root"], dependencies.providerRunner, dependencies.repositoryRunner)
 	if initializationErr != nil {
 		fmt.Fprintln(stderr, initializationErr)
 		return exitcode.Data

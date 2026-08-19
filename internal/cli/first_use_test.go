@@ -397,6 +397,62 @@ func TestDiagnoseDoesNotDiscloseAbsoluteInstallationRoot(t *testing.T) {
 	}
 }
 
+func TestStatusAndDiagnoseHideInconclusivePartialState(t *testing.T) {
+	root := makeGuidedInstallation(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	poisoned := activation.State{
+		Status:       activation.StatusDrifted,
+		Problems:     []string{"drift at " + root, "awaiting operator at " + home},
+		Repositories: []string{"poisoned/repository"},
+		Smoke: smoke.Evidence{
+			Status:   smoke.StatusAwaiting,
+			Problems: []string{"run agx init --apply from " + root},
+		},
+	}
+	statusErr := fmt.Errorf("AGX-STATUS-INCONCLUSIVE: remote readback timed out; rerun agx status or agx diagnose; no changes were made: %w", context.DeadlineExceeded)
+	status := func(context.Context, string, provider.Runner, ...repository.Runner) (activation.State, error) {
+		return poisoned, statusErr
+	}
+
+	for _, command := range []string{"status", "diagnose"} {
+		for _, output := range []string{"human", "json"} {
+			t.Run(command+"/"+output, func(t *testing.T) {
+				stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+				code := runWithDependencies(
+					[]string{command, "--root", root, "--output", output}, "0.0.0-test", stdout, stderr,
+					runtimeDependencies{status: status},
+				)
+				if code != exitcode.Data {
+					t.Fatalf("%s --output %s code=%d, want %d", command, output, code, exitcode.Data)
+				}
+				if stdout.Len() != 0 {
+					t.Fatalf("%s --output %s emitted success stdout: %q", command, output, stdout.String())
+				}
+				if !strings.Contains(stderr.String(), "AGX-STATUS-INCONCLUSIVE") ||
+					!strings.Contains(stderr.String(), "rerun agx status or agx diagnose") {
+					t.Fatalf("%s --output %s stderr=%q, want stable inconclusive rerun guidance", command, output, stderr.String())
+				}
+
+				combined := stdout.String() + stderr.String()
+				escapedRoot, _ := json.Marshal(root)
+				escapedHome, _ := json.Marshal(home)
+				for _, forbidden := range []string{
+					"drift", "awaiting", "--apply", root, home,
+					strings.Trim(string(escapedRoot), `"`), strings.Trim(string(escapedHome), `"`),
+					`"installation"`, `"initialization"`, `"phase"`, "AGX diagnosis",
+				} {
+					if forbidden != "" && strings.Contains(combined, forbidden) {
+						t.Fatalf("%s --output %s disclosed forbidden partial-state marker %q: %q", command, output, forbidden, combined)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestInitPlanResultHasStableMachineReadableEnvelope(t *testing.T) {
 	plan := activation.InitializationPlan{
 		InstallationID: "install-test", TemplateVersion: "bootstrap-test",
