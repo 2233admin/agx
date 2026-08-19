@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,36 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestAgentControlValidationWorkflowDigest(t *testing.T) {
+	parameters := []Params{
+		{Owner: "octo-lab", Repository: "agent-control", PluginSource: AgentPluginsReferenceRepository},
+		{Owner: "another-owner", Repository: "another-control", PluginSource: AgentPluginsReferenceRepository},
+	}
+	workflows := make([][]byte, 0, len(parameters))
+	for _, params := range parameters {
+		rendered, err := Render(KindAgentControl, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range rendered.Files {
+			if file.Path == ".github/workflows/validate.yml" {
+				workflows = append(workflows, file.Content)
+				break
+			}
+		}
+	}
+	if len(workflows) != len(parameters) {
+		t.Fatal("agent-control validation workflow is missing")
+	}
+	if !bytes.Equal(workflows[0], workflows[1]) || bytes.Contains(workflows[0], []byte("@@AGX_")) {
+		t.Fatalf("validation workflow must be deployment-independent and placeholder-free:\n%s", workflows[0])
+	}
+	digest := sha256.Sum256(workflows[0])
+	if got := hex.EncodeToString(digest[:]); got != AgentControlValidationWorkflowSHA256 {
+		t.Fatalf("validation workflow digest = %q, constant = %q", got, AgentControlValidationWorkflowSHA256)
+	}
+}
 
 var goldenPaths = map[Kind][]string{
 	KindAgentControl: {

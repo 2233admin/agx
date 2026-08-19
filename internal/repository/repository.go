@@ -67,6 +67,7 @@ type Receipt struct {
 	Verification    Verification `json:"verification"`
 	TemplateVersion string       `json:"template_version"`
 	TemplateDigest  string       `json:"template_digest"`
+	RequiredPaths   []string     `json:"required_paths,omitempty"`
 }
 
 type Inspection struct {
@@ -253,6 +254,9 @@ func createPrepared(ctx context.Context, target Target, runner Runner) (Receipt,
 	if createErr != nil {
 		return receipt, fmt.Errorf("AGX-REPOSITORY-CREATE-PARTIAL: gh reported an error, but repository and initial commit were created: %w", createErr)
 	}
+	if err := verifyTemplateReadback(ctx, receipt, runner); err != nil {
+		return receipt, err
+	}
 	return receipt, nil
 }
 
@@ -301,6 +305,9 @@ func Verify(ctx context.Context, receipt Receipt, runner Runner) error {
 		!strings.EqualFold(inspection.URL, receipt.URL) || !strings.EqualFold(inspection.ReachableCommit, receipt.InitialCommit) {
 		return fmt.Errorf("AGX-REPOSITORY-DRIFT: repository or initial commit no longer matches receipt")
 	}
+	if err := verifyTemplateReadback(ctx, receipt, runner); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -315,6 +322,7 @@ func uncertainReceipt(target Target, commit string) Receipt {
 		Verification:    VerificationUncertain,
 		TemplateVersion: target.Seed.Version,
 		TemplateDigest:  target.Seed.Digest,
+		RequiredPaths:   seedPaths(target.Seed),
 	}
 }
 
@@ -336,7 +344,71 @@ func receiptFromInspection(target Target, commit string, inspection Inspection) 
 		Verification:    VerificationReadback,
 		TemplateVersion: target.Seed.Version,
 		TemplateDigest:  target.Seed.Digest,
+		RequiredPaths:   seedPaths(target.Seed),
 	}, nil
+}
+
+func verifyTemplateReadback(ctx context.Context, receipt Receipt, runner Runner) error {
+	if len(receipt.RequiredPaths) == 0 {
+		return nil
+	}
+	// TemplateDigest is bound to the exact locally rendered seed and its initial
+	// commit; Verify also proves that commit is still reachable remotely. This
+	// HEAD-tree check is the complementary lifecycle proof that later commits
+	// have not removed the template's required operational entrypoints.
+	output, err := runner.Run(ctx, "", "gh", "repo", "view", receipt.NameWithOwner, "--json", "hasIssuesEnabled")
+	if err != nil {
+		return fmt.Errorf("AGX-REPOSITORY-TEMPLATE: cannot inspect repository features: %w", err)
+	}
+	var features struct {
+		HasIssuesEnabled bool `json:"hasIssuesEnabled"`
+	}
+	if err := decodeJSON(output, &features); err != nil {
+		return fmt.Errorf("AGX-REPOSITORY-TEMPLATE: invalid repository feature inventory: %w", err)
+	}
+	if !features.HasIssuesEnabled {
+		return fmt.Errorf("AGX-REPOSITORY-TEMPLATE: Issues are disabled for %s", receipt.NameWithOwner)
+	}
+	owner, name, _ := strings.Cut(receipt.NameWithOwner, "/")
+	endpoint := fmt.Sprintf("repos/%s/%s/git/trees/HEAD?recursive=1", owner, name)
+	output, err = runner.Run(ctx, "", "gh", "api", endpoint)
+	if err != nil {
+		return fmt.Errorf("AGX-REPOSITORY-TEMPLATE: cannot inspect repository tree: %w", err)
+	}
+	var tree struct {
+		Truncated bool `json:"truncated"`
+		Tree      []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"tree"`
+	}
+	if err := decodeJSON(output, &tree); err != nil {
+		return fmt.Errorf("AGX-REPOSITORY-TEMPLATE: invalid repository tree inventory: %w", err)
+	}
+	if tree.Truncated {
+		return fmt.Errorf("AGX-REPOSITORY-TEMPLATE: repository tree inventory is truncated")
+	}
+	present := make(map[string]bool, len(tree.Tree))
+	for _, entry := range tree.Tree {
+		if entry.Type == "blob" {
+			present[entry.Path] = true
+		}
+	}
+	for _, required := range receipt.RequiredPaths {
+		if !present[required] {
+			return fmt.Errorf("AGX-REPOSITORY-TEMPLATE: required template path %q is missing from %s", required, receipt.NameWithOwner)
+		}
+	}
+	return nil
+}
+
+func seedPaths(seed Seed) []string {
+	paths := make([]string, 0, len(seed.Files))
+	for _, file := range seed.Files {
+		paths = append(paths, file.Path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func writeSeed(root string, seed Seed) error {
@@ -566,7 +638,7 @@ func queryRepository(ctx context.Context, owner, name, commit, query string, run
 		return Inspection{}, false, fmt.Errorf("GraphQL response has no repository field")
 	}
 	if bytes.Equal(bytes.TrimSpace(data.Repository), []byte("null")) {
-		if len(envelope.Errors) == 0 || repositoryNotFound(envelope.Errors) {
+		if repositoryNotFound(envelope.Errors) {
 			return Inspection{}, false, nil
 		}
 		return Inspection{}, false, fmt.Errorf("GraphQL response contains non-absence errors")

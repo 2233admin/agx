@@ -19,9 +19,23 @@ func TestRunShowsStableGlobalHelp(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("Run(help) stderr = %q, want empty", stderr.String())
 	}
-	for _, command := range []string{"plan", "apply", "init", "status", "uninstall", "version"} {
+	for _, command := range []string{"plan", "apply", "init", "status", "diagnose", "uninstall", "version"} {
 		if !strings.Contains(stdout.String(), command) {
 			t.Errorf("global help does not contain %q", command)
+		}
+	}
+}
+
+func TestRunShowsDiagnoseHelp(t *testing.T) {
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+
+	code := cli.Run([]string{"diagnose", "--help"}, "0.0.0-test", stdout, stderr)
+	if code != exitcode.Success || stderr.Len() != 0 {
+		t.Fatalf("Run(diagnose --help) code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, text := range []string{"--root", "--output human|json", "Project/repository evidence", "Agent smoke", "Read-only"} {
+		if !strings.Contains(stdout.String(), text) {
+			t.Fatalf("Run(diagnose --help) stdout does not contain %q: %q", text, stdout.String())
 		}
 	}
 }

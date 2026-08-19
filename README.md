@@ -4,7 +4,7 @@
 
 AGX 的猫娘协调员对应安装、计划、验收和回执；她是项目身份，不代表目标环境已通过 `verified`。其余画幅与 GitHub 文档落点见 [OC kit](assets/oc/README.md)。
 
-AGXCLI (`agx`) 是小型部署 CLI：它安装固定版本的 `agent-plugins`，再从内置的版本化模板创建部署专属的 `agent-control` 与 `agent-contracts` GitHub 仓库，激活 Codex/Claude，并用本地回执管理恢复、状态和安全卸载。
+AGXCLI (`agx`) 是小型部署与生命周期 CLI：它安装固定版本的 `agent-plugins`，再从内置的版本化模板创建部署专属的 `agent-control`、`agent-contracts` GitHub 仓库及关联 Project，激活 Codex/Claude，并用本地回执管理恢复、状态、诊断和安全卸载。
 
 > 当前状态：本地 Bundle 部署闭环和 Codex/Claude 初始化阶段已实现。Multica 编排不属于当前发布阻塞项。
 
@@ -19,7 +19,7 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --apply
 ```
 
-`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、profile、visibility 与两个部署仓名。确认后它只打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control` 和 `octo-lab/agent-contracts`，每创建一个仓库就持久化一次恢复回执，然后从已安装的 `agent-plugins` 激活选定能力并结构化回读。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
+`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、profile、visibility 与两个部署仓名。确认后执行的只读 plan preflight 才检查 Projects `project` scope，并打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
 ## 四仓部署速查
 
@@ -40,17 +40,19 @@ agx init --guided --root D:\agx\installations\default
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider <guided-recommendation> --profile github --apply
 ```
 
-第二条命令必须先看计划：它会列出目标 owner、两个仓库名、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名仓库冲突行为，并根据无冲突 provider 给出推荐。第三条命令才创建远端仓库并激活 Codex/Claude。初始化后开启新的 Codex 或 Claude 会话，再使用输出中的 first-use prompt，例如 Codex 的 `$grilling:grilling ...` 或 `$github-collaboration:issue-workflow ...`，Claude 对应 `/grilling:grilling ...` 或 `/github-collaboration:issue-workflow ...`。
+第二条命令必须先看计划：它会列出目标 owner、两个仓库、Project title/link、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名资源冲突行为，并根据无冲突 provider 给出推荐。第三条命令才创建远端仓库与 Project、完成结构化回读并激活 Codex/Claude。初始化后用户已经能直接打开 Project；再开启新的 Agent 会话，执行输出中的 `agx.first-use/v1` 合同，创建 Bootstrap Verification Issue、Project item 和未合并 PR。`agx status` / `agx diagnose` 会回读这些 evidence，并报告 `awaiting` 或 `effective`。如果远端回读期间达到 deadline 或被取消，命令返回 `AGX-STATUS-INCONCLUSIVE`，不会把未完成的观察误报为 drift；远端状态可能已变化，应重新运行 `agx status` 或 `agx diagnose`，该失败路径不会执行任何写入。
 
-卸载边界也要直接理解：`agx uninstall` 只撤销回执证明由 AGX 新增的本地文件和 provider 激活；不会删除 `<owner>/agent-control` 或 `<owner>/agent-contracts`。远端仓库要由 operator 自己决定是否归档、迁移或删除。
+卸载边界也要直接理解：`agx uninstall` 只撤销回执证明由 AGX 新增的本地文件和 provider 激活；不会删除 `<owner>/agent-control`、`<owner>/agent-contracts` 或关联的 GitHub Project。远端资源要由 operator 自己决定是否归档、迁移或删除。
 
 ## 产品边界
 
 AGX 负责：
 
-- `plan`、`apply`、`init`、`status`、`uninstall`、`version`
+- `plan`、`apply`、`init`、`status`、`diagnose`、`uninstall`、`version`
 - 消费固定版本与摘要的唯一 `agent-plugins` Release artifact
 - 从版本化、摘要固定的干净模板创建部署专属 `agent-control` / `agent-contracts` 仓库
+- 创建、关联并结构化回读部署专属 GitHub Project
+- 生成版本化 first-use contract，并回读最小 Agent smoke evidence
 
 AGX 不负责：
 
@@ -83,6 +85,7 @@ go run ./cmd/agx init --guided --root D:\agx\installations\default
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --apply
 go run ./cmd/agx status --root D:\agx\installations\default
+go run ./cmd/agx diagnose --root D:\agx\installations\default
 go run ./cmd/agx uninstall --root D:\agx\installations\default
 ```
 
@@ -96,7 +99,7 @@ go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-202
 
 重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。初始化中断后，重试会先验证回执记录的远端仓库及其初始提交，再只继续缺失的步骤；AGX 不把一个碰巧同名的仓库当成自己创建的仓库。
 
-`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle。两个部署仓以及任何未知文件和预存运行端对象都会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle。两个部署仓、关联 Project、任何未知文件和预存运行端对象都会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
 
 ## 初始化能力包
 
@@ -123,7 +126,7 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --control-repo my-control --contracts-repo my-contracts --apply --output json
 ```
 
-不带 `--apply` 的结果是只读初始化计划；带 `--apply` 的成功结果中，`repositories` 记录目标 URL、visibility、初始 commit 与模板 digest，`first_use` 数组按运行端提供结构化的 `provider` 与 `prompt`。部分成功会保留可恢复回执并返回错误，不会删除已经创建的远端仓库。
+不带 `--apply` 的结果是只读初始化计划；带 `--apply` 的成功结果中，`repositories` 记录目标 URL、visibility、初始 commit、模板 digest 与必需路径，`project` 记录 number、node ID、URL、visibility 和控制仓 link，`first_use_contract` / `first_use` 提供版本化合同和每个 Agent 一条自包含 prompt。部分成功会保留可恢复回执并返回错误，不会删除已经创建的远端资源。
 
 若默认的 `<owner>/agent-control` 或 `<owner>/agent-contracts` 已存在，AGX 会在写入前停止，不会把它们静默当成自己创建的仓库。此时用 `--control-repo` / `--contracts-repo` 选择未占用名称，再重新运行只读计划。若 provider 已有同名 Marketplace 指向别处，AGX 同样不会改绑；先确认并处理原来源，或只选择没有冲突的 provider。初始化中断时没有单独的 `agx resume` 命令：修复输出的问题后，原样重跑此前的 `agx init ... --apply`，AGX 会根据恢复回执继续缺失步骤。
 
@@ -134,7 +137,7 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 | `team` | `github` 加多 Agent 编排 |
 | `full` | `team` 加账户容量与会话 Token 观测 |
 
-初始化在任何写入前验证安装回执与模板版本，检查 `git` / `gh` 登录状态、两个目标仓不存在，并读取运行端的 JSON Inventory。安装组件路径包含 symlink/junction 等重解析点、目标 CLI 缺失、Inventory 不可读、同名仓库或 Marketplace 冲突，或已有目标插件处于禁用状态时都会停止；AGX 不覆盖用户既有配置。成功后请新建一个运行端会话，让新的 Skill 清单生效；安装状态仍为 `configured`，不会因此成为 `verified`。
+初始化在任何写入前验证安装回执与模板版本，检查 `git` / `gh` 登录状态、`project` scope、两个目标仓和同名 Project 不存在，并读取运行端的 JSON Inventory。安装组件路径包含 symlink/junction 等重解析点、目标 CLI 缺失、Inventory 不可读、同名资源或 Marketplace 冲突，或已有目标插件处于禁用状态时都会停止；AGX 不覆盖用户既有配置。仓库创建后还会回读初始 commit、Issues 开关和模板必需路径。成功后请新建一个 Agent 会话，让新的 Skill 清单生效并执行 first-use contract；安装状态仍为 `configured`，不会因此成为 `verified`。
 
 ## Preview 安装包（仅供测试）
 

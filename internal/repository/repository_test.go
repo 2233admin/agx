@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,6 +29,8 @@ type fakeRepository struct {
 	defaultBranch string
 	head          string
 	reachable     map[string]bool
+	issues        bool
+	files         map[string]bool
 }
 
 type fakeRunner struct {
@@ -43,6 +46,7 @@ type fakeRunner struct {
 	landOnCreate     bool
 	createErr        error
 	gitErrCommand    string
+	absentOutput     []byte
 	absentReturnsErr bool
 }
 
@@ -85,10 +89,14 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 		}
 		repository, present := runner.repositories[key]
 		if !present {
-			if runner.absentReturnsErr {
-				return []byte(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"not found"}]}`), errors.New("gh exited 1")
+			output := runner.absentOutput
+			if output == nil {
+				output = []byte(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"not found"}]}`)
 			}
-			return []byte(`{"data":{"repository":null}}`), nil
+			if runner.absentReturnsErr {
+				return output, errors.New("gh exited 1")
+			}
+			return output, nil
 		}
 		if commit == "" {
 			return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{
@@ -116,6 +124,22 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 			"object": object,
 		}}})
 	}
+	if name == "gh" && len(args) >= 2 && args[0] == "api" && strings.HasPrefix(args[1], "repos/") {
+		parts := strings.Split(args[1], "/")
+		if len(parts) < 4 {
+			return nil, errors.New("invalid tree endpoint")
+		}
+		repository := runner.repositories[strings.ToLower(parts[1]+"/"+parts[2])]
+		tree := []map[string]any{}
+		for file := range repository.files {
+			tree = append(tree, map[string]any{"path": file, "type": "blob"})
+		}
+		return json.Marshal(map[string]any{"tree": tree, "truncated": false})
+	}
+	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "view" {
+		repository := runner.repositories[strings.ToLower(args[2])]
+		return json.Marshal(map[string]any{"hasIssuesEnabled": repository.issues})
+	}
 	if name == "git" {
 		command := gitCommand(args)
 		if command == runner.gitErrCommand {
@@ -133,17 +157,51 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 			if contains(args, "--public") {
 				visibility = VisibilityPublic
 			}
+			files := map[string]bool{}
+			source := argumentAfter(args, "--source")
+			_ = filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+				if err != nil || entry.IsDir() || strings.Contains(filepath.ToSlash(path), "/.git/") {
+					return err
+				}
+				relative, relativeErr := filepath.Rel(source, path)
+				if relativeErr == nil {
+					files[filepath.ToSlash(relative)] = true
+				}
+				return relativeErr
+			})
 			runner.repositories[strings.ToLower(nameWithOwner)] = fakeRepository{
 				nameWithOwner: nameWithOwner,
 				visibility:    visibility,
 				defaultBranch: "main",
 				head:          testCommit,
 				reachable:     map[string]bool{testCommit: true},
+				issues:        true,
+				files:         files,
 			}
 		}
 		return nil, runner.createErr
 	}
 	return nil, errors.New("unexpected command")
+}
+
+func TestVerifyDetectsMissingTemplateEntriesAndDisabledIssues(t *testing.T) {
+	runner := newFakeRunner()
+	receipt, err := Create(context.Background(), testTarget("agent-control"), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := runner.repositories["zaurakworks/agent-control"]
+	delete(repository.files, "README.md")
+	runner.repositories["zaurakworks/agent-control"] = repository
+	if err := Verify(context.Background(), receipt, runner); err == nil || !strings.Contains(err.Error(), "template path") {
+		t.Fatalf("Verify() err = %v, want missing template path", err)
+	}
+	repository.files["README.md"] = true
+	repository.issues = false
+	runner.repositories["zaurakworks/agent-control"] = repository
+	if err := Verify(context.Background(), receipt, runner); err == nil || !strings.Contains(err.Error(), "Issues are disabled") {
+		t.Fatalf("Verify() err = %v, want disabled Issues", err)
+	}
 }
 
 func TestProvisionPreflightsEveryTargetBeforeFirstWrite(t *testing.T) {
@@ -197,16 +255,39 @@ func TestProvisionDoesNotOpenStagingUntilAllPreflightsPass(t *testing.T) {
 }
 
 func TestPreflightAcceptsOnlyStructuredRepositoryNotFoundAsAbsent(t *testing.T) {
-	runner := newFakeRunner()
-	runner.absentReturnsErr = true
-	if err := Preflight(context.Background(), []Target{testTarget("agent-control"), testTarget("agent-contracts")}, runner); err != nil {
-		t.Fatalf("Preflight() rejected structured NOT_FOUND: %v", err)
+	for _, commandFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("command-fails-%t", commandFails), func(t *testing.T) {
+			runner := newFakeRunner()
+			runner.absentReturnsErr = commandFails
+			if err := Preflight(context.Background(), []Target{testTarget("agent-control")}, runner); err != nil {
+				t.Fatalf("Preflight() rejected structured NOT_FOUND: %v", err)
+			}
+		})
 	}
+}
 
-	runner = newFakeRunner()
-	runner.malformedName = "agent-control"
-	if err := Preflight(context.Background(), []Target{testTarget("agent-control")}, runner); err == nil {
-		t.Fatal("Preflight() accepted structurally ambiguous inventory")
+func TestProvisionFailsClosedForInconclusiveRepositoryAbsence(t *testing.T) {
+	tests := map[string]string{
+		"missing errors":      `{"data":{"repository":null}}`,
+		"null errors":         `{"data":{"repository":null},"errors":null}`,
+		"empty errors":        `{"data":{"repository":null},"errors":[]}`,
+		"non absence error":   `{"data":{"repository":null},"errors":[{"type":"FORBIDDEN","path":["repository"]}]}`,
+		"mixed errors":        `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"]},{"type":"FORBIDDEN","path":["repository"]}]}`,
+		"wrong error path":    `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["viewer"]}]}`,
+		"missing data":        `{"errors":[{"type":"NOT_FOUND","path":["repository"]}]}`,
+		"missing repository":  `{"data":{},"errors":[{"type":"NOT_FOUND","path":["repository"]}]}`,
+		"malformed":           `{"data":{"repository":null}`,
+		"trailing JSON value": `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"]}]} {"extra":true}`,
+	}
+	for name, output := range tests {
+		t.Run(name, func(t *testing.T) {
+			runner := newFakeRunner()
+			runner.absentOutput = []byte(output)
+			if _, err := Provision(context.Background(), []Target{testTarget("agent-control")}, runner); err == nil {
+				t.Fatal("Provision() accepted inconclusive repository absence")
+			}
+			assertNoWrites(t, runner.calls)
+		})
 	}
 }
 
@@ -267,10 +348,14 @@ func TestCreateCommandOrderAndLocalGitConfiguration(t *testing.T) {
 			continue
 		}
 		if call.name == "gh" && len(call.args) > 1 && call.args[0] == "repo" {
-			got = append(got, "create")
+			got = append(got, call.args[1])
+			continue
+		}
+		if call.name == "gh" && len(call.args) > 1 && call.args[0] == "api" && strings.Contains(call.args[1], "/git/trees/") {
+			got = append(got, "tree readback")
 		}
 	}
-	want := []string{"auth", "preflight", "git init", "git add", "git commit", "git rev-parse", "create", "readback"}
+	want := []string{"auth", "preflight", "git init", "git add", "git commit", "git rev-parse", "create", "readback", "view", "tree readback"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command order = %#v, want %#v", got, want)
 	}
@@ -577,6 +662,15 @@ func argumentValue(args []string, name string) string {
 	for _, argument := range args {
 		if strings.HasPrefix(argument, prefix) {
 			return strings.TrimPrefix(argument, prefix)
+		}
+	}
+	return ""
+}
+
+func argumentAfter(args []string, name string) string {
+	for index, argument := range args {
+		if argument == name && index+1 < len(args) {
+			return args[index+1]
 		}
 	}
 	return ""
