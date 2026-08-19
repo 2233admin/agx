@@ -47,12 +47,14 @@ const (
 	RuntimeBridgeKindManual RuntimeBridgeKind = "manual"
 )
 
-// Diagnostic codes returned by ValidateProfile.
+// Diagnostic codes returned by ValidateProfile, plus DiagnosticParseFailed
+// which Status reports for a persisted Profile that fails to parse.
 const (
 	DiagnosticSchemaUnsupported domain.DiagnosticCode = "AGX-FLEET-PROFILE-SCHEMA-UNSUPPORTED"
 	DiagnosticFieldMissing      domain.DiagnosticCode = "AGX-FLEET-PROFILE-FIELD-MISSING"
 	DiagnosticKindUnsupported   domain.DiagnosticCode = "AGX-FLEET-PROFILE-KIND-UNSUPPORTED"
 	DiagnosticDuplicateID       domain.DiagnosticCode = "AGX-FLEET-PROFILE-DUPLICATE-ID"
+	DiagnosticParseFailed       domain.DiagnosticCode = "AGX-FLEET-PROFILE-PARSE-FAILED"
 )
 
 // Ref is a stable, explicit reference to one Fleet axis object. Kind must
@@ -157,18 +159,19 @@ func ValidateProfile(profile Profile) []domain.Diagnostic {
 			add(DiagnosticKindUnsupported, fmt.Sprintf("%s.kind %q is not supported in %s", axis.name, axis.ref.Kind, SchemaVersionV1))
 			continue
 		}
-		if axis.idRequired && strings.TrimSpace(axis.ref.ID) == "" {
+		id := strings.TrimSpace(axis.ref.ID)
+		if axis.idRequired && id == "" {
 			add(DiagnosticFieldMissing, axis.name+".id is required")
 			continue
 		}
-		if axis.ref.ID == "" {
+		if id == "" {
 			continue
 		}
-		if owner, seen := ownerByID[axis.ref.ID]; seen {
-			add(DiagnosticDuplicateID, fmt.Sprintf("%s and %s share id %q", owner, axis.name, axis.ref.ID))
+		if owner, seen := ownerByID[id]; seen {
+			add(DiagnosticDuplicateID, fmt.Sprintf("%s and %s share id %q", owner, axis.name, id))
 			continue
 		}
-		ownerByID[axis.ref.ID] = axis.name
+		ownerByID[id] = axis.name
 	}
 	return diagnostics
 }

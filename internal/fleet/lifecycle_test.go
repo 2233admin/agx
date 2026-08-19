@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/2233admin/agx/internal/fleet"
@@ -31,16 +33,6 @@ func TestBuildPlanForInvalidProfileReportsDiagnosticsAndNoActions(t *testing.T) 
 	}
 	if len(plan.Actions) != 0 {
 		t.Fatalf("BuildPlan() actions = %+v, want none for an invalid profile", plan.Actions)
-	}
-}
-
-// BuildPlan never touches the filesystem: same root before and after
-// building a Plan for a root with no prior Deployment Profile.
-func TestBuildPlanPerformsNoWrites(t *testing.T) {
-	root := t.TempDir()
-	fleet.BuildPlan(validProfile())
-	if _, err := os.Stat(filepath.Join(root, ".agx")); !os.IsNotExist(err) {
-		t.Fatalf("BuildPlan() created %s, want no filesystem changes", filepath.Join(root, ".agx"))
 	}
 }
 
@@ -185,5 +177,131 @@ func TestStatusReportsDriftedAfterExternalEditMakesProfileInvalid(t *testing.T) 
 	}
 	if state.Status != fleet.StatusDrifted || !state.Present || len(state.Diagnostics) == 0 {
 		t.Fatalf("Status() = %+v, want drifted with diagnostics", state)
+	}
+}
+
+// 6. Drift by external edit that breaks JSON syntax entirely (truncation,
+// an unknown field, a duplicate key): Status must still report drifted
+// with a diagnostic, not an opaque error indistinguishable from a
+// genuine I/O failure.
+func TestStatusReportsDriftedAfterExternalEditBreaksJSONSyntax(t *testing.T) {
+	root := t.TempDir()
+	profile := validProfile()
+	if _, err := fleet.Apply(root, profile); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	path := filepath.Join(root, ".agx", "fleet-profile.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":"agx.fleet-profile/v1", not valid json`), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	state, err := fleet.Status(root)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if state.Status != fleet.StatusDrifted || !state.Present {
+		t.Fatalf("Status() = %+v, want drifted", state)
+	}
+	if len(state.Diagnostics) != 1 || state.Diagnostics[0].Code != fleet.DiagnosticParseFailed {
+		t.Fatalf("Status() diagnostics = %+v, want exactly one %v", state.Diagnostics, fleet.DiagnosticParseFailed)
+	}
+}
+
+// 7. Concurrency: two goroutines racing Apply with the identical Profile
+// at the same root must both succeed with identical Receipts — the
+// create-only publish (os.Link, never a replacing os.Rename) means
+// whichever call loses the filesystem race falls back to reading the
+// winner's published Profile instead of erroring or corrupting state.
+func TestApplyConcurrentIdenticalProfilesBothSucceed(t *testing.T) {
+	root := t.TempDir()
+	profile := validProfile()
+
+	const goroutines = 8
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	done.Add(goroutines)
+	receipts := make([]fleet.Receipt, goroutines)
+	errs := make([]error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer done.Done()
+			start.Wait()
+			receipts[i], errs[i] = fleet.Apply(root, profile)
+		}(i)
+	}
+	start.Done()
+	done.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Apply() goroutine %d error = %v", i, err)
+		}
+		if !reflect.DeepEqual(receipts[i], receipts[0]) {
+			t.Fatalf("Apply() goroutine %d receipt = %+v, want identical to goroutine 0 %+v", i, receipts[i], receipts[0])
+		}
+	}
+}
+
+// Concurrent Apply calls with two different Profiles at the same root:
+// exactly one must win (its exact Profile persisted); every other call
+// must either see that same Profile as a no-op or be rejected as drift.
+// No call may report success with a Profile that was not actually
+// persisted, and the persisted file must always be one complete,
+// uncorrupted, valid Profile.
+func TestApplyConcurrentDifferentProfilesResolveWithoutCorruption(t *testing.T) {
+	root := t.TempDir()
+	profileA := validProfile()
+	profileB := validProfile()
+	profileB.FleetID = "fleet-2"
+
+	const attempts = 8
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	done.Add(attempts)
+	receipts := make([]fleet.Receipt, attempts)
+	errs := make([]error, attempts)
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer done.Done()
+			start.Wait()
+			profile := profileA
+			if i%2 == 1 {
+				profile = profileB
+			}
+			receipts[i], errs[i] = fleet.Apply(root, profile)
+		}(i)
+	}
+	start.Done()
+	done.Wait()
+
+	successes := 0
+	var winningFleetID string
+	for i, err := range errs {
+		if err == nil {
+			successes++
+			if winningFleetID == "" {
+				winningFleetID = receipts[i].FleetID
+			} else if receipts[i].FleetID != winningFleetID {
+				t.Fatalf("Apply() reported two different successful FleetIDs: %q and %q", winningFleetID, receipts[i].FleetID)
+			}
+			continue
+		}
+		if !strings.Contains(err.Error(), "AGX-FLEET-DEPLOYMENT-PROFILE-DRIFT") {
+			t.Fatalf("Apply() goroutine %d unexpected error = %v", i, err)
+		}
+	}
+	if successes == 0 {
+		t.Fatal("Apply() every concurrent call failed; want at least one winner")
+	}
+
+	state, err := fleet.Status(root)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if state.Status != fleet.StatusConfigured || state.Receipt == nil || state.Receipt.FleetID != winningFleetID {
+		t.Fatalf("Status() = %+v, want configured with the winning FleetID %q", state, winningFleetID)
 	}
 }

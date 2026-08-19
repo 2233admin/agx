@@ -6,11 +6,17 @@
 package strictjson
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 )
+
+// maxDepth bounds JSON nesting so a crafted or corrupted file with
+// thousands of nested delimiters cannot exhaust the goroutine stack; a Go
+// stack-overflow is a fatal, unrecoverable runtime error, not a panic
+// RejectDuplicateKeys' caller could recover from.
+const maxDepth = 64
 
 // RejectDuplicateKeys walks data as JSON and returns an error if any JSON
 // object in it repeats a key. encoding/json's Decoder silently keeps only
@@ -18,9 +24,12 @@ import (
 // corrupted file smuggle a second, effectively hidden value past every
 // struct-field validation that only inspects the decoded Go value.
 func RejectDuplicateKeys(data []byte) error {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	var walk func() error
-	walk = func() error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var walk func(depth int) error
+	walk = func(depth int) error {
+		if depth > maxDepth {
+			return fmt.Errorf("JSON nesting exceeds %d levels", maxDepth)
+		}
 		token, err := decoder.Token()
 		if err != nil {
 			return err
@@ -45,13 +54,13 @@ func RejectDuplicateKeys(data []byte) error {
 					return fmt.Errorf("duplicate object key %q", key)
 				}
 				keys[key] = struct{}{}
-				if err := walk(); err != nil {
+				if err := walk(depth + 1); err != nil {
 					return err
 				}
 			}
 		case '[':
 			for decoder.More() {
-				if err := walk(); err != nil {
+				if err := walk(depth + 1); err != nil {
 					return err
 				}
 			}
@@ -61,7 +70,7 @@ func RejectDuplicateKeys(data []byte) error {
 		_, err = decoder.Token()
 		return err
 	}
-	if err := walk(); err != nil {
+	if err := walk(0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {

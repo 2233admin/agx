@@ -1,8 +1,9 @@
 package fleet_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/2233admin/agx/internal/fleet"
@@ -185,7 +186,7 @@ func TestComputeProfileDigestIsDeterministicAndRejectsInvalidProfile(t *testing.
 	if first != second {
 		t.Fatalf("ComputeProfileDigest() = %q then %q, want identical for identical input", first, second)
 	}
-	if !strings.HasPrefix(first, "") || len(first) != 64 {
+	if decoded, decodeErr := hex.DecodeString(first); decodeErr != nil || len(decoded) != sha256.Size {
 		t.Fatalf("ComputeProfileDigest() = %q, want a 64-char hex SHA-256 digest", first)
 	}
 

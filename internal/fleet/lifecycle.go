@@ -2,8 +2,10 @@ package fleet
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -103,6 +105,11 @@ type State struct {
 // returns the same Receipt. Applying a different Profile over an existing
 // one is rejected as drift: callers must use a new deployment_id for a
 // distinct deployment rather than silently rebinding an existing one.
+// Publication is create-only (via a hard link, not a replacing rename),
+// so two concurrent Apply calls at the same root can never have one
+// silently overwrite the other: whichever call loses the race falls back
+// to reading the winner's now-published Profile and applies the same
+// no-op/drift decision it would have made had it seen that Profile first.
 func Apply(root string, profile Profile) (Receipt, error) {
 	diagnostics := ValidateProfile(profile)
 	if len(diagnostics) > 0 {
@@ -112,36 +119,65 @@ func Apply(root string, profile Profile) (Receipt, error) {
 	if err != nil {
 		return Receipt{}, err
 	}
-	existing, present, err := readProfile(root)
-	if err != nil {
-		return Receipt{}, err
+	if receipt, resolved, err := resolveAgainstExisting(root, profile, digest); err != nil || resolved {
+		return receipt, err
 	}
-	if present {
-		existingDigest, digestErr := ComputeProfileDigest(existing)
-		if digestErr != nil {
-			return Receipt{}, digestErr
+	if err := publishProfile(root, profile); err != nil {
+		if errors.Is(err, errProfileAlreadyExists) {
+			receipt, resolved, resolveErr := resolveAgainstExisting(root, profile, digest)
+			if resolveErr != nil {
+				return Receipt{}, resolveErr
+			}
+			if resolved {
+				return receipt, nil
+			}
+			return Receipt{}, fmt.Errorf("AGX-FLEET-PROFILE-WRITE: Deployment Profile was published concurrently but could not be read back")
 		}
-		if existingDigest != digest {
-			return Receipt{}, fmt.Errorf("AGX-FLEET-DEPLOYMENT-PROFILE-DRIFT: an existing Deployment Profile for a different configuration is already applied at this root; use a new deployment_id for a distinct deployment")
-		}
-		return buildReceipt(profile, digest), nil
-	}
-	if err := writeProfile(root, profile); err != nil {
 		return Receipt{}, err
 	}
 	return buildReceipt(profile, digest), nil
+}
+
+// resolveAgainstExisting reports (receipt, true, nil) when an already
+// persisted Profile at root has the same content digest as profile
+// (idempotent no-op), (Receipt{}, false, drift-error) when a different
+// Profile is already persisted, and (Receipt{}, false, nil) when no
+// Profile is persisted yet (Apply must still publish one).
+func resolveAgainstExisting(root string, profile Profile, digest string) (Receipt, bool, error) {
+	existing, present, err := readProfile(root)
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	if !present {
+		return Receipt{}, false, nil
+	}
+	existingDigest, digestErr := ComputeProfileDigest(existing)
+	if digestErr != nil {
+		return Receipt{}, false, digestErr
+	}
+	if existingDigest != digest {
+		return Receipt{}, false, fmt.Errorf("AGX-FLEET-DEPLOYMENT-PROFILE-DRIFT: an existing Deployment Profile for a different configuration is already applied at this root; use a new deployment_id for a distinct deployment")
+	}
+	return buildReceipt(profile, digest), true, nil
 }
 
 // Status reads back the persisted Profile at root and reports whether it
 // is absent, configured (present and internally valid), or drifted
 // (present but no longer valid, e.g. after a hand-edit).
 func Status(root string) (State, error) {
-	profile, present, err := readProfile(root)
+	data, present, err := readProfileBytes(root)
 	if err != nil {
 		return State{}, err
 	}
 	if !present {
 		return State{Status: StatusAbsent}, nil
+	}
+	profile, parseErr := ParseProfile(data)
+	if parseErr != nil {
+		return State{Present: true, Status: StatusDrifted, Diagnostics: []domain.Diagnostic{{
+			Code: DiagnosticParseFailed, Category: domain.DiagnosticCategoryPreflight, Severity: domain.SeverityError,
+			Message: "Deployment Profile is present but could not be parsed: " + parseErr.Error(),
+		}}}, nil
 	}
 	diagnostics := ValidateProfile(profile)
 	if len(diagnostics) > 0 {
@@ -155,49 +191,14 @@ func Status(root string) (State, error) {
 	return State{Present: true, Status: StatusConfigured, Receipt: &receipt}, nil
 }
 
+// readProfile reads and parses the persisted Deployment Profile. Apply
+// uses this directly: an existing profile AGX cannot even parse must
+// block Apply with a hard error rather than let it guess whether the
+// caller's new Profile would be a safe no-op or a drift rebind.
 func readProfile(root string) (Profile, bool, error) {
-	absoluteRoot, err := filepath.Abs(root)
-	if err != nil {
-		return Profile{}, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: invalid Installation root: %w", err)
-	}
-	directory := filepath.Join(absoluteRoot, ".agx")
-	directoryInfo, err := os.Lstat(directory)
-	if os.IsNotExist(err) {
-		return Profile{}, false, nil
-	}
-	if err != nil {
-		return Profile{}, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot inspect metadata directory: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-FLEET-PROFILE-INVALID"); err != nil {
-		return Profile{}, false, err
-	}
-	path := filepath.Join(directory, fleetProfileFile)
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return Profile{}, false, nil
-	}
-	if err != nil {
-		return Profile{}, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot inspect Deployment Profile: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(path, info, false, "Deployment Profile", "AGX-FLEET-PROFILE-INVALID"); err != nil {
-		return Profile{}, false, err
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return Profile{}, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot open Deployment Profile: %w", err)
-	}
-	openedInfo, statErr := file.Stat()
-	if statErr != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		file.Close()
-		return Profile{}, false, fmt.Errorf("AGX-FLEET-PROFILE-INVALID: Deployment Profile changed during read")
-	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return Profile{}, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot read Deployment Profile: %w", readErr)
-	}
-	if closeErr != nil {
-		return Profile{}, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot close Deployment Profile: %w", closeErr)
+	data, present, err := readProfileBytes(root)
+	if err != nil || !present {
+		return Profile{}, present, err
 	}
 	profile, err := ParseProfile(data)
 	if err != nil {
@@ -206,7 +207,73 @@ func readProfile(root string) (Profile, bool, error) {
 	return profile, true, nil
 }
 
-func writeProfile(root string, profile Profile) error {
+// readProfileBytes performs only the symlink-safe I/O: it reports whether
+// a Deployment Profile file exists at root and, if so, its raw bytes. It
+// never interprets those bytes, so a present-but-unparseable file is
+// reported present with no error, letting callers (Status) distinguish a
+// genuine I/O failure from a corrupted/hand-edited file.
+func readProfileBytes(root string) ([]byte, bool, error) {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: invalid Installation root: %w", err)
+	}
+	directory := filepath.Join(absoluteRoot, ".agx")
+	directoryInfo, err := os.Lstat(directory)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot inspect metadata directory: %w", err)
+	}
+	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-FLEET-PROFILE-INVALID"); err != nil {
+		return nil, false, err
+	}
+	path := filepath.Join(directory, fleetProfileFile)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot inspect Deployment Profile: %w", err)
+	}
+	if err := metadatafile.RequireRealEntry(path, info, false, "Deployment Profile", "AGX-FLEET-PROFILE-INVALID"); err != nil {
+		return nil, false, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot open Deployment Profile: %w", err)
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-INVALID: Deployment Profile changed during read")
+	}
+	data, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot read Deployment Profile: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot close Deployment Profile: %w", closeErr)
+	}
+	return data, true, nil
+}
+
+// errProfileAlreadyExists signals that publishProfile lost a create-only
+// race: another Apply call already published a Deployment Profile at this
+// root between this call's existence check and its publish attempt.
+var errProfileAlreadyExists = errors.New("fleet: deployment profile already exists")
+
+// publishProfile persists profile at .agx/fleet-profile.json using
+// create-only publication: the final file is linked into place with
+// os.Link, never with a replacing os.Rename, so publishProfile can never
+// silently overwrite a Deployment Profile a concurrent Apply call already
+// published. It reports errProfileAlreadyExists (wrapped) instead.
+//
+// AGX's two supported platforms (Windows 11 x64 NTFS, Ubuntu 24.04 x64
+// ext4) both support hard links for files within the same directory;
+// this intentionally has no fallback for filesystems that do not.
+func publishProfile(root string, profile Profile) error {
 	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
@@ -232,6 +299,7 @@ func writeProfile(root string, profile Profile) error {
 		if err := metadatafile.RequireRealEntry(target, targetInfo, false, "Deployment Profile", "AGX-FLEET-PROFILE-WRITE"); err != nil {
 			return err
 		}
+		return errProfileAlreadyExists
 	} else if !os.IsNotExist(targetErr) {
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: cannot inspect Deployment Profile: %w", targetErr)
 	}
@@ -240,19 +308,26 @@ func writeProfile(root string, profile Profile) error {
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
 	}
 	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
+	defer func() { _ = os.Remove(temporaryName) }()
 	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
 	}
 	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
+		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
 	}
-	if err := os.Rename(temporaryName, target); err != nil {
+	if err := os.Link(temporaryName, target); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return errProfileAlreadyExists
+		}
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
 	}
 	return nil
