@@ -16,10 +16,12 @@ import (
 	"github.com/2233admin/agx/internal/bootstrap"
 	"github.com/2233admin/agx/internal/domain"
 	installer "github.com/2233admin/agx/internal/install"
+	"github.com/2233admin/agx/internal/metadatafile"
 	"github.com/2233admin/agx/internal/project"
 	"github.com/2233admin/agx/internal/provider"
 	"github.com/2233admin/agx/internal/repository"
 	"github.com/2233admin/agx/internal/smoke"
+	"github.com/2233admin/agx/internal/strictjson"
 )
 
 const (
@@ -1483,59 +1485,6 @@ func receiptPath(root string) string {
 	return filepath.Join(root, ".agx", initializationFile)
 }
 
-func rejectDuplicateJSONKeys(data []byte) error {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	var walk func() error
-	walk = func() error {
-		token, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		delimiter, ok := token.(json.Delim)
-		if !ok {
-			return nil
-		}
-		switch delimiter {
-		case '{':
-			keys := map[string]struct{}{}
-			for decoder.More() {
-				keyToken, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				key, ok := keyToken.(string)
-				if !ok {
-					return fmt.Errorf("invalid object key")
-				}
-				if _, duplicate := keys[key]; duplicate {
-					return fmt.Errorf("duplicate object key %q", key)
-				}
-				keys[key] = struct{}{}
-				if err := walk(); err != nil {
-					return err
-				}
-			}
-		case '[':
-			for decoder.More() {
-				if err := walk(); err != nil {
-					return err
-				}
-			}
-		default:
-			return fmt.Errorf("unexpected JSON delimiter")
-		}
-		_, err = decoder.Token()
-		return err
-	}
-	if err := walk(); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return fmt.Errorf("trailing data")
-	}
-	return nil
-}
-
 func readReceipt(root string) (Receipt, bool, error) {
 	path, present, expectedInfo, err := inspectReceiptPath(root)
 	if err != nil {
@@ -1571,7 +1520,7 @@ func readReceipt(root string) (Receipt, bool, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: trailing data")
 	}
-	if err := rejectDuplicateJSONKeys(data); err != nil {
+	if err := strictjson.RejectDuplicateKeys(data); err != nil {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %w", err)
 	}
 	if receipt.SchemaVersion == receiptSchemaV2 {
@@ -1632,7 +1581,7 @@ func inspectReceiptPath(root string) (string, bool, os.FileInfo, error) {
 	if err != nil {
 		return "", false, nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect Installation root: %w", err)
 	}
-	if err := requireRealMetadataEntry(absoluteRoot, rootInfo, true, "Installation root"); err != nil {
+	if err := metadatafile.RequireRealEntry(absoluteRoot, rootInfo, true, "Installation root", "AGX-INIT-RECEIPT-INVALID"); err != nil {
 		return "", false, nil, err
 	}
 
@@ -1644,7 +1593,7 @@ func inspectReceiptPath(root string) (string, bool, os.FileInfo, error) {
 	if err != nil {
 		return "", false, nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect metadata directory: %w", err)
 	}
-	if err := requireRealMetadataEntry(directory, directoryInfo, true, "metadata directory"); err != nil {
+	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-INIT-RECEIPT-INVALID"); err != nil {
 		return "", false, nil, err
 	}
 
@@ -1656,25 +1605,10 @@ func inspectReceiptPath(root string) (string, bool, os.FileInfo, error) {
 	if err != nil {
 		return "", false, nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect initialization receipt: %w", err)
 	}
-	if err := requireRealMetadataEntry(path, info, false, "initialization receipt"); err != nil {
+	if err := metadatafile.RequireRealEntry(path, info, false, "initialization receipt", "AGX-INIT-RECEIPT-INVALID"); err != nil {
 		return "", false, nil, err
 	}
 	return path, true, info, nil
-}
-
-func requireRealMetadataEntry(path string, info os.FileInfo, directory bool, label string) error {
-	reparse, err := metadataPathIsReparsePoint(path)
-	if err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect %s attributes: %w", label, err)
-	}
-	validType := info.Mode().IsRegular()
-	if directory {
-		validType = info.Mode().IsDir()
-	}
-	if reparse || info.Mode()&os.ModeSymlink != 0 || !validType {
-		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %s must be a real %s", label, map[bool]string{true: "directory", false: "regular file"}[directory])
-	}
-	return nil
 }
 
 func evidenceBindingsMatchReceipt(receipt Receipt) bool {
@@ -1858,7 +1792,7 @@ func writeReceipt(root string, receipt Receipt) error {
 	if err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect Installation root: %w", err)
 	}
-	if err := requireRealMetadataEntry(absoluteRoot, rootInfo, true, "Installation root"); err != nil {
+	if err := metadatafile.RequireRealEntry(absoluteRoot, rootInfo, true, "Installation root", "AGX-INIT-RECEIPT-INVALID"); err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe Installation root: %w", err)
 	}
 	directory := filepath.Join(absoluteRoot, ".agx")
@@ -1869,12 +1803,12 @@ func writeReceipt(root string, receipt Receipt) error {
 	if err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect metadata directory: %w", err)
 	}
-	if err := requireRealMetadataEntry(directory, directoryInfo, true, "metadata directory"); err != nil {
+	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-INIT-RECEIPT-INVALID"); err != nil {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe metadata directory: %w", err)
 	}
 	target := filepath.Join(directory, initializationFile)
 	if targetInfo, targetErr := os.Lstat(target); targetErr == nil {
-		if err := requireRealMetadataEntry(target, targetInfo, false, "initialization receipt"); err != nil {
+		if err := metadatafile.RequireRealEntry(target, targetInfo, false, "initialization receipt", "AGX-INIT-RECEIPT-INVALID"); err != nil {
 			return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe initialization receipt: %w", err)
 		}
 	} else if !os.IsNotExist(targetErr) {
