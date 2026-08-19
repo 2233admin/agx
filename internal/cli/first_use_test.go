@@ -100,7 +100,7 @@ func TestInitReturnsSoftwareWhenFirstUseContractCannotBeDerived(t *testing.T) {
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
 
 	code := runWithDependencies(
-		[]string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--apply", "--output", "json"},
+		[]string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "github-delivery/v1", "--apply", "--output", "json"},
 		"0.0.0-test", stdout, stderr,
 		runtimeDependencies{initApply: func(context.Context, activation.Options) (activation.Receipt, bool, error) {
 			return receipt, false, nil
@@ -453,6 +453,46 @@ func TestStatusAndDiagnoseHideInconclusivePartialState(t *testing.T) {
 	}
 }
 
+func TestInitRejectsInvalidEvidenceSelectionBeforePlanning(t *testing.T) {
+	validUUID := "123e4567-e89b-42d3-a456-426614174000"
+	tests := []struct {
+		name string
+		args []string
+		code string
+	}{
+		{
+			name: "missing profile",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex"},
+			code: "AGX-EVIDENCE-PROFILE-REQUIRED",
+		},
+		{
+			name: "unsupported profile",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "github-delivery/v2"},
+			code: "AGX-EVIDENCE-PROFILE-UNSUPPORTED",
+		},
+		{
+			name: "incomplete Multica selectors",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "multica-execution/v1", "--multica-workspace-id", validUUID},
+			code: "AGX-EVIDENCE-SUBJECT-INCOMPLETE",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			planned := false
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			result := runWithDependencies(test.args, "0.0.0-test", stdout, stderr, runtimeDependencies{
+				initPlan: func(context.Context, activation.Options) (activation.InitializationPlan, error) {
+					planned = true
+					return activation.InitializationPlan{}, nil
+				},
+			})
+			if result != exitcode.Usage || planned || stdout.Len() != 0 || !strings.Contains(stderr.String(), test.code) {
+				t.Fatalf("runWithDependencies() code=%d planned=%v stdout=%q stderr=%q, want preflight %s", result, planned, stdout.String(), stderr.String(), test.code)
+			}
+		})
+	}
+}
+
 func TestInitPlanResultHasStableMachineReadableEnvelope(t *testing.T) {
 	plan := activation.InitializationPlan{
 		InstallationID: "install-test", TemplateVersion: "bootstrap-test",
@@ -467,7 +507,7 @@ func TestInitPlanResultHasStableMachineReadableEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"mode":"plan","mutation_performed":false,"plan":{"installation_id":"install-test","template_version":"bootstrap-test","template_content_sha256":"` + strings.Repeat("a", 64) + `","plugin_source":"zaurakworks/agent-plugins","profile":"core","providers":[],"repositories":[],"project":{"owner":"octo-lab","title":"agent-control deployment (install-test)","visibility":"private","linked_repository":"octo-lab/agent-control","action":"create","retained_on_uninstall":true}}}`
+	want := `{"mode":"plan","mutation_performed":false,"plan":{"installation_id":"install-test","template_version":"bootstrap-test","template_content_sha256":"` + strings.Repeat("a", 64) + `","plugin_source":"zaurakworks/agent-plugins","profile":"core","evidence_profile":"","deployment_digest":"","subject_digest":"","providers":[],"repositories":[],"project":{"owner":"octo-lab","title":"agent-control deployment (install-test)","visibility":"private","linked_repository":"octo-lab/agent-control","action":"create","retained_on_uninstall":true}}}`
 	if string(data) != want {
 		t.Fatalf("init plan JSON = %s, want %s", data, want)
 	}

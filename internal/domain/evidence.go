@@ -42,6 +42,22 @@ func ParseEvidenceProfile(value string) (EvidenceProfileID, error) {
 	}
 }
 
+func ValidateEvidenceProfileSelection(profile EvidenceProfileID, multicaWorkspaceID, multicaRuntimeID, multicaAgentID string) error {
+	parsed, err := ParseEvidenceProfile(string(profile))
+	if err != nil {
+		return err
+	}
+	if parsed != EvidenceProfileMulticaExecutionV1 {
+		return nil
+	}
+	for _, value := range []string{multicaWorkspaceID, multicaRuntimeID, multicaAgentID} {
+		if !uuidPattern.MatchString(strings.ToLower(strings.TrimSpace(value))) {
+			return fmt.Errorf("AGX-EVIDENCE-SUBJECT-INCOMPLETE")
+		}
+	}
+	return nil
+}
+
 type EvidenceSource string
 
 const (
@@ -471,8 +487,8 @@ func validateObservationEnvelope(observation EvidenceObservation) []Diagnostic {
 }
 
 func validateEvidenceRef(kind EvidenceKind, ref EvidenceRef) string {
-	if ref.ResourceType == "" {
-		return "evidence resource type is required"
+	if ref.ResourceType != resourceTypeForKind(kind) {
+		return "evidence resource type does not match kind"
 	}
 	if ref.IdentitySHA256 != "" && !hex64Pattern.MatchString(ref.IdentitySHA256) {
 		return "invalid hashed evidence identity"
@@ -544,6 +560,37 @@ func knownKind(kind EvidenceKind) bool {
 	return false
 }
 
+func resourceTypeForKind(kind EvidenceKind) EvidenceResourceType {
+	switch kind {
+	case EvidenceGitHubControlRepository, EvidenceGitHubContractsRepository:
+		return ResourceRepository
+	case EvidenceGitHubProject:
+		return ResourceProject
+	case EvidenceGitHubProjectItem:
+		return ResourceProjectItem
+	case EvidenceGitHubContractIssue:
+		return ResourceIssue
+	case EvidenceGitHubAgentFirstWrite, EvidenceGitHubCurrentWork:
+		return ResourceCommit
+	case EvidenceGitHubDeliveryPROpen, EvidenceGitHubDeliveryResult:
+		return ResourcePullRequest
+	case EvidenceGitHubChecksPassed, EvidenceGitHubIndependentVerifier:
+		return ResourceCheck
+	case EvidenceMulticaWorkspace:
+		return ResourceWorkspace
+	case EvidenceMulticaRuntimeOnline:
+		return ResourceRuntime
+	case EvidenceMulticaAgent:
+		return ResourceAgent
+	case EvidenceMulticaTaskCompleted:
+		return ResourceTask
+	case EvidenceMulticaRunCompleted:
+		return ResourceRun
+	default:
+		return ""
+	}
+}
+
 func requiresRevision(kind EvidenceKind) bool {
 	switch kind {
 	case EvidenceGitHubAgentFirstWrite, EvidenceGitHubCurrentWork, EvidenceGitHubDeliveryPROpen,
@@ -606,13 +653,37 @@ func dedupeDiagnostics(values []Diagnostic) []Diagnostic {
 			result = append(result, value)
 		}
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Code != result[j].Code {
+			return result[i].Code < result[j].Code
+		}
+		if result[i].Category != result[j].Category {
+			return result[i].Category < result[j].Category
+		}
+		if result[i].Severity != result[j].Severity {
+			return result[i].Severity < result[j].Severity
+		}
+		return result[i].Message < result[j].Message
+	})
 	return result
 }
 
 func hasPreflightDiagnostic(values []Diagnostic) bool {
 	for _, value := range values {
-		code := string(value.Code)
-		if strings.Contains(code, "SCHEMA") || strings.Contains(code, "EVALUATOR") || strings.Contains(code, "PROFILE") || strings.Contains(code, "INVALID") || strings.Contains(code, "LIMIT") || strings.Contains(code, "INCOMPLETE") {
+		switch value.Code {
+		case "AGX-EVIDENCE-SCHEMA-UNSUPPORTED",
+			"AGX-EVIDENCE-EVALUATOR-UNSUPPORTED",
+			"AGX-EVIDENCE-PROFILE-REQUIRED",
+			"AGX-EVIDENCE-PROFILE-UNSUPPORTED",
+			"AGX-EVIDENCE-INSTALLATION-INVALID",
+			"AGX-EVIDENCE-SUBJECT-INCOMPLETE",
+			"AGX-EVIDENCE-OBSERVATION-LIMIT",
+			"AGX-EVIDENCE-KIND-UNSUPPORTED",
+			"AGX-EVIDENCE-OBSERVATION-INVALID",
+			"AGX-EVIDENCE-SOURCE-MISMATCH",
+			"AGX-EVIDENCE-INSTALLATION-MISMATCH",
+			"AGX-EVIDENCE-DEPLOYMENT-MISMATCH",
+			"AGX-EVIDENCE-SUBJECT-MISMATCH":
 			return true
 		}
 	}

@@ -21,6 +21,19 @@ const (
 
 var evaluatedAt = time.Date(2026, 8, 19, 1, 0, 0, 0, time.UTC)
 
+func TestValidateEvidenceProfileSelectionRequiresStrictMulticaUUIDs(t *testing.T) {
+	if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileGitHubDeliveryV1, "", "", ""); err != nil {
+		t.Fatalf("GitHub profile selection err=%v", err)
+	}
+	valid := "123e4567-e89b-42d3-a456-426614174000"
+	if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileMulticaExecutionV1, valid, valid, valid); err != nil {
+		t.Fatalf("Multica profile selection err=%v", err)
+	}
+	if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileMulticaExecutionV1, valid, "runtime", valid); err == nil || err.Error() != "AGX-EVIDENCE-SUBJECT-INCOMPLETE" {
+		t.Fatalf("invalid Multica selection err=%v", err)
+	}
+}
+
 func TestEvaluateEvidenceGitHubProfileVerifiesCompleteObservationsWithoutMultica(t *testing.T) {
 	input := githubInput()
 	receipt := domain.EvaluateEvidence(input)
@@ -112,6 +125,19 @@ func TestEvaluateEvidenceRejectsWrongBindingsOutcomesAndTime(t *testing.T) {
 	}
 }
 
+func TestEvaluateEvidenceBlocksVerifiedWhenForeignEvidenceIsMixedWithCompleteEvidence(t *testing.T) {
+	input := githubInput()
+	foreign := input.Observations[0]
+	foreign.InstallationID = "install-fedcba9876543210"
+	foreign.Fingerprint = strings.Repeat("f", 64)
+	input.Observations = append(input.Observations, foreign)
+
+	receipt := domain.EvaluateEvidence(input)
+	if receipt.Phase != domain.PhaseBlockedPreflight || !hasDiagnostic(receipt, "AGX-EVIDENCE-INSTALLATION-MISMATCH") {
+		t.Fatalf("EvaluateEvidence() = phase %q, diagnostics %#v, want foreign evidence to block verified", receipt.Phase, receipt.Diagnostics)
+	}
+}
+
 func TestEvaluateEvidenceBlocksUnsupportedOrMalformedEnvelopes(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -126,6 +152,9 @@ func TestEvaluateEvidenceBlocksUnsupportedOrMalformedEnvelopes(t *testing.T) {
 		{"profile required", func(input *domain.EvaluationInput) { input.Profile = "" }, "AGX-EVIDENCE-PROFILE-REQUIRED"},
 		{"profile unsupported", func(input *domain.EvaluationInput) { input.Profile = "github-delivery/v2" }, "AGX-EVIDENCE-PROFILE-UNSUPPORTED"},
 		{"installation format", func(input *domain.EvaluationInput) { input.InstallationID = "install-test" }, "AGX-EVIDENCE-INSTALLATION-INVALID"},
+		{"kind resource mismatch", func(input *domain.EvaluationInput) {
+			input.Observations[0].Ref.ResourceType = domain.ResourceRuntime
+		}, "AGX-EVIDENCE-OBSERVATION-INVALID"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

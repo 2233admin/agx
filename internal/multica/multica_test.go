@@ -223,38 +223,6 @@ func TestOSRunnerErrorOmitsStartedCommandStderr(t *testing.T) {
 	}
 }
 
-func TestReadbackFeedsVerifiedReceipt(t *testing.T) {
-	runner := &fakeRunner{output: []byte(arrayShape)}
-
-	multicaSide, err := RuntimeReadback(context.Background(), "inst-1", "Claude (AU-5090)", runner)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	githubSide := domain.Readback{
-		Source:         domain.ReadbackSourceGitHub,
-		InstallationID: "inst-1",
-		EvidenceID:     "repo-node-id",
-	}
-
-	receipt, err := domain.NewVerifiedReceipt("inst-1", domain.Verification{
-		GitHub:  githubSide,
-		Multica: multicaSide,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if receipt.Phase != domain.PhaseVerified {
-		t.Errorf("phase = %q, want %q", receipt.Phase, domain.PhaseVerified)
-	}
-
-	// Without the Multica half the receipt must not reach `verified`.
-	if _, err := domain.NewVerifiedReceipt("inst-1", domain.Verification{
-		GitHub: githubSide,
-	}); err == nil {
-		t.Error("expected verification to fail without a Multica readback")
-	}
-}
-
 func TestAvailable(t *testing.T) {
 	if !Available(&fakeRunner{}) {
 		t.Error("expected available when LookPath succeeds")

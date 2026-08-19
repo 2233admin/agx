@@ -6,7 +6,7 @@
 
 AGXCLI (`agx`) 让用户得到可解释、可恢复的插件安装与部署仓初始化体验。它安装唯一的 `agent-plugins` 发行源，从版本化模板创建用户拥有的 `agent-control` 与 `agent-contracts` 仓库，输出确定性计划并留下可审计的非敏感回执。
 
-唯一的成功终态是 `verified`：AGX 必须同时回读 GitHub acceptance Issue 与 Multica Task/Runtime 证据，且两侧与安装 ID 一致。组件已复制、资源已配置、Task 正在运行或 mock 已通过，都不是安装成功。
+唯一的成功终态是 `verified`，但必需证据由操作者显式选择的版本化 Evidence Profile 决定。`github-delivery/v1` 只要求完整、绑定一致且新鲜的 GitHub 交付证据；`multica-execution/v1` 在相同 GitHub 基线之外还要求 Workspace、Runtime、Agent 与完成的 Task 或 Run 证据。Multica 因此是可选扩展，不是所有安装的固定前提。组件已复制、资源已配置、单独 Runtime online、单独 Task completed、PR opened、模型评分、Agent 自报完成或 mock 通过都不是安装成功。
 
 ## D1 命令面
 

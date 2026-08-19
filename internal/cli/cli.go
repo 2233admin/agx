@@ -58,8 +58,8 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 	if dependencies.goos == "" {
 		dependencies.goos = runtime.GOOS
 	}
-	if dependencies.status == nil {
-		dependencies.status = activation.Status
+	if dependencies.status == nil && dependencies.statusWithEvidence == nil {
+		dependencies.statusWithEvidence = activation.StatusWithEvidence
 	}
 	if len(args) == 0 || isHelp(args[0]) {
 		if len(args) > 1 {
@@ -120,9 +120,13 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 	if containsOption(args, "--guided") {
 		return runGuidedInit(args, values, stdout, stderr, dependencies)
 	}
-	if err != nil || values["--root"] == "" || values["--github-owner"] == "" || values["--provider"] == "" || values["--evidence-profile"] == "" ||
+	if err != nil || values["--root"] == "" || values["--github-owner"] == "" || values["--provider"] == "" ||
 		(values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
 		printInitUsage(stderr)
+		return exitcode.Usage
+	}
+	if values["--evidence-profile"] == "" {
+		fmt.Fprintln(stderr, "AGX-EVIDENCE-PROFILE-REQUIRED")
 		return exitcode.Usage
 	}
 	profileName := values["--profile"]
@@ -141,6 +145,10 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 	}
 	evidenceProfile, err := domain.ParseEvidenceProfile(values["--evidence-profile"])
 	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Usage
+	}
+	if err := domain.ValidateEvidenceProfileSelection(evidenceProfile, values["--multica-workspace-id"], values["--multica-runtime-id"], values["--multica-agent-id"]); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Usage
 	}

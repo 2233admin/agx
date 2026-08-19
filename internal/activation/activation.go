@@ -25,7 +25,8 @@ import (
 const (
 	receiptSchemaV2    = "agx.initialization/v2"
 	receiptSchemaV3    = "agx.initialization/v3"
-	receiptSchema      = "agx.initialization/v4"
+	receiptSchemaV4    = "agx.initialization/v4"
+	receiptSchema      = receiptSchemaV3
 	initializationFile = "initialization.json"
 	PhaseInitialized   = "initialized"
 	PhaseProvisioning  = "provisioning"
@@ -348,14 +349,17 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 	if options.Visibility == "" {
 		options.Visibility = repository.VisibilityPrivate
 	}
-	if strings.TrimSpace(string(options.EvidenceProfile)) == "" {
-		return preparedDeployment{}, fmt.Errorf("AGX-EVIDENCE-PROFILE-REQUIRED")
+	evidenceProfile := strings.TrimSpace(string(options.EvidenceProfile))
+	if evidenceProfile != "" {
+		profile, err := domain.ParseEvidenceProfile(evidenceProfile)
+		if err != nil {
+			return preparedDeployment{}, err
+		}
+		options.EvidenceProfile = profile
+		if err := domain.ValidateEvidenceProfileSelection(profile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
+			return preparedDeployment{}, err
+		}
 	}
-	profile, err := domain.ParseEvidenceProfile(string(options.EvidenceProfile))
-	if err != nil {
-		return preparedDeployment{}, err
-	}
-	options.EvidenceProfile = profile
 	selected, err := Plugins(options.Profile)
 	if err != nil {
 		return preparedDeployment{}, err
@@ -385,9 +389,15 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 	if err != nil {
 		return preparedDeployment{}, err
 	}
-	deploymentBinding, deploymentDigest, subjectBinding, subjectDigest, err := buildEvidenceBindings(options, installation, repositoryTargets)
-	if err != nil {
-		return preparedDeployment{}, err
+	var deploymentBinding domain.DeploymentBindingV1
+	var deploymentDigest string
+	var subjectBinding domain.SubjectBindingV1
+	var subjectDigest string
+	if evidenceProfile != "" {
+		deploymentBinding, deploymentDigest, subjectBinding, subjectDigest, err = buildEvidenceBindings(options, installation, repositoryTargets)
+		if err != nil {
+			return preparedDeployment{}, err
+		}
 	}
 	existing, present, err := readReceipt(options.Root)
 	if err != nil {
@@ -600,8 +610,14 @@ func initializeDeployment(ctx context.Context, options Options) (Receipt, bool, 
 			ControlRepository: prepared.options.ControlRepository, ContractsRepository: prepared.options.ContractsRepository,
 			Visibility: prepared.options.Visibility, TemplateVersion: bootstrap.TemplateSetVersion,
 			TemplateContentSHA256: bootstrap.TemplateSetContentSHA256, Profile: prepared.options.Profile,
-			EvidenceProfile: prepared.options.EvidenceProfile, DeploymentBinding: &prepared.deploymentBinding,
-			DeploymentDigest: prepared.deploymentDigest, SubjectBinding: &prepared.subjectBinding, SubjectDigest: prepared.subjectDigest,
+		}
+		if prepared.options.EvidenceProfile != "" {
+			receipt.SchemaVersion = receiptSchemaV4
+			receipt.EvidenceProfile = prepared.options.EvidenceProfile
+			receipt.DeploymentBinding = &prepared.deploymentBinding
+			receipt.DeploymentDigest = prepared.deploymentDigest
+			receipt.SubjectBinding = &prepared.subjectBinding
+			receipt.SubjectDigest = prepared.subjectDigest
 		}
 		if err := writeReceipt(prepared.options.Root, receipt); err != nil {
 			return Receipt{}, false, err
@@ -1018,8 +1034,16 @@ func evaluateStatusEvidence(ctx context.Context, receipt Receipt, options Status
 	deploymentDigest := receipt.DeploymentDigest
 	subjectDigest := receipt.SubjectDigest
 	var diagnostics []domain.Diagnostic
-	if receipt.SchemaVersion != receiptSchema {
+	if receipt.SchemaVersion != receiptSchemaV4 {
 		profile = domain.EvidenceProfileID(strings.ToLower(strings.TrimSpace(string(options.EvidenceProfileOverride))))
+		if profile != "" {
+			if err := domain.ValidateEvidenceProfileSelection(profile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: domain.DiagnosticCode(err.Error()), Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "temporary evidence profile selectors are invalid",
+				})
+			}
+		}
 		deploymentDigest = domain.NamespacedIdentitySHA256("agx", "legacy-deployment", strings.Join([]string{
 			receipt.SchemaVersion, receipt.InstallationID, receipt.TemplateVersion, receipt.TemplateContentSHA256,
 			receipt.GitHubOwner, receipt.ControlRepository, receipt.ContractsRepository, string(receipt.Profile),
@@ -1481,7 +1505,7 @@ func readReceipt(root string) (Receipt, bool, error) {
 			return Receipt{}, false, err
 		}
 	}
-	if (receipt.SchemaVersion != receiptSchema && receipt.SchemaVersion != receiptSchemaV3) || receipt.InstallationID == "" ||
+	if (receipt.SchemaVersion != receiptSchemaV3 && receipt.SchemaVersion != receiptSchemaV4) || receipt.InstallationID == "" ||
 		(receipt.Phase != PhaseInitialized && receipt.Phase != PhaseProvisioning && receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseManualCleanup) {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: required fields are missing")
 	}
@@ -1628,8 +1652,9 @@ func validateReceipt(receipt Receipt) error {
 	} else if len(receipt.Repositories) != 0 {
 		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repositories require deployment metadata")
 	}
-	if receipt.SchemaVersion == receiptSchema {
+	if receipt.SchemaVersion == receiptSchemaV4 {
 		if receipt.EvidenceProfile == "" || receipt.DeploymentBinding == nil || receipt.DeploymentDigest == "" || receipt.SubjectBinding == nil || receipt.SubjectDigest == "" ||
+			receipt.DeploymentBinding.InstallationID != domain.InstallationID(receipt.InstallationID) ||
 			receipt.SubjectBinding.Profile != receipt.EvidenceProfile || receipt.SubjectBinding.DeploymentDigest != receipt.DeploymentDigest {
 			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: evidence binding is missing or inconsistent")
 		}

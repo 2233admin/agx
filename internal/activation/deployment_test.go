@@ -1113,10 +1113,108 @@ func TestInitializeRevalidatesPartialProjectBeforeMissingRepositoryCreate(t *tes
 	}
 }
 
+func TestExplicitEvidenceProfilePersistsVersionFourBindings(t *testing.T) {
+	root := makeInstallation(t)
+	path := filepath.Join(root, ".agx", "receipt.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileGitHubDeliveryV1
+
+	receipt, unchanged, err := activation.Initialize(context.Background(), options)
+	if err != nil || unchanged {
+		t.Fatalf("Initialize() receipt=%+v unchanged=%v err=%v", receipt, unchanged, err)
+	}
+	if receipt.SchemaVersion != "agx.initialization/v4" || receipt.EvidenceProfile != domain.EvidenceProfileGitHubDeliveryV1 ||
+		receipt.DeploymentBinding == nil || receipt.DeploymentDigest == "" || receipt.SubjectBinding == nil || receipt.SubjectDigest == "" {
+		t.Fatalf("Initialize() evidence receipt=%+v, want complete v4 bindings", receipt)
+	}
+	persisted, err := os.ReadFile(filepath.Join(root, ".agx", "initialization.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(persisted), `"schema_version": "agx.initialization/v4"`) || strings.Contains(strings.ToLower(string(persisted)), "credential") {
+		t.Fatalf("persisted v4 receipt is incomplete or contains credential material: %s", persisted)
+	}
+}
+
+func TestStatusRejectsVersionFourBindingForDifferentInstallation(t *testing.T) {
+	root := makeInstallation(t)
+	installationPath := filepath.Join(root, ".agx", "receipt.json")
+	data, err := os.ReadFile(installationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(installationPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileGitHubDeliveryV1
+	receipt, _, err := activation.Initialize(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.DeploymentBinding.InstallationID = "install-fedcba9876543210"
+	receipt.DeploymentDigest, err = domain.ComputeDeploymentDigest(*receipt.DeploymentBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.SubjectBinding.DeploymentDigest = receipt.DeploymentDigest
+	receipt.SubjectDigest, err = domain.ComputeSubjectDigest(*receipt.SubjectBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agx", "initialization.json"), persisted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activation.Status(context.Background(), root, providerRunner, repositoryRunner); err == nil || !strings.Contains(err.Error(), "AGX-INIT-RECEIPT-INVALID") {
+		t.Fatalf("Status() err=%v, want installation binding rejection", err)
+	}
+}
+
+func TestLegacyStatusRejectsIncompleteMulticaSelectors(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	if _, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := activation.StatusWithEvidence(context.Background(), root, providerRunner, activation.StatusOptions{
+		EvidenceProfileOverride: domain.EvidenceProfileMulticaExecutionV1,
+	}, repositoryRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, diagnostic := range state.Evidence.Diagnostics {
+		if diagnostic.Code == "AGX-EVIDENCE-SUBJECT-INCOMPLETE" {
+			found = true
+		}
+	}
+	if state.Evidence.Phase != domain.PhaseBlockedPreflight || !found {
+		t.Fatalf("legacy Multica override = phase %q diagnostics %#v", state.Evidence.Phase, state.Evidence.Diagnostics)
+	}
+}
+
 func deploymentOptions(root string, providerRunner provider.Runner, repositoryRunner repository.Runner) activation.Options {
 	return activation.Options{
 		Root: root, GitHubOwner: "octo-lab", Visibility: repository.VisibilityPrivate,
-		Profile: activation.ProfileCore, EvidenceProfile: domain.EvidenceProfileGitHubDeliveryV1,
+		Profile:   activation.ProfileCore,
 		Providers: []provider.Name{provider.Codex}, Runner: providerRunner, RepositoryRunner: repositoryRunner,
 	}
 }
