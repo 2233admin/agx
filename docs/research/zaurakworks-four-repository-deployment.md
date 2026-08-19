@@ -5,6 +5,14 @@ Observed on 2026-08-17 against current AGX head
 This note answers: how should the AGX four-repository model be used and
 deployed, and what initialization UX gaps remain?
 
+**2026-08-19 provenance update:** Plugin Source is now
+`zaurakworks/agent-system` (the renamed and merged former `agent-control`).
+Production input remains the `2233admin` immutable Release
+`agx-bootstrap-20260816.1` / `eb10f7f`. Do not follow Source git `main`.
+Historical permalinks below that still name `zaurakworks/agent-control` should
+be read as the Source snapshot now served from
+`zaurakworks/agent-system@b0e6e0e8244ef518f671e2326745cd67c6d2307a`.
+
 ## Scope and Evidence Classes
 
 - **Fact** means the statement is directly supported by linked source,
@@ -50,7 +58,7 @@ Official GitHub CLI sources used for precondition claims:
 | --- | --- | --- | --- |
 | `2233admin/agx` | **Fact:** installer/lifecycle CLI repository. | Builds the `agx` binary, owns `apply`, `init`, `status`, `uninstall`, receipts, embedded production Bundle, and clean templates. | AGX README and CLI source at `f78e59b`: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/README.md>, <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/cli/cli.go>. |
 | `zaurakworks/agent-plugins` | **Fact:** installable Plugin source. | AGX installs this single source through a pinned production artifact; provider activation points Codex/Claude Marketplace at the installed copy. AGX does not create a deployment-owned `agent-plugins` repository. | Upstream README and manifests: <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/README.md>, <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.agents/plugins/marketplace.json>, <https://github.com/zaurakworks/agent-plugins/blob/ad07742ade0f0039ed1df1a9262e8f087117fca0/.claude-plugin/marketplace.json>. AGX Bundle source: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
-| `<owner>/agent-control` | **Fact:** deployment-generated repository, not an installed component. | `agx init --apply` creates this user-owned control-state repository from AGX's `agent-control/v1` clean template. It holds deployment control state and work entry rules. | Upstream reference README: <https://github.com/zaurakworks/agent-control/blob/b0e6e0e8244ef518f671e2326745cd67c6d2307a/README.md>. AGX template README: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bootstrap/templates/agent-control/v1/README.md>. |
+| `<owner>/agent-control` | **Fact:** deployment-generated repository, not an installed component. | `agx init --apply` creates this user-owned control-state repository from AGX's `agent-control/v1` clean template. It holds deployment control state and work entry rules. | Upstream reference README after rename: <https://github.com/zaurakworks/agent-system/blob/b0e6e0e8244ef518f671e2326745cd67c6d2307a/README.md>. AGX template README: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bootstrap/templates/agent-control/v1/README.md>. |
 | `<owner>/agent-contracts` | **Fact:** deployment-generated repository, not an installed component. | `agx init --apply` creates this user-owned contract repository from AGX's `agent-contracts/v1` clean template. It holds Issue contract forms, schema, examples, and validation tools. | Upstream reference README: <https://github.com/zaurakworks/agent-contracts/blob/5bb8ea0b54f063b0758c294b73ea270ba69322d2/README.md>. AGX template README: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bootstrap/templates/agent-contracts/v1/README.md>. |
 
 **Fact:** the public `zaurakworks` repository listing available to this review
@@ -69,7 +77,7 @@ contract and embedded production manifest.
 | Input | Commit | Source |
 | --- | --- | --- |
 | `zaurakworks/agent-plugins` | `ad07742ade0f0039ed1df1a9262e8f087117fca0` | Commit permalink: <https://github.com/zaurakworks/agent-plugins/commit/ad07742ade0f0039ed1df1a9262e8f087117fca0>. AGX manifest: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
-| `zaurakworks/agent-control` | `b0e6e0e8244ef518f671e2326745cd67c6d2307a` | Commit permalink: <https://github.com/zaurakworks/agent-control/commit/b0e6e0e8244ef518f671e2326745cd67c6d2307a>. AGX manifest: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
+| `zaurakworks/agent-system` | `b0e6e0e8244ef518f671e2326745cd67c6d2307a` | Commit permalink after rename: <https://github.com/zaurakworks/agent-system/commit/b0e6e0e8244ef518f671e2326745cd67c6d2307a>. AGX manifest: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
 | `zaurakworks/agent-contracts` | `5bb8ea0b54f063b0758c294b73ea270ba69322d2` | Commit permalink: <https://github.com/zaurakworks/agent-contracts/commit/5bb8ea0b54f063b0758c294b73ea270ba69322d2>. AGX manifest: <https://github.com/2233admin/agx/blob/f78e59b05f0d16b17eb3877aa47130490e8d7df0/internal/bundle/production-v2.json>. |
 
 **Fact:** the embedded production manifest points to the production

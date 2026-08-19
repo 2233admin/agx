@@ -1,18 +1,18 @@
 # AGX Bundle v2 单一 Plugin 源契约
 
-状态：`IMPLEMENTED_PENDING_MERGE`。`2233admin` 是 Bundle/provenance decision owner。Bundle v2 只安装一个 Plugin 源；`agent-control`、`agent-contracts` 是初始化阶段从版本化模板创建的部署仓库，不是预先存在的 Release 组件。
+状态：`IMPLEMENTED_PENDING_MERGE`。`2233admin` 是 Bundle/provenance decision owner。Bundle v2 只安装一个 Plugin 源；`agent-control`、`agent-contracts` 是初始化阶段从版本化模板创建的部署仓库，不是预先存在的 Release 组件。Plugin Source 是 `zaurakworks/agent-system`；生产输入是 `2233admin` 的 immutable Release。AGX 不跟随 Source git `main`。
 
 ## 生产输入
 
 生产 Bundle 必须通过 [`agx-bundle.schema.json`](agx-bundle.schema.json) 验证，并固定唯一的 `sources.agent_plugins`：
 
-- 上游身份固定为 `zaurakworks/agent-plugins`；
+- 当前生产 Release 的历史上游身份固定为 `zaurakworks/agent-plugins`；
 - 分发身份固定为 `2233admin/agent-plugins`；
 - GitHub Release tag、40 位 commit SHA、资产名与分发仓库的 Release HTTPS URL；
 - asset SHA-256 与 gzip 解压后的 tar 字节流 content SHA-256；
 - AGX 兼容范围。
 
-生产下载继续使用 `2233admin/agent-plugins` 的 immutable prerelease `agx-bootstrap-20260816.1`：commit `eb10f7f14cc05b70b6c27a121c6f72d1b3b9edb8`、asset `agent-plugins-agx-bootstrap-20260816.1.tar.gz`、asset SHA-256 `ba8142548d7b055b4f6faba4587b12a9c6411815431042607436676437ae2de1`、content SHA-256 `d4f53c2d2d45f7efcb2884d8232248434bae44f071369cc938aface47e120002`。
+生产下载继续使用 `2233admin/agent-plugins` 的 immutable prerelease `agx-bootstrap-20260816.1`：commit `eb10f7f14cc05b70b6c27a121c6f72d1b3b9edb8`、asset `agent-plugins-agx-bootstrap-20260816.1.tar.gz`、asset SHA-256 `ba8142548d7b055b4f6faba4587b12a9c6411815431042607436676437ae2de1`、content SHA-256 `d4f53c2d2d45f7efcb2884d8232248434bae44f071369cc938aface47e120002`。在带 digest 的新 Distribution Release 出现前，不得把未打 tag 的 `agent-system` main SHA 或已改名的 `zaurakworks/agent-control` 写成生产 pin。
 
 生产模式只接受 `github_release` provenance，且 URL 必须精确落在固定分发仓库、Release tag 与 asset 名组合出的路径。生产拒绝 sibling checkout、可变 branch/tag、本地路径、旧 `artifacts` 双组件结构和任何 `agent_control` source。Multica 不属于 Bundle v2 compatibility；出现 `multica_cli` 会按未知字段拒绝。
 
@@ -21,10 +21,10 @@
 `templates` 记录初始化模板集的版本、确定性内容 SHA-256，以及提炼模板时只读参考的三个仓库和精确 head：
 
 - `zaurakworks/agent-plugins` @ `ad07742ade0f0039ed1df1a9262e8f087117fca0`；
-- `zaurakworks/agent-control` @ `b0e6e0e8244ef518f671e2326745cd67c6d2307a`；
+- `zaurakworks/agent-system` @ `b0e6e0e8244ef518f671e2326745cd67c6d2307a`（改名后仍可寻址的历史蒸馏快照，不是 untagged main）；
 - `zaurakworks/agent-contracts` @ `5bb8ea0b54f063b0758c294b73ea270ba69322d2`。
 
-这些 reference 只解释模板来源与取舍，不把 `agent-control` 或 `agent-contracts` 变成安装组件。模板集版本是 `bootstrap-20260817.1`，未渲染 embedded source manifest 的固定 SHA-256 是 `0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca`；部署参数产生的 rendered tree digest 由初始化回执另行记录。
+这些 reference 只解释模板来源与取舍，不把部署仓 `agent-control` / `agent-contracts` 或 Source 整树变成安装组件。模板集版本是 `bootstrap-20260819.1`，未渲染 embedded source manifest 的固定 SHA-256 是 `6e5eee0139001ed29fdf7c3689881fd5af544d86e1a99ed67e88274921555d65`；部署参数产生的 rendered tree digest 由初始化回执另行记录。
 
 ## 安装回执
 

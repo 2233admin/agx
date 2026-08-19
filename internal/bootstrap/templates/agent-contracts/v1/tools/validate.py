@@ -402,6 +402,25 @@ def check_project_surface(errors: list[str]) -> None:
         if claude_entry != "@AGENTS.md\n":
             errors.append("CLAUDE.md: must contain only the canonical @AGENTS.md import")
 
+    try:
+        agents_text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"AGENTS.md: cannot read: {exc}")
+    else:
+        if "Evidence Profile" not in agents_text:
+            errors.append("AGENTS.md: missing Evidence Profile language")
+
+    try:
+        contract_tool = (ROOT / "tools" / "contract.py").read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"tools/contract.py: cannot read: {exc}")
+    else:
+        dead_control = "zaurakworks/" + "agent-control"
+        if 'REPOSITORY = "zaurakworks/agent-system"' in contract_tool or f'REPOSITORY = "{dead_control}"' in contract_tool:
+            errors.append("tools/contract.py: must parameterize the deployment owner/repo")
+        if dead_control in contract_tool:
+            errors.append("tools/contract.py: must not cite the renamed agent-control repository")
+
     required_files = (
         "AGENTS.md",
         "README.md",

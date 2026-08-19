@@ -103,6 +103,20 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return function(request)
 }
 
+func templateMetadataJSON() string {
+	return fmt.Sprintf(
+		`"templates":{"version":%q,"content_sha256":%q,"references":{"agent_plugins":{"repository":%q,"commit_sha":%q},"agent_control":{"repository":%q,"commit_sha":%q},"agent_contracts":{"repository":%q,"commit_sha":%q}}}`,
+		bootstrap.TemplateSetVersion,
+		bootstrap.TemplateSetContentSHA256,
+		bootstrap.AgentPluginsReferenceRepository,
+		bootstrap.AgentPluginsReferenceCommit,
+		bootstrap.AgentControlReferenceRepository,
+		bootstrap.AgentControlReferenceCommit,
+		bootstrap.AgentContractsReferenceRepository,
+		bootstrap.AgentContractsReferenceCommit,
+	)
+}
+
 func developmentBundle(t *testing.T, downloadURL string, archive []byte) []byte {
 	t.Helper()
 	document := fmt.Sprintf(`{
@@ -110,13 +124,12 @@ func developmentBundle(t *testing.T, downloadURL string, archive []byte) []byte 
   "provenance":"synthetic_test_only","development_override":true,
   "compatibility":{"agx":"test"},
   "sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"test","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"plugins.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q}},
-  "templates":{"version":%q,"content_sha256":%q,"references":{"agent_plugins":{"repository":"zaurakworks/agent-plugins","commit_sha":"ad07742ade0f0039ed1df1a9262e8f087117fca0"},"agent_control":{"repository":"zaurakworks/agent-control","commit_sha":"b0e6e0e8244ef518f671e2326745cd67c6d2307a"},"agent_contracts":{"repository":"zaurakworks/agent-contracts","commit_sha":"5bb8ea0b54f063b0758c294b73ea270ba69322d2"}}}
+  %s
 }`,
 		downloadURL,
 		sha256Hex(archive),
 		uncompressedSHA256(t, archive),
-		bootstrap.TemplateSetVersion,
-		bootstrap.TemplateSetContentSHA256,
+		templateMetadataJSON(),
 	)
 	return []byte(document)
 }
@@ -141,8 +154,8 @@ func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 	  "provenance":"synthetic_test_only","development_override":true,
 	  "compatibility":{"agx":"test"},
 	  "sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"test","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"plugins.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q}},
-	  "templates":{"version":"bootstrap-20260817.1","content_sha256":"0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca","references":{"agent_plugins":{"repository":"zaurakworks/agent-plugins","commit_sha":"ad07742ade0f0039ed1df1a9262e8f087117fca0"},"agent_control":{"repository":"zaurakworks/agent-control","commit_sha":"b0e6e0e8244ef518f671e2326745cd67c6d2307a"},"agent_contracts":{"repository":"zaurakworks/agent-contracts","commit_sha":"5bb8ea0b54f063b0758c294b73ea270ba69322d2"}}}
-}`, server.URL+"/plugins", digestHex, contentDigestHex)
+	  %s
+}`, server.URL+"/plugins", digestHex, contentDigestHex, templateMetadataJSON())
 	if err := os.WriteFile(bundlePath, []byte(bundleJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +167,7 @@ func TestApplyStatusRepeatDriftAndSafeUninstall(t *testing.T) {
 	if receipt.SchemaVersion != "agx.receipt/v2" || len(receipt.Components) != 1 || receipt.Components[0].Name != "agent-plugins" {
 		t.Fatalf("single-source receipt = %+v", receipt)
 	}
-	if receipt.TemplateVersion != "bootstrap-20260817.1" || receipt.TemplateContentSHA256 != "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca" {
+	if receipt.TemplateVersion != bootstrap.TemplateSetVersion || receipt.TemplateContentSHA256 != bootstrap.TemplateSetContentSHA256 {
 		t.Fatalf("template receipt metadata = %+v", receipt)
 	}
 	if receipt.OwnedFileSHA256["components/agent-plugins/README.md"] != sha256Hex([]byte("hello\n")) {
@@ -237,7 +250,7 @@ func applyTestArchiveWithContentDigest(t *testing.T, archive []byte, contentDige
 	defer server.Close()
 	temporary := t.TempDir()
 	bundlePath := filepath.Join(temporary, "bundle.json")
-	document := fmt.Sprintf(`{"schema_version":"agx.bundle/v2","bundle_id":"bad-bundle","mode":"development","provenance":"synthetic_test_only","development_override":true,"compatibility":{"agx":"x"},"sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"x","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"b.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q}},"templates":{"version":"bootstrap-20260817.1","content_sha256":"0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca","references":{"agent_plugins":{"repository":"zaurakworks/agent-plugins","commit_sha":"ad07742ade0f0039ed1df1a9262e8f087117fca0"},"agent_control":{"repository":"zaurakworks/agent-control","commit_sha":"b0e6e0e8244ef518f671e2326745cd67c6d2307a"},"agent_contracts":{"repository":"zaurakworks/agent-contracts","commit_sha":"5bb8ea0b54f063b0758c294b73ea270ba69322d2"}}}}`, server.URL, digestHex, contentDigest)
+	document := fmt.Sprintf(`{"schema_version":"agx.bundle/v2","bundle_id":"bad-bundle","mode":"development","provenance":"synthetic_test_only","development_override":true,"compatibility":{"agx":"x"},"sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"x","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"b.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q}},%s}`, server.URL, digestHex, contentDigest, templateMetadataJSON())
 	if err := os.WriteFile(bundlePath, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}

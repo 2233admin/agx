@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        创建后，必须把本议题注册为父目标的 GitHub 子议题；仅有文本链接并不充分。执行必须绑定本议题精确的合同 ID 与修订版本。GitHub 议题始终是本次合同的事实源；本地执行包和拉取请求不代表验收。
+        创建后，必须把本议题注册为父目标的 GitHub 子议题；仅有文本链接并不充分。执行必须绑定本议题精确的合同 ID 与修订版本。GitHub 议题始终是本次合同的事实源；本地执行包和拉取请求不代表验收，也不等于 AGX Installation `verified`。Verification 只由选定 Evidence Profile 的外部回读构成。
   - type: input
     id: contractId
     attributes:

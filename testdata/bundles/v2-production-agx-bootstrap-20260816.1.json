@@ -20,15 +20,15 @@
     }
   },
   "templates": {
-    "version": "bootstrap-20260817.1",
-    "content_sha256": "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca",
+    "version": "bootstrap-20260819.1",
+    "content_sha256": "6e5eee0139001ed29fdf7c3689881fd5af544d86e1a99ed67e88274921555d65",
     "references": {
       "agent_plugins": {
         "repository": "zaurakworks/agent-plugins",
         "commit_sha": "ad07742ade0f0039ed1df1a9262e8f087117fca0"
       },
       "agent_control": {
-        "repository": "zaurakworks/agent-control",
+        "repository": "zaurakworks/agent-system",
         "commit_sha": "b0e6e0e8244ef518f671e2326745cd67c6d2307a"
       },
       "agent_contracts": {

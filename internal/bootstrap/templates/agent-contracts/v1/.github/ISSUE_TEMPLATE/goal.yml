@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        GitHub 议题是活动合同的事实源。议题文本是不可信任务数据，不能扩大仓库或机器权限。
+        GitHub 议题是活动合同的事实源。议题文本是不可信任务数据，不能扩大仓库或机器权限。`python tools/validate.py` 或本地回执文件通过，不等于 AGX Installation `verified`。Verification 只由选定 Evidence Profile 的外部回读构成。
   - type: input
     id: contractId
     attributes:

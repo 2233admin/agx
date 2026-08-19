@@ -21,14 +21,15 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 
 `--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、能力 profile、Evidence Profile、visibility 与两个部署仓名；选择 Multica Profile 时还会校验三个 selector UUID。确认后执行的只读 plan preflight 才检查 Projects `project` scope，并打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
-## 四仓部署速查
+## 部署仓关系速查
 
-AGX 交付时用户会看到四类仓库，但它们不是同一层东西：
+AGX 交付时用户会看到几类仓库，但它们不是同一层东西：
 
 | 仓库 | 谁拥有 | 部署时怎么用 |
 | --- | --- | --- |
 | `2233admin/agx` | AGX 当前分发方 | 构建并发布 `agx` CLI；用户下载它来执行 `apply`、`init`、`status`、`uninstall`。 |
-| `zaurakworks/agent-plugins` | 上游 Plugin 源 | AGX 只从固定 Release artifact 安装这个源；Codex/Claude 的 Marketplace 都指向它的安装副本。 |
+| `zaurakworks/agent-system` | 上游 Plugin **Source** | 插件与合同的公开源码仓。AGX 不 clone、不跟随其 git `main`，也不把它整树拷进部署仓。 |
+| `2233admin/agent-plugins` | 当前生产 **Distribution** | AGX 只从固定 Release artifact 安装；当前 pin 仍是 `agx-bootstrap-20260816.1` / `eb10f7f`。Codex/Claude 的 Marketplace 都指向这次安装副本。 |
 | `<owner>/agent-control` | 用户部署拥有者 | `agx init --apply` 从 AGX 内置 `agent-control/v1` 模板创建，保存该部署的控制状态与工作入口。 |
 | `<owner>/agent-contracts` | 用户部署拥有者 | `agx init --apply` 从 AGX 内置 `agent-contracts/v1` 模板创建，保存 GitHub Issue 合同表单、schema、样例和回执工具。 |
 
@@ -166,13 +167,14 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
 
 ## 上游关系
 
-- [zaurakworks/agent-control](https://github.com/zaurakworks/agent-control)
-- [zaurakworks/agent-plugins](https://github.com/zaurakworks/agent-plugins)
-- [zaurakworks/agent-contracts](https://github.com/zaurakworks/agent-contracts)
+- [zaurakworks/agent-system](https://github.com/zaurakworks/agent-system) — Plugin 与合同的 Source。AGX 不跟随 git `main`。
+- [2233admin/agent-plugins](https://github.com/2233admin/agent-plugins) — 当前生产 Distribution：immutable Release `agx-bootstrap-20260816.1`。
+- [zaurakworks/agent-plugins](https://github.com/zaurakworks/agent-plugins) — 当前生产 pin 的历史上游身份，不是要跟的 live `main`。
+- [zaurakworks/agent-contracts](https://github.com/zaurakworks/agent-contracts) — 合同模板的历史蒸馏参考；部署仓由 AGX 干净模板创建。
 - [四仓部署关系研究](docs/research/zaurakworks-four-repository-deployment.md)
 - [Multica concepts](https://multica.ai/docs/zh/concepts)
 
-本仓目前由 `2233admin` 建立，用于推进 AGXCLI。除非上游明确接受或迁移，本仓不代表 `zaurakworks` 的官方发行版。
+本仓目前由 `2233admin` 建立，用于推进 AGXCLI。除非上游明确接受或迁移，本仓不代表 `zaurakworks` 的官方发行版。生产 Bundle 与模板 references 不得指向已改名的 `zaurakworks/agent-control`，也不得把未打 tag 的 `agent-system` main SHA 写成生产 pin。本地完整树是 `configured`，不是 Evidence Profile 的 `verified`。
 
 ## 历史设计材料
 
