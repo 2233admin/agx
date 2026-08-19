@@ -49,13 +49,16 @@ type Contract struct {
 }
 
 type Evidence struct {
-	Status           string   `json:"status"`
-	IssueURL         string   `json:"issue_url,omitempty"`
-	ProjectItem      string   `json:"project_item,omitempty"`
-	PullRequestURL   string   `json:"pull_request_url,omitempty"`
-	WorkPointer      string   `json:"work_pointer,omitempty"`
-	ValidationResult string   `json:"validation_result,omitempty"`
-	Problems         []string `json:"problems,omitempty"`
+	Status            string   `json:"status"`
+	IssueURL          string   `json:"issue_url,omitempty"`
+	IssueNumber       int      `json:"issue_number,omitempty"`
+	ProjectItem       string   `json:"project_item,omitempty"`
+	PullRequestURL    string   `json:"pull_request_url,omitempty"`
+	PullRequestNumber int      `json:"pull_request_number,omitempty"`
+	Revision          string   `json:"revision,omitempty"`
+	WorkPointer       string   `json:"work_pointer,omitempty"`
+	ValidationResult  string   `json:"validation_result,omitempty"`
+	Problems          []string `json:"problems,omitempty"`
 }
 
 type Runner interface {
@@ -105,9 +108,10 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-ISSUE: cannot inspect Bootstrap Verification Issue: %w", err)
 	}
 	var issues []struct {
-		URL   string `json:"url"`
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
 	}
 	if err := decodeJSON(issueOutput, &issues); err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-ISSUE: invalid Issue inventory: %w", err)
@@ -115,10 +119,11 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	for _, issue := range issues {
 		owner, repositoryName, validURL := issueCoordinates(issue.URL)
 		if issue.Title != contract.IssueTitle || !strings.Contains(issue.Body, marker) || !validURL ||
-			!strings.EqualFold(owner+"/"+repositoryName, slug) {
+			!strings.EqualFold(owner+"/"+repositoryName, slug) || issue.Number <= 0 {
 			continue
 		}
 		evidence.IssueURL = issue.URL
+		evidence.IssueNumber = issue.Number
 		break
 	}
 	if evidence.IssueURL == "" {
@@ -143,15 +148,17 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		}
 	}
 
-	prOutput, err := runner.Run(ctx, "", "gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.PullRequestTitle+" in:title", "--json", "number,url,title,body,headRefName,state,mergedAt,files,statusCheckRollup")
+	prOutput, err := runner.Run(ctx, "", "gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.PullRequestTitle+" in:title", "--json", "number,url,title,body,headRefName,headRefOid,state,mergedAt,files,statusCheckRollup")
 	if err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-PR: cannot inspect Bootstrap Verification PR: %w", err)
 	}
 	var pullRequests []struct {
+		Number      int     `json:"number"`
 		URL         string  `json:"url"`
 		Title       string  `json:"title"`
 		Body        string  `json:"body"`
 		HeadRefName string  `json:"headRefName"`
+		HeadRefOid  string  `json:"headRefOid"`
 		State       string  `json:"state"`
 		MergedAt    *string `json:"mergedAt"`
 		Files       []struct {
@@ -172,10 +179,13 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		owner, repositoryName, validURL := pullRequestCoordinates(pullRequest.URL)
 		if pullRequest.Title != contract.PullRequestTitle || !strings.Contains(pullRequest.Body, marker) || !validURL ||
 			!strings.EqualFold(owner+"/"+repositoryName, slug) || pullRequest.HeadRefName != contract.Branch ||
-			!strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.MergedAt != nil {
+			!strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.MergedAt != nil ||
+			pullRequest.Number <= 0 || !validSHA1(pullRequest.HeadRefOid) {
 			continue
 		}
 		evidence.PullRequestURL = pullRequest.URL
+		evidence.PullRequestNumber = pullRequest.Number
+		evidence.Revision = pullRequest.HeadRefOid
 		bodyHasValidation := strings.Contains(pullRequest.Body, "Validation-Command: "+contract.ValidationCommand) &&
 			strings.Contains(pullRequest.Body, "Validation-Result: passed")
 		changedWorkPointer := false
@@ -281,6 +291,14 @@ func validateContract(contract Contract) (string, error) {
 
 func validSHA256(value string) bool {
 	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validSHA1(value string) bool {
+	if len(value) != 40 || strings.ToLower(value) != value {
 		return false
 	}
 	_, err := hex.DecodeString(value)

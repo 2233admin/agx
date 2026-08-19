@@ -581,6 +581,31 @@ func TestStatusAndDiagnoseRejectInvalidEvidenceSelectorsBeforeReadback(t *testin
 	}
 }
 
+func TestStatusAndDiagnoseInjectTheDefaultGitHubEvidenceCollector(t *testing.T) {
+	root := makeGuidedInstallation(t)
+	for _, command := range []string{"status", "diagnose"} {
+		t.Run(command, func(t *testing.T) {
+			var captured activation.StatusOptions
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			code := runWithDependencies([]string{command, "--root", root}, "0.0.0-test", stdout, stderr, runtimeDependencies{
+				statusWithEvidence: func(_ context.Context, _ string, _ provider.Runner, options activation.StatusOptions, _ ...repository.Runner) (activation.State, error) {
+					captured = options
+					return activation.State{}, nil
+				},
+			})
+			if code != exitcode.Success {
+				t.Fatalf("%s code=%d stderr=%q", command, code, stderr.String())
+			}
+			if len(captured.Collectors) != 1 {
+				t.Fatalf("%s Collectors = %+v, want exactly the default GitHub collector", command, captured.Collectors)
+			}
+			if captured.Collectors[0].Source() != domain.EvidenceSourceGitHub {
+				t.Fatalf("%s default collector source = %q, want github", command, captured.Collectors[0].Source())
+			}
+		})
+	}
+}
+
 func TestPrintStatusNextReportsEvidenceAndDeploymentActions(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	printStatusNext(stdout, `D:\agx`, "configured", nil, nil, activation.State{

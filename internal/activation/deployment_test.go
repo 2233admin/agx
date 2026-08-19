@@ -54,6 +54,7 @@ type deploymentRepositoryRunner struct {
 	failProjectLink     bool
 	landLinkOnFailure   bool
 	smokeComplete       bool
+	failIssueList       bool
 }
 
 func newDeploymentRepositoryRunner() *deploymentRepositoryRunner {
@@ -226,6 +227,9 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 		return json.Marshal(map[string]any{"hasIssuesEnabled": true, "projectsV2": map[string]any{"Nodes": nodes}})
 	}
 	if name == "gh" && len(args) >= 2 && args[0] == "issue" && args[1] == "list" {
+		if runner.failIssueList {
+			return nil, errors.New("simulated issue list failure")
+		}
 		if !runner.smokeComplete {
 			return []byte(`[]`), nil
 		}
@@ -244,6 +248,7 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 			"title":       "Bootstrap Verification [" + testInstallationID + "]",
 			"body":        "AGX-Installation: " + testInstallationID + "\nValidation-Command: python tools/validate.py\nValidation-Result: passed",
 			"headRefName": "agx/bootstrap-verification-" + testInstallationID,
+			"headRefOid":  strings.Repeat("a", 40),
 			"state":       "OPEN", "mergedAt": nil, "files": []map[string]any{{"path": "work/current.md"}},
 			"statusCheckRollup": []map[string]any{{
 				"name": "validate", "workflowName": "Validate control baseline",

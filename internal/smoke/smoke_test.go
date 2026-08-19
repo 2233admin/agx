@@ -97,6 +97,7 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			"title":       "Bootstrap Verification [install-test]",
 			"body":        marker + "\nValidation-Command: python tools/validate.py\nValidation-Result: passed",
 			"headRefName": "agx/bootstrap-verification-install-test",
+			"headRefOid":  strings.Repeat("a", 40),
 			"state":       state, "mergedAt": mergedAt, "files": files,
 			"statusCheckRollup": []map[string]any{{
 				"__typename": "CheckRun", "name": checkName, "workflowName": workflowName,
