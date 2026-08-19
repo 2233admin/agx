@@ -1,10 +1,10 @@
 //go:build windows
 
-package activation
+package metadatafile
 
 import "syscall"
 
-func metadataPathIsReparsePoint(path string) (bool, error) {
+func pathIsReparsePoint(path string) (bool, error) {
 	pointer, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return false, err
