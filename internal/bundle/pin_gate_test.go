@@ -11,7 +11,7 @@ import (
 func TestProductionPinReferenceGateRejectsDeadControlAndUntaggedMain(t *testing.T) {
 	document := decodeFixture(t, "production-valid.json")
 	artifact := document.Sources.AgentPlugins
-	if artifact.ReleaseTag != "agx-bootstrap-20260816.1" || artifact.CommitSHA != "eb10f7f14cc05b70b6c27a121c6f72d1b3b9edb8" {
+	if artifact.ReleaseTag != "agx-plugins-20260819.1" || artifact.CommitSHA != "ef07a9fd530ebac1b85eb5b9511ebd6742d743ee" {
 		t.Fatalf("production plugin pin changed: %#v", artifact)
 	}
 	if document.Templates.References.AgentControl.Repository == "zaurakworks/agent-control" {

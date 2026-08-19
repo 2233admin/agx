@@ -8,7 +8,7 @@
 - Go module 为 `github.com/2233admin/agx`，发行二进制名为 `agx`。
 - `2233admin` 目前负责推进本仓；此事实不把本仓表示为 `zaurakworks` 的官方发行版。
 - Plugin **Source** 是 [`zaurakworks/agent-system`](https://github.com/zaurakworks/agent-system)（原 `agent-control` 已改名并合仓）。AGX 不安装、不 clone、也不跟随该仓的 git `main`。
-- 当前生产 **Distribution** 输入仍是 [`2233admin/agent-plugins`](https://github.com/2233admin/agent-plugins) 的不可变 Release `agx-bootstrap-20260816.1`（commit `eb10f7f14cc05b70b6c27a121c6f72d1b3b9edb8`）。在带 digest 的新 Release 出现前不得把未打 tag 的 `agent-system` main SHA 写成生产 pin。
+- 当前生产 **Distribution** 输入仍是 [`2233admin/agent-plugins`](https://github.com/2233admin/agent-plugins) 的不可变 Release `agx-plugins-20260819.1`（commit `ef07a9fd530ebac1b85eb5b9511ebd6742d743ee`）。在带 digest 的新 Release 出现前不得把未打 tag 的 `agent-system` main SHA 写成生产 pin。
 - `2233admin/agent-control` 只是改名前残留，不是 Source fork 名，也不是模板源。
 - 每次部署创建由用户账户拥有的 `agent-control` 与 `agent-contracts` 目标仓库；默认私有，名称和 owner 必须显式进入初始化计划与回执。这些部署仓来自 AGX 干净模板，不是 Source 整树的副本。
 
