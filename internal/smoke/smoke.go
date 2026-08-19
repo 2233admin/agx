@@ -205,6 +205,13 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		checksPassed := len(pullRequest.Checks) > 0
 		validationCheckPassed := false
 		for _, check := range pullRequest.Checks {
+			// GitHub's statusCheckRollup also contains StatusContext entries
+			// (for example CodeRabbit and GitGuardian) without CheckRun status
+			// or conclusion fields. They are not validation checks and must not
+			// make an otherwise successful required CheckRun fail.
+			if check.Status == "" && check.Conclusion == "" {
+				continue
+			}
 			if !strings.EqualFold(check.Status, "COMPLETED") || !strings.EqualFold(check.Conclusion, "SUCCESS") {
 				checksPassed = false
 				continue
@@ -412,7 +419,7 @@ func validNodeID(value string) bool {
 func verifyProjectInventory(ctx context.Context, contract Contract, owner string, number int, runner Runner) error {
 	limit := 100
 	for attempts := 0; attempts < 8; attempts++ {
-		output, err := runner.Run(ctx, "", "gh", "project", "list", "--owner", owner, "--limit", strconv.Itoa(limit), "--format", "json")
+		output, err := runner.Run(ctx, "", "gh", "project", "list", "--owner", owner, "--closed", "--limit", strconv.Itoa(limit), "--format", "json")
 		if err != nil {
 			return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: cannot inspect owner Project inventory: %w", err)
 		}

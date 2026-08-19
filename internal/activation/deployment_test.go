@@ -1075,7 +1075,7 @@ func TestStatusReturnsInconclusiveWhenReadbackContextExpires(t *testing.T) {
 		return name == "codex" && argumentsEqual(args, []string{"plugin", "marketplace", "list", "--json"})
 	}
 	smokeReadback := func(name string, args []string) bool {
-		return name == "gh" && argumentsEqual(args, []string{"project", "list", "--owner", "octo-lab", "--limit", "100", "--format", "json"})
+		return name == "gh" && argumentsEqual(args, []string{"project", "list", "--owner", "octo-lab", "--closed", "--limit", "100", "--format", "json"})
 	}
 
 	tests := []struct {
