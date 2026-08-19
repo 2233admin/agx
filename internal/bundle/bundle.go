@@ -162,6 +162,9 @@ func (document Document) validate() error {
 		return validationError("unsupported mode %q", document.Mode)
 	}
 
+	if err := validatePinReferences(document); err != nil {
+		return err
+	}
 	if err := validateArtifact(document.Sources.AgentPlugins, document.Mode); err != nil {
 		return err
 	}

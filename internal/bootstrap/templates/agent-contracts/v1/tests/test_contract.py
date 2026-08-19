@@ -117,6 +117,14 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(contract.ContractError, "native GitHub parent"):
             self.capture()
 
+    def test_hardcoded_source_issue_url_is_rejected(self) -> None:
+        for source in ("agent-system", "agent" + "-control"):
+            url = f"https://github.com/zaurakworks/{source}/issues/1"
+            with self.assertRaisesRegex(
+                contract.ContractError, f"only {contract.REPOSITORY} is allowed"
+            ):
+                contract.issue_number(url)
+
     def test_malformed_issue_form_is_rejected(self) -> None:
         self.runner.execution["body"] = self.runner.execution["body"].replace(
             "### 停止条件", "### 意外段落", 1

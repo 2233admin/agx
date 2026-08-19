@@ -14,3 +14,4 @@ Split work only when ownership boundaries and integration order are explicit.
 
 Use independent review for security-sensitive ownership, credential, deletion,
 or remote-mutation behavior. Never describe a local check as external proof.
+A passing `python tools/validate.py` run is not Evidence Profile Verification.

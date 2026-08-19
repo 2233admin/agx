@@ -26,17 +26,21 @@ const (
 	KindAgentContracts Kind = "agent-contracts"
 
 	// TemplateSetVersion identifies the immutable pair of repository templates.
-	TemplateSetVersion = "bootstrap-20260817.1"
+	TemplateSetVersion = "bootstrap-20260819.1"
 	// TemplateSetContentSHA256 is the canonical digest of the embedded,
 	// unrendered template files, including their deployment placeholders.
-	TemplateSetContentSHA256 = "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca"
+	TemplateSetContentSHA256 = "6e5eee0139001ed29fdf7c3689881fd5af544d86e1a99ed67e88274921555d65"
 	// AgentControlValidationWorkflowSHA256 binds first-use validation evidence
 	// to the exact workflow shipped in the agent-control template.
 	AgentControlValidationWorkflowSHA256 = "ee7c4c2f5c54f1d3670ed9016659463bf885d75a88a64a6549e3226e4e016870"
 
-	AgentPluginsReferenceRepository   = "zaurakworks/agent-plugins"
-	AgentPluginsReferenceCommit       = "ad07742ade0f0039ed1df1a9262e8f087117fca0"
-	AgentControlReferenceRepository   = "zaurakworks/agent-control"
+	AgentPluginsReferenceRepository = "zaurakworks/agent-plugins"
+	AgentPluginsReferenceCommit     = "ad07742ade0f0039ed1df1a9262e8f087117fca0"
+	// AgentControlReferenceRepository is the Source repository that currently
+	// holds the control-template lineage after the agent-control rename.
+	// AgentControlReferenceCommit is the historical distilled snapshot, not
+	// untagged Source main.
+	AgentControlReferenceRepository   = "zaurakworks/agent-system"
 	AgentControlReferenceCommit       = "b0e6e0e8244ef518f671e2326745cd67c6d2307a"
 	AgentContractsReferenceRepository = "zaurakworks/agent-contracts"
 	AgentContractsReferenceCommit     = "5bb8ea0b54f063b0758c294b73ea270ba69322d2"

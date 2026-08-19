@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/2233admin/agx/internal/bootstrap"
 	"github.com/2233admin/agx/internal/bundle"
 )
 
@@ -49,8 +50,11 @@ func TestDecodeAcceptsProductionBundleV2(t *testing.T) {
 	if artifact.UpstreamRepository != "zaurakworks/agent-plugins" || artifact.DistributionRepository != "2233admin/agent-plugins" {
 		t.Fatalf("agent_plugins source = %#v", artifact)
 	}
-	if document.Templates.Version != "bootstrap-20260817.1" || document.Templates.References.AgentContracts.CommitSHA != "5bb8ea0b54f063b0758c294b73ea270ba69322d2" {
+	if document.Templates.Version != bootstrap.TemplateSetVersion || document.Templates.References.AgentContracts.CommitSHA != "5bb8ea0b54f063b0758c294b73ea270ba69322d2" {
 		t.Fatalf("templates = %#v", document.Templates)
+	}
+	if document.Templates.References.AgentControl.Repository != bootstrap.AgentControlReferenceRepository {
+		t.Fatalf("agent_control reference = %#v", document.Templates.References.AgentControl)
 	}
 }
 

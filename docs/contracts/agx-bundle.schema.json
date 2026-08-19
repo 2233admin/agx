@@ -45,10 +45,10 @@
       "required": ["version", "content_sha256", "references"],
       "properties": {
         "version": {
-          "const": "bootstrap-20260817.1"
+          "const": "bootstrap-20260819.1"
         },
         "content_sha256": {
-          "const": "0138d21986befe8f77f8d5e0621464b92b6fd4480c1fc5b9982964bd78a098ca"
+          "const": "6e5eee0139001ed29fdf7c3689881fd5af544d86e1a99ed67e88274921555d65"
         },
         "references": {
           "type": "object",
@@ -65,7 +65,7 @@
             "agent_control": {
               "$ref": "#/$defs/reference",
               "properties": {
-                "repository": {"const": "zaurakworks/agent-control"},
+                "repository": {"const": "zaurakworks/agent-system"},
                 "commit_sha": {"const": "b0e6e0e8244ef518f671e2326745cd67c6d2307a"}
               }
             },

@@ -99,8 +99,8 @@ var goldenPaths = map[Kind][]string{
 func TestRenderGoldenTreesAndDigests(t *testing.T) {
 	params := Params{Owner: "octo-lab", PluginSource: "zaurakworks/agent-plugins"}
 	wantDigests := map[Kind]string{
-		KindAgentControl:   "0f460f9b1eb121f232013aa45469af946d28b2b64673548a4259635ba1a8f141",
-		KindAgentContracts: "815dab049ff4bc97295e4792a7d9b14fcd19dabcbe5710c908a9169598b593da",
+		KindAgentControl:   "8d3b4220cfb75787ad1897b1881d402505ab5e9fe255b35d5e33a4c9f1652638",
+		KindAgentContracts: "73bedf20db31b166995776ecb2d6b32de5d49202fb781ab0de3bff2788a8b680",
 	}
 
 	for _, kind := range []Kind{KindAgentControl, KindAgentContracts} {
@@ -171,6 +171,15 @@ func TestRenderIsDeterministicAndParameterized(t *testing.T) {
 			t.Errorf("tools/contract.py does not contain %q", want)
 		}
 	}
+	for _, forbidden := range []string{
+		`REPOSITORY = "zaurakworks/agent-system"`,
+		"https://github.com/zaurakworks/agent-system/issues/",
+		"https://github.com/zaurakworks/agent-control/issues/",
+	} {
+		if strings.Contains(contractTool, forbidden) {
+			t.Errorf("tools/contract.py still hardcodes %q", forbidden)
+		}
+	}
 	readme := contentAt(t, first, "README.md")
 	if !strings.Contains(readme, "https://github.com/source-org/portable-plugins") {
 		t.Error("README.md does not contain the rendered Plugin source URL")
@@ -192,8 +201,12 @@ func TestRenderedTreesDoNotLeakInstanceState(t *testing.T) {
 			lowerPath := strings.ToLower(file.Path)
 			if strings.HasPrefix(lowerPath, "work/records/") ||
 				strings.HasPrefix(lowerPath, "work/history/") ||
-				strings.HasPrefix(lowerPath, "run-packages/") {
-				t.Errorf("%s contains generated state path %q", kind, file.Path)
+				strings.HasPrefix(lowerPath, "run-packages/") ||
+				strings.HasPrefix(lowerPath, ".cap/") ||
+				strings.HasPrefix(lowerPath, "src/agent_system/") ||
+				strings.HasPrefix(lowerPath, "plugins/") ||
+				strings.HasPrefix(lowerPath, "entrypoints/") {
+				t.Errorf("%s contains source-monorepo path %q", kind, file.Path)
 			}
 			content := string(file.Content)
 			for _, marker := range []string{
@@ -202,6 +215,7 @@ func TestRenderedTreesDoNotLeakInstanceState(t *testing.T) {
 				"/" + "Users/",
 				"observed" + "At",
 				"issuecomment-5307822402",
+				"zaurakworks/agent-control",
 			} {
 				if strings.Contains(content, marker) {
 					t.Errorf("%s/%s contains forbidden instance marker %q", kind, file.Path, marker)
@@ -211,6 +225,33 @@ func TestRenderedTreesDoNotLeakInstanceState(t *testing.T) {
 				t.Errorf("%s/%s contains a CR byte", kind, file.Path)
 			}
 		}
+	}
+}
+
+func TestRenderedControlRulesUseEvidenceProfileLanguage(t *testing.T) {
+	rendered, err := Render(KindAgentControl, Params{
+		Owner:        "octo-lab",
+		Repository:   "agent-control",
+		PluginSource: AgentPluginsReferenceRepository,
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	agents := contentAt(t, rendered, "AGENTS.md")
+	authority := contentAt(t, rendered, "authority/00-map.md")
+	for name, body := range map[string]string{"AGENTS.md": agents, "authority/00-map.md": authority} {
+		if !strings.Contains(body, "Evidence Profile") {
+			t.Errorf("%s is missing Evidence Profile language", name)
+		}
+		if strings.Contains(body, "local tree is verified") {
+			t.Errorf("%s claims verified from a local tree", name)
+		}
+	}
+	if !strings.Contains(agents, "never `verified`") {
+		t.Error("AGENTS.md does not reserve verified for Evidence Profile readback")
+	}
+	if !strings.Contains(authority, "Do not emit `verified` from a local tree") {
+		t.Error("authority/00-map.md does not forbid verified from a local tree")
 	}
 }
 

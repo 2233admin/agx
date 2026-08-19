@@ -23,5 +23,7 @@
 ## 交付
 
 - Schema、样例、议题表单、合同捕获／回执行为、离线固定测试数据和单元测试必须保持一致。运行时与验证工具只使用 Python 标准库。
-- 交付前必须运行 `python tools/validate.py`；该唯一入口同时执行仓库检查和执行闭环单元测试。
+- 交付前必须运行 `python tools/validate.py`；该唯一入口同时执行仓库检查和执行闭环单元测试。本地校验通过不是 Installation Verification，不得报告为 `verified`。
+- Installation Verification 使用 `agx init` 选定的 Evidence Profile。`github-delivery/v1` 需要匹配的 GitHub 回读；`multica-execution/v1` 还需要匹配的 Multica 回读。本地完整树最多是 `configured`。
 - 必须通过作为合同状态依据的执行合同议题交付精确 head、产物、验证证据、全局写入披露和剩余未知。没有明确授权不得合并。
+- `tools/contract.py` 只接受本部署仓议题 URL，不把 `zaurakworks/agent-system` 或已改名的 `agent-control` 当作可捕获来源。

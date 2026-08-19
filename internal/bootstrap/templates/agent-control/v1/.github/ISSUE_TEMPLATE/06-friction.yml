@@ -10,6 +10,7 @@ body:
         标题必须保留「摩擦：」前缀，并用一句话描述可复现的事件模式，不把单次噪音写成长期结论。本表单已预挂「类型/摩擦」；创建后请立即补挂下方选择的唯一「领域/*」 label。
 
         > 正文与评论禁用 GitHub 关闭关键词及其否定式（如「不关闭 #N」也会触发关闭），引用一律写「关联 #N」。
+        > 本仓本地文件或 `python tools/validate.py` 通过，不等于 Installation `verified`。Verification 只由 `agx init` 选定的 Evidence Profile 外部回读构成。
   - type: dropdown
     id: domain
     attributes:

@@ -1,6 +1,9 @@
 # @@AGX_REPOSITORY@@
 
-本项目提供一套项目级、由 GitHub 议题驱动的执行合同基础。GitHub 议题始终是活动目标、合同、修订、生命周期决定和回执的合同状态依据；本仓只保存持久规则、格式、样例和验证工具。
+本项目提供一套项目级、由 GitHub 议题驱动的执行合同基础，属于一次 AGX Installation 的部署仓，不是 Plugin Source 仓的副本。GitHub 议题始终是活动目标、合同、修订、生命周期决定和回执的合同状态依据；本仓只保存持久规则、格式、样例和验证工具。
+
+Plugin **Source** 是 `zaurakworks/agent-system`。生产 **Distribution** 是 `2233admin` 的不可变 GitHub Release。本 Installation 安装的插件身份是
+[`@@AGX_PLUGIN_SOURCE@@`](@@AGX_PLUGIN_SOURCE_URL@@)。不要跟随 Source 的 git `main`，也不要把 Source 整树、CAP 或 `work/records/` 拷进本仓。
 
 ## 合同对象
 
@@ -75,17 +78,19 @@ python tools/contract.py receipt-post --package run-packages/issue-4.json --rece
 python tools/validate.py
 ```
 
-该命令检查本仓支持的 JSON Schema 子集、有效和无效样例、合同语义绑定、议题表单必填字段映射、唯一项目入口、持续集成接线和离线执行闭环单元测试。持续集成调用同一个入口，因此工作流不会重复实现检查逻辑。
+该命令检查本仓支持的 JSON Schema 子集、有效和无效样例、合同语义绑定、议题表单必填字段映射、唯一项目入口、持续集成接线和离线执行闭环单元测试。持续集成调用同一个入口，因此工作流不会重复实现检查逻辑。校验通过只说明本仓格式闭环完整，不等于 Installation `verified`；Verification 只由 `agx init` 选定的 Evidence Profile 外部回读构成。
 
 ## 初始化模板来源
 
 本仓由 AGX 模板 `agent-contracts/v1` 初始化。模板从
 `zaurakworks/agent-contracts@5bb8ea0b54f063b0758c294b73ea270ba69322d2`
-提取可移植规则、格式、样例和验证闭环，并参考
-`zaurakworks/agent-plugins@ad07742ade0f0039ed1df1a9262e8f087117fca0` 的部署入口约束。初始化时仅把目标
-身份参数化为 `@@AGX_TARGET_SLUG@@`，Plugin 来源保持为
+提取可移植规则、格式、样例和验证闭环，合同工具只接受本部署仓
+`@@AGX_TARGET_SLUG@@` 的议题 URL，并拒绝把 Source 仓
+`zaurakworks/agent-system` 写死为唯一可捕获地址。Plugin Source 是
+`zaurakworks/agent-system`；当前 Installation 的插件身份保持为
 [`@@AGX_PLUGIN_SOURCE@@`](@@AGX_PLUGIN_SOURCE_URL@@)。
 
-模板不包含来源仓库的活动议题、评论、分支、生成的 `run-packages/`、本地执行
-快照、凭据、机器路径或生命周期状态。样例与测试夹具中的议题编号只是离线协议
-数据，不表示目标仓库已经存在对应议题。
+模板不包含 Source 整树、CAP、`.cap/`、`src/agent_system/`、来源仓库的活动议题、
+评论、分支、生成的 `run-packages/`、`work/records/`、本地执行快照、凭据、机器路径
+或生命周期状态。样例与测试夹具中的议题编号只是离线协议数据，不表示目标仓库已经
+存在对应议题。
