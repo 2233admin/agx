@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/2233admin/agx/internal/activation"
+	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/exitcode"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/provider"
@@ -24,6 +25,10 @@ type guidedInitChoices struct {
 	githubOwner         string
 	providerChoice      string
 	profile             activation.Profile
+	evidenceProfile     domain.EvidenceProfileID
+	multicaWorkspaceID  string
+	multicaRuntimeID    string
+	multicaAgentID      string
 	visibility          repository.Visibility
 	controlRepository   string
 	contractsRepository string
@@ -84,6 +89,10 @@ func runGuidedInit(args []string, values map[string]string, stdout, stderr io.Wr
 		ContractsRepository: choices.contractsRepository,
 		Visibility:          choices.visibility,
 		Profile:             choices.profile,
+		EvidenceProfile:     choices.evidenceProfile,
+		MulticaWorkspaceID:  choices.multicaWorkspaceID,
+		MulticaRuntimeID:    choices.multicaRuntimeID,
+		MulticaAgentID:      choices.multicaAgentID,
 		Runner:              dependencies.providerRunner,
 		RepositoryRunner:    dependencies.repositoryRunner,
 	}
@@ -256,6 +265,7 @@ func promptGuidedChoices(reader *bufio.Reader, output io.Writer, root string, di
 		githubOwner:         discovery.githubLogin,
 		providerChoice:      discovery.recommended,
 		profile:             activation.ProfileGitHub,
+		evidenceProfile:     domain.EvidenceProfileGitHubDeliveryV1,
 		visibility:          repository.VisibilityPrivate,
 		controlRepository:   "agent-control",
 		contractsRepository: "agent-contracts",
@@ -269,6 +279,20 @@ func promptGuidedChoices(reader *bufio.Reader, output io.Writer, root string, di
 	}
 	if choices.profile, err = promptProfile(reader, output, choices.profile); err != nil {
 		return guidedInitChoices{}, err
+	}
+	if choices.evidenceProfile, err = promptEvidenceProfile(reader, output, choices.evidenceProfile); err != nil {
+		return guidedInitChoices{}, err
+	}
+	if choices.evidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
+		if choices.multicaWorkspaceID, err = promptValue(reader, output, "Multica Workspace UUID", ""); err != nil {
+			return guidedInitChoices{}, err
+		}
+		if choices.multicaRuntimeID, err = promptValue(reader, output, "Multica Runtime UUID", ""); err != nil {
+			return guidedInitChoices{}, err
+		}
+		if choices.multicaAgentID, err = promptValue(reader, output, "Multica Agent UUID", ""); err != nil {
+			return guidedInitChoices{}, err
+		}
 	}
 	if choices.visibility, err = promptVisibility(reader, output, choices.visibility); err != nil {
 		return guidedInitChoices{}, err
@@ -316,6 +340,23 @@ func promptProfile(reader *bufio.Reader, output io.Writer, defaultValue activati
 	return "", fmt.Errorf("%v. Next: rerun guided init and choose core, github, team, or full; no changes were made.", last)
 }
 
+func promptEvidenceProfile(reader *bufio.Reader, output io.Writer, defaultValue domain.EvidenceProfileID) (domain.EvidenceProfileID, error) {
+	var last error
+	for attempt := 1; attempt <= guidedPromptAttempts; attempt++ {
+		value, err := promptValue(reader, output, "Evidence profile (github-delivery/v1, multica-execution/v1)", string(defaultValue))
+		if err != nil {
+			return "", err
+		}
+		profile, err := domain.ParseEvidenceProfile(value)
+		if err == nil {
+			return profile, nil
+		}
+		last = err
+		fmt.Fprintf(output, "Invalid evidence profile. Use github-delivery/v1 or multica-execution/v1 (%d attempt(s) left).\n", guidedPromptAttempts-attempt)
+	}
+	return "", fmt.Errorf("%v. Next: rerun guided init and choose an explicit evidence profile; no changes were made.", last)
+}
+
 func promptVisibility(reader *bufio.Reader, output io.Writer, defaultValue repository.Visibility) (repository.Visibility, error) {
 	var last error
 	for attempt := 1; attempt <= guidedPromptAttempts; attempt++ {
@@ -361,6 +402,12 @@ func printGuidedConfirmation(output io.Writer, choices guidedInitChoices) {
 	fmt.Fprintf(output, "  - owner: %s\n", choices.githubOwner)
 	fmt.Fprintf(output, "  - provider: %s\n", choices.providerChoice)
 	fmt.Fprintf(output, "  - profile: %s\n", choices.profile)
+	fmt.Fprintf(output, "  - evidence profile: %s\n", choices.evidenceProfile)
+	if choices.evidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
+		fmt.Fprintf(output, "  - Multica Workspace: %s\n", choices.multicaWorkspaceID)
+		fmt.Fprintf(output, "  - Multica Runtime: %s\n", choices.multicaRuntimeID)
+		fmt.Fprintf(output, "  - Multica Agent: %s\n", choices.multicaAgentID)
+	}
 	fmt.Fprintf(output, "  - visibility: %s\n", choices.visibility)
 	fmt.Fprintf(output, "  - control repo: %s/%s\n", choices.githubOwner, choices.controlRepository)
 	fmt.Fprintf(output, "  - contracts repo: %s/%s\n", choices.githubOwner, choices.contractsRepository)
@@ -386,15 +433,24 @@ func promptRequiredConfirmation(reader *bufio.Reader, output io.Writer) (bool, e
 }
 
 func guidedApplyArgs(choices guidedInitChoices) []string {
-	return []string{
+	args := []string{
 		"--root", choices.root,
 		"--github-owner", choices.githubOwner,
 		"--provider", choices.providerChoice,
 		"--profile", string(choices.profile),
+		"--evidence-profile", string(choices.evidenceProfile),
 		"--visibility", string(choices.visibility),
 		"--control-repo", choices.controlRepository,
 		"--contracts-repo", choices.contractsRepository,
 	}
+	if choices.evidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
+		args = append(args,
+			"--multica-workspace-id", choices.multicaWorkspaceID,
+			"--multica-runtime-id", choices.multicaRuntimeID,
+			"--multica-agent-id", choices.multicaAgentID,
+		)
+	}
+	return args
 }
 
 func normalizePromptValue(value string) string {

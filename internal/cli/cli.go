@@ -13,6 +13,7 @@ import (
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/bundle"
 	"github.com/2233admin/agx/internal/contracts"
+	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/exitcode"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/project"
@@ -36,13 +37,14 @@ var lifecycleCommands = []command{
 }
 
 type runtimeDependencies struct {
-	stdin            io.Reader
-	providerRunner   provider.Runner
-	repositoryRunner repository.Runner
-	initPlan         func(context.Context, activation.Options) (activation.InitializationPlan, error)
-	initApply        func(context.Context, activation.Options) (activation.Receipt, bool, error)
-	status           func(context.Context, string, provider.Runner, ...repository.Runner) (activation.State, error)
-	goos             string
+	stdin              io.Reader
+	providerRunner     provider.Runner
+	repositoryRunner   repository.Runner
+	initPlan           func(context.Context, activation.Options) (activation.InitializationPlan, error)
+	initApply          func(context.Context, activation.Options) (activation.Receipt, bool, error)
+	status             func(context.Context, string, provider.Runner, ...repository.Runner) (activation.State, error)
+	statusWithEvidence func(context.Context, string, provider.Runner, activation.StatusOptions, ...repository.Runner) (activation.State, error)
+	goos               string
 }
 
 func Run(args []string, version string, stdout, stderr io.Writer) int {
@@ -112,12 +114,13 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 	values, err := parseNamedOptions(args, map[string]bool{
 		"--root": true, "--github-owner": true, "--provider": true, "--profile": true,
 		"--visibility": true, "--control-repo": true, "--contracts-repo": true,
+		"--evidence-profile": true, "--multica-workspace-id": true, "--multica-runtime-id": true, "--multica-agent-id": true,
 		"--output": true, "--apply": false, "--guided": false,
 	})
 	if containsOption(args, "--guided") {
 		return runGuidedInit(args, values, stdout, stderr, dependencies)
 	}
-	if err != nil || values["--root"] == "" || values["--github-owner"] == "" || values["--provider"] == "" ||
+	if err != nil || values["--root"] == "" || values["--github-owner"] == "" || values["--provider"] == "" || values["--evidence-profile"] == "" ||
 		(values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
 		printInitUsage(stderr)
 		return exitcode.Usage
@@ -132,6 +135,11 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 		return exitcode.Usage
 	}
 	providers, err := parseProviders(values["--provider"])
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Usage
+	}
+	evidenceProfile, err := domain.ParseEvidenceProfile(values["--evidence-profile"])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Usage
@@ -151,6 +159,10 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 		ContractsRepository: values["--contracts-repo"],
 		Visibility:          visibility,
 		Profile:             profile,
+		EvidenceProfile:     evidenceProfile,
+		MulticaWorkspaceID:  values["--multica-workspace-id"],
+		MulticaRuntimeID:    values["--multica-runtime-id"],
+		MulticaAgentID:      values["--multica-agent-id"],
 		Providers:           providers,
 	}
 	if dependencies.providerRunner != nil {
@@ -253,8 +265,9 @@ func newInitPlanResult(plan activation.InitializationPlan) initPlanResult {
 }
 
 func printInitUsage(output io.Writer) {
-	fmt.Fprintln(output, "AGX-USAGE-INIT: --guided --root <directory> OR --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
+	fmt.Fprintln(output, "AGX-USAGE-INIT: --guided --root <directory> OR --root <directory> --github-owner <owner> --provider codex|claude|both --evidence-profile github-delivery/v1|multica-execution/v1 [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
 	fmt.Fprintln(output, "Prerequisites: git, an authenticated GitHub CLI (gh) with project scope, and every selected provider CLI must be on PATH.")
+	fmt.Fprintln(output, "Evidence profile selection is required. multica-execution/v1 also requires Workspace, Runtime, and Agent UUIDs. Guided init prompts for the same values.")
 	fmt.Fprintln(output, "Defaults: explicit init uses --profile core; guided init suggests profile github. Both default to --visibility private, --control-repo agent-control, --contracts-repo agent-contracts.")
 	fmt.Fprintln(output, "Order: agx apply, agx init --guided (or explicit init plan), then the same agx init command with --apply appended.")
 	fmt.Fprintln(output, "Collision policy: AGX stops on same-name repositories or Projects; it never adopts or overwrites them.")
@@ -556,10 +569,37 @@ func printApplyNextStep(stdout io.Writer, root ...string) {
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 }
 
+func evidenceStatusFlags() map[string]bool {
+	return map[string]bool{
+		"--root": true, "--output": true, "--evidence-profile": true,
+		"--multica-workspace-id": true, "--multica-runtime-id": true, "--multica-agent-id": true,
+	}
+}
+
+func readActivationStatus(ctx context.Context, root string, values map[string]string, dependencies runtimeDependencies) (activation.State, error) {
+	options := activation.StatusOptions{
+		MulticaWorkspaceID: values["--multica-workspace-id"], MulticaRuntimeID: values["--multica-runtime-id"], MulticaAgentID: values["--multica-agent-id"],
+	}
+	if values["--evidence-profile"] != "" {
+		profile, err := domain.ParseEvidenceProfile(values["--evidence-profile"])
+		if err != nil {
+			return activation.State{}, err
+		}
+		options.EvidenceProfileOverride = profile
+	}
+	if dependencies.statusWithEvidence != nil {
+		return dependencies.statusWithEvidence(ctx, root, dependencies.providerRunner, options, dependencies.repositoryRunner)
+	}
+	if dependencies.status != nil {
+		return dependencies.status(ctx, root, dependencies.providerRunner, dependencies.repositoryRunner)
+	}
+	return activation.StatusWithEvidence(ctx, root, dependencies.providerRunner, options, dependencies.repositoryRunner)
+}
+
 func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
-	values, err := parseNamedOptions(args, map[string]bool{"--root": true, "--output": true})
+	values, err := parseNamedOptions(args, evidenceStatusFlags())
 	if err != nil || values["--root"] == "" || (values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
-		fmt.Fprintln(stderr, "AGX-USAGE-STATUS: --root <directory> [--output human|json]")
+		fmt.Fprintln(stderr, "AGX-USAGE-STATUS: --root <directory> [--evidence-profile github-delivery/v1|multica-execution/v1] [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--output human|json]")
 		return exitcode.Usage
 	}
 	state, err := installer.Status(values["--root"])
@@ -569,7 +609,7 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	initialization, initializationErr := dependencies.status(ctx, values["--root"], dependencies.providerRunner, dependencies.repositoryRunner)
+	initialization, initializationErr := readActivationStatus(ctx, values["--root"], values, dependencies)
 	if initializationErr != nil {
 		fmt.Fprintln(stderr, initializationErr)
 		return exitcode.Data
@@ -631,6 +671,16 @@ func printDeploymentVisibility(output io.Writer, state activation.State) {
 		fmt.Fprintf(output, "GitHub Project: %s (%s; linked repository %s)\n",
 			state.Project.URL, state.Project.Visibility, state.Project.LinkedRepository)
 	}
+	if state.Evidence.Phase != "" {
+		fmt.Fprintf(output, "Evidence profile: %s\n", state.Evidence.Profile)
+		fmt.Fprintf(output, "Evidence phase: %s\n", state.Evidence.Phase)
+		for _, diagnostic := range state.Evidence.Diagnostics {
+			fmt.Fprintf(output, "Evidence diagnostic: %s: %s\n", diagnostic.Code, diagnostic.Message)
+		}
+		for _, next := range state.Evidence.NextSteps {
+			fmt.Fprintf(output, "Evidence next: %s\n", next)
+		}
+	}
 	if state.Smoke.Status != "" {
 		fmt.Fprintf(output, "Agent smoke: %s\n", state.Smoke.Status)
 		if state.Smoke.IssueURL != "" {
@@ -655,9 +705,9 @@ func printDeploymentVisibility(output io.Writer, state activation.State) {
 }
 
 func runDiagnose(args []string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
-	values, err := parseNamedOptions(args, map[string]bool{"--root": true, "--output": true})
+	values, err := parseNamedOptions(args, evidenceStatusFlags())
 	if err != nil || values["--root"] == "" || (values["--output"] != "" && values["--output"] != "json" && values["--output"] != "human") {
-		fmt.Fprintln(stderr, "AGX-USAGE-DIAGNOSE: --root <directory> [--output human|json]")
+		fmt.Fprintln(stderr, "AGX-USAGE-DIAGNOSE: --root <directory> [--evidence-profile github-delivery/v1|multica-execution/v1] [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--output human|json]")
 		return exitcode.Usage
 	}
 	installation, err := installer.Status(values["--root"])
@@ -667,7 +717,7 @@ func runDiagnose(args []string, stdout, stderr io.Writer, dependencies runtimeDe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	initialization, initializationErr := dependencies.status(ctx, values["--root"], dependencies.providerRunner, dependencies.repositoryRunner)
+	initialization, initializationErr := readActivationStatus(ctx, values["--root"], values, dependencies)
 	if initializationErr != nil {
 		fmt.Fprintln(stderr, initializationErr)
 		return exitcode.Data
@@ -718,7 +768,9 @@ func diagnoseNextSteps(_ string, installation installer.State, initialization ac
 	if initialization.Status == activation.PhaseNeedsResume || initialization.Status == activation.PhaseProvisioning {
 		next = append(next, "resolve the initialization problem and rerun the original agx init ... --apply command unchanged")
 	}
-	if initialization.Smoke.Status == smoke.StatusAwaiting {
+	if initialization.Evidence.Phase != "" {
+		next = append(next, initialization.Evidence.NextSteps...)
+	} else if initialization.Smoke.Status == smoke.StatusAwaiting {
 		next = append(next, "run one first-use Agent prompt from the initialization result, then run agx status --root "+quotedRoot)
 	}
 	return next
@@ -745,7 +797,14 @@ func printStatusNext(output io.Writer, root, installationPhase string, missing, 
 		fmt.Fprintln(output, "Next: there is no separate resume command. Resolve the initialization problem, then rerun the original agx init ... --apply command unchanged.")
 		return
 	}
-	if initialization.Smoke.Status == smoke.StatusAwaiting {
+	if initialization.Evidence.Phase != "" {
+		for _, next := range initialization.Evidence.NextSteps {
+			fmt.Fprintf(output, "Next: %s.\n", next)
+		}
+		if initialization.Evidence.Phase != domain.PhaseVerified {
+			fmt.Fprintf(output, "Then rerun this %s command: %s\n", commandShellLabel(), statusCommand)
+		}
+	} else if initialization.Smoke.Status == smoke.StatusAwaiting {
 		fmt.Fprintln(output, "Next: start a new Agent session and run one first-use prompt emitted by agx init.")
 		fmt.Fprintf(output, "Then rerun this %s command: %s\n", commandShellLabel(), statusCommand)
 	}

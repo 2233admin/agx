@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/2233admin/agx/internal/activation"
+	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/project"
 	"github.com/2233admin/agx/internal/provider"
 	"github.com/2233admin/agx/internal/repository"
@@ -1115,8 +1116,8 @@ func TestInitializeRevalidatesPartialProjectBeforeMissingRepositoryCreate(t *tes
 func deploymentOptions(root string, providerRunner provider.Runner, repositoryRunner repository.Runner) activation.Options {
 	return activation.Options{
 		Root: root, GitHubOwner: "octo-lab", Visibility: repository.VisibilityPrivate,
-		Profile: activation.ProfileCore, Providers: []provider.Name{provider.Codex},
-		Runner: providerRunner, RepositoryRunner: repositoryRunner,
+		Profile: activation.ProfileCore, EvidenceProfile: domain.EvidenceProfileGitHubDeliveryV1,
+		Providers: []provider.Name{provider.Codex}, Runner: providerRunner, RepositoryRunner: repositoryRunner,
 	}
 }
 
