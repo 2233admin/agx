@@ -88,7 +88,7 @@ func TestApplyUsesEmbeddedProductionBundleAndKeepsDownloadChecks(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "asset digest mismatch") {
 		t.Fatalf("Apply() error = %v, want production asset digest rejection", err)
 	}
-	wantURL := "https://github.com/2233admin/agent-plugins/releases/download/agx-bootstrap-20260816.1/agent-plugins-agx-bootstrap-20260816.1.tar.gz"
+	wantURL := "https://github.com/2233admin/agent-plugins/releases/download/agx-plugins-20260819.1/agent-plugins-agx-plugins-20260819.1.tar.gz"
 	if requestedURL != wantURL {
 		t.Fatalf("download URL = %q, want %q", requestedURL, wantURL)
 	}

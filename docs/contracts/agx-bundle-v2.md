@@ -12,7 +12,7 @@
 - asset SHA-256 与 gzip 解压后的 tar 字节流 content SHA-256；
 - AGX 兼容范围。
 
-生产下载继续使用 `2233admin/agent-plugins` 的 immutable prerelease `agx-bootstrap-20260816.1`：commit `eb10f7f14cc05b70b6c27a121c6f72d1b3b9edb8`、asset `agent-plugins-agx-bootstrap-20260816.1.tar.gz`、asset SHA-256 `ba8142548d7b055b4f6faba4587b12a9c6411815431042607436676437ae2de1`、content SHA-256 `d4f53c2d2d45f7efcb2884d8232248434bae44f071369cc938aface47e120002`。在带 digest 的新 Distribution Release 出现前，不得把未打 tag 的 `agent-system` main SHA 或已改名的 `zaurakworks/agent-control` 写成生产 pin。
+生产下载继续使用 `2233admin/agent-plugins` 的 immutable prerelease `agx-plugins-20260819.1`：commit `ef07a9fd530ebac1b85eb5b9511ebd6742d743ee`、asset `agent-plugins-agx-plugins-20260819.1.tar.gz`、asset SHA-256 `d1ae80cebb7eb84c53e8d7f5b8af2f60786721219b492b5a8975e66442fbc97e`、content SHA-256 `c752241575cabe79018c9dc990d2425e1ecd6ac03c88799050fd5b579f32aa21`。在带 digest 的新 Distribution Release 出现前，不得把未打 tag 的 `agent-system` main SHA 或已改名的 `zaurakworks/agent-control` 写成生产 pin。
 
 生产模式只接受 `github_release` provenance，且 URL 必须精确落在固定分发仓库、Release tag 与 asset 名组合出的路径。生产拒绝 sibling checkout、可变 branch/tag、本地路径、旧 `artifacts` 双组件结构和任何 `agent_control` source。Multica 不属于 Bundle v2 compatibility；出现 `multica_cli` 会按未知字段拒绝。
 
@@ -34,4 +34,4 @@ Apply 先分别验证压缩资产和 gzip 解压后的 tar 字节流摘要，再
 
 ## 开发与 fixture
 
-[`testdata/bundles/v2-synthetic-development.json`](../../testdata/bundles/v2-synthetic-development.json) 是显式 `synthetic_test_only` development fixture。development override 必须显式为 `true`；它不能生成 `verified`。生产 fixture 是 [`testdata/bundles/v2-production-agx-bootstrap-20260816.1.json`](../../testdata/bundles/v2-production-agx-bootstrap-20260816.1.json)。
+[`testdata/bundles/v2-synthetic-development.json`](../../testdata/bundles/v2-synthetic-development.json) 是显式 `synthetic_test_only` development fixture。development override 必须显式为 `true`；它不能生成 `verified`。生产 fixture 是 [`testdata/bundles/v2-production-agx-plugins-20260819.1.json`](../../testdata/bundles/v2-production-agx-plugins-20260819.1.json)。

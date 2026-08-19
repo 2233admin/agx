@@ -8,7 +8,7 @@ deployed, and what initialization UX gaps remain?
 **2026-08-19 provenance update:** Plugin Source is now
 `zaurakworks/agent-system` (the renamed and merged former `agent-control`).
 Production input remains the `2233admin` immutable Release
-`agx-bootstrap-20260816.1` / `eb10f7f`. Do not follow Source git `main`.
+`agx-plugins-20260819.1` / `ef07a9f`. Do not follow Source git `main`.
 Historical permalinks below that still name `zaurakworks/agent-control` should
 be read as the Source snapshot now served from
 `zaurakworks/agent-system@b0e6e0e8244ef518f671e2326745cd67c6d2307a`.
