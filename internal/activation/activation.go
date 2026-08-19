@@ -11,8 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/2233admin/agx/internal/bootstrap"
+	"github.com/2233admin/agx/internal/domain"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/project"
 	"github.com/2233admin/agx/internal/provider"
@@ -22,7 +24,9 @@ import (
 
 const (
 	receiptSchemaV2    = "agx.initialization/v2"
-	receiptSchema      = "agx.initialization/v3"
+	receiptSchemaV3    = "agx.initialization/v3"
+	receiptSchemaV4    = "agx.initialization/v4"
+	receiptSchema      = receiptSchemaV3
 	initializationFile = "initialization.json"
 	PhaseInitialized   = "initialized"
 	PhaseProvisioning  = "provisioning"
@@ -82,30 +86,36 @@ type ProviderReceipt struct {
 }
 
 type Receipt struct {
-	SchemaVersion         string                `json:"schema_version"`
-	InstallationID        string                `json:"installation_id"`
-	Phase                 string                `json:"phase"`
-	GitHubOwner           string                `json:"github_owner,omitempty"`
-	ControlRepository     string                `json:"control_repository,omitempty"`
-	ContractsRepository   string                `json:"contracts_repository,omitempty"`
-	Visibility            repository.Visibility `json:"visibility,omitempty"`
-	TemplateVersion       string                `json:"template_version,omitempty"`
-	TemplateContentSHA256 string                `json:"template_content_sha256,omitempty"`
-	Profile               Profile               `json:"profile"`
-	Repositories          []repository.Receipt  `json:"repositories,omitempty"`
-	Project               *project.Receipt      `json:"project,omitempty"`
-	Providers             []ProviderReceipt     `json:"providers"`
+	SchemaVersion         string                      `json:"schema_version"`
+	InstallationID        string                      `json:"installation_id"`
+	Phase                 string                      `json:"phase"`
+	GitHubOwner           string                      `json:"github_owner,omitempty"`
+	ControlRepository     string                      `json:"control_repository,omitempty"`
+	ContractsRepository   string                      `json:"contracts_repository,omitempty"`
+	Visibility            repository.Visibility       `json:"visibility,omitempty"`
+	TemplateVersion       string                      `json:"template_version,omitempty"`
+	TemplateContentSHA256 string                      `json:"template_content_sha256,omitempty"`
+	Profile               Profile                     `json:"profile"`
+	EvidenceProfile       domain.EvidenceProfileID    `json:"evidence_profile,omitempty"`
+	DeploymentBinding     *domain.DeploymentBindingV1 `json:"deployment_binding,omitempty"`
+	DeploymentDigest      string                      `json:"deployment_digest,omitempty"`
+	SubjectBinding        *domain.SubjectBindingV1    `json:"subject_binding,omitempty"`
+	SubjectDigest         string                      `json:"subject_digest,omitempty"`
+	Repositories          []repository.Receipt        `json:"repositories,omitempty"`
+	Project               *project.Receipt            `json:"project,omitempty"`
+	Providers             []ProviderReceipt           `json:"providers"`
 }
 
 type State struct {
-	Status            string               `json:"status"`
-	Profile           Profile              `json:"profile,omitempty"`
-	Providers         []provider.Name      `json:"providers,omitempty"`
-	Repositories      []string             `json:"repositories,omitempty"`
-	RepositoryDetails []repository.Receipt `json:"repository_details,omitempty"`
-	Project           *project.Receipt     `json:"project,omitempty"`
-	Smoke             smoke.Evidence       `json:"smoke,omitempty"`
-	Problems          []string             `json:"problems,omitempty"`
+	Status            string                 `json:"status"`
+	Profile           Profile                `json:"profile,omitempty"`
+	Providers         []provider.Name        `json:"providers,omitempty"`
+	Repositories      []string               `json:"repositories,omitempty"`
+	RepositoryDetails []repository.Receipt   `json:"repository_details,omitempty"`
+	Project           *project.Receipt       `json:"project,omitempty"`
+	Smoke             smoke.Evidence         `json:"smoke,omitempty"`
+	Evidence          domain.EvidenceReceipt `json:"evidence"`
+	Problems          []string               `json:"problems,omitempty"`
 }
 
 type Options struct {
@@ -115,9 +125,27 @@ type Options struct {
 	ContractsRepository string
 	Visibility          repository.Visibility
 	Profile             Profile
+	EvidenceProfile     domain.EvidenceProfileID
+	MulticaWorkspaceID  string
+	MulticaRuntimeID    string
+	MulticaAgentID      string
 	Providers           []provider.Name
 	Runner              provider.Runner
 	RepositoryRunner    repository.Runner
+}
+
+type EvidenceCollector interface {
+	Source() domain.EvidenceSource
+	Collect(context.Context, Receipt) domain.ObservationBatch
+}
+
+type StatusOptions struct {
+	EvidenceProfileOverride domain.EvidenceProfileID
+	MulticaWorkspaceID      string
+	MulticaRuntimeID        string
+	MulticaAgentID          string
+	EvaluatedAt             time.Time
+	Collectors              []EvidenceCollector
 }
 
 type PluginPlan struct {
@@ -151,14 +179,17 @@ type ProjectPlan struct {
 }
 
 type InitializationPlan struct {
-	InstallationID        string           `json:"installation_id"`
-	TemplateVersion       string           `json:"template_version"`
-	TemplateContentSHA256 string           `json:"template_content_sha256"`
-	PluginSource          string           `json:"plugin_source"`
-	Profile               Profile          `json:"profile"`
-	Providers             []ProviderPlan   `json:"providers"`
-	Repositories          []RepositoryPlan `json:"repositories"`
-	Project               ProjectPlan      `json:"project"`
+	InstallationID        string                   `json:"installation_id"`
+	TemplateVersion       string                   `json:"template_version"`
+	TemplateContentSHA256 string                   `json:"template_content_sha256"`
+	PluginSource          string                   `json:"plugin_source"`
+	Profile               Profile                  `json:"profile"`
+	EvidenceProfile       domain.EvidenceProfileID `json:"evidence_profile"`
+	DeploymentDigest      string                   `json:"deployment_digest"`
+	SubjectDigest         string                   `json:"subject_digest"`
+	Providers             []ProviderPlan           `json:"providers"`
+	Repositories          []RepositoryPlan         `json:"repositories"`
+	Project               ProjectPlan              `json:"project"`
 }
 
 type UninitializeResult struct {
@@ -189,6 +220,9 @@ func Plan(ctx context.Context, options Options) (InitializationPlan, error) {
 		TemplateContentSHA256: bootstrap.TemplateSetContentSHA256,
 		PluginSource:          prepared.pluginRepository,
 		Profile:               prepared.options.Profile,
+		EvidenceProfile:       prepared.options.EvidenceProfile,
+		DeploymentDigest:      prepared.deploymentDigest,
+		SubjectDigest:         prepared.subjectDigest,
 	}
 	recorded := map[string]bool{}
 	for _, item := range prepared.existing.Repositories {
@@ -294,6 +328,10 @@ type preparedDeployment struct {
 	repositoryTargets []repository.Target
 	projectTarget     project.Target
 	providerTargets   []target
+	deploymentBinding domain.DeploymentBindingV1
+	deploymentDigest  string
+	subjectBinding    domain.SubjectBindingV1
+	subjectDigest     string
 	existing          Receipt
 	present           bool
 }
@@ -311,6 +349,18 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 	}
 	if options.Visibility == "" {
 		options.Visibility = repository.VisibilityPrivate
+	}
+	evidenceProfile := strings.TrimSpace(string(options.EvidenceProfile))
+	options.EvidenceProfile = domain.EvidenceProfileID(evidenceProfile)
+	if evidenceProfile != "" {
+		profile, err := domain.ParseEvidenceProfile(evidenceProfile)
+		if err != nil {
+			return preparedDeployment{}, err
+		}
+		options.EvidenceProfile = profile
+		if err := domain.ValidateEvidenceProfileSelection(profile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
+			return preparedDeployment{}, err
+		}
 	}
 	selected, err := Plugins(options.Profile)
 	if err != nil {
@@ -341,12 +391,25 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 	if err != nil {
 		return preparedDeployment{}, err
 	}
+	var deploymentBinding domain.DeploymentBindingV1
+	var deploymentDigest string
+	var subjectBinding domain.SubjectBindingV1
+	var subjectDigest string
+	if evidenceProfile != "" {
+		deploymentBinding, deploymentDigest, subjectBinding, subjectDigest, err = buildEvidenceBindings(options, installation, repositoryTargets)
+		if err != nil {
+			return preparedDeployment{}, err
+		}
+	}
 	existing, present, err := readReceipt(options.Root)
 	if err != nil {
 		return preparedDeployment{}, err
 	}
+	if !present && options.EvidenceProfile == "" {
+		return preparedDeployment{}, fmt.Errorf("AGX-EVIDENCE-PROFILE-REQUIRED: new deployments require --evidence-profile github-delivery/v1 or multica-execution/v1")
+	}
 	if present {
-		if err := validateDeploymentIdentity(existing, installation, options); err != nil {
+		if err := validateDeploymentIdentity(existing, installation, options, deploymentDigest, subjectDigest); err != nil {
 			return preparedDeployment{}, err
 		}
 		if existing.Phase == PhaseManualCleanup {
@@ -416,7 +479,8 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 	return preparedDeployment{
 		installation: installation, source: source, pluginRepository: pluginRepository, options: options,
 		repositoryTargets: repositoryTargets, projectTarget: projectTarget,
-		providerTargets: providerTargets, existing: existing, present: present,
+		providerTargets: providerTargets, deploymentBinding: deploymentBinding, deploymentDigest: deploymentDigest,
+		subjectBinding: subjectBinding, subjectDigest: subjectDigest, existing: existing, present: present,
 	}, nil
 }
 
@@ -462,12 +526,81 @@ func buildRepositoryTargets(options Options, pluginRepository string) ([]reposit
 	return targets, nil
 }
 
-func validateDeploymentIdentity(receipt Receipt, installation installer.Receipt, options Options) error {
+func buildEvidenceBindings(options Options, installation installer.Receipt, targets []repository.Target) (domain.DeploymentBindingV1, string, domain.SubjectBindingV1, string, error) {
+	if len(targets) != 2 {
+		return domain.DeploymentBindingV1{}, "", domain.SubjectBindingV1{}, "", fmt.Errorf("AGX-EVIDENCE-DEPLOYMENT-BINDING-INVALID")
+	}
+	providerNames := make([]string, 0, len(options.Providers))
+	for _, item := range options.Providers {
+		providerNames = append(providerNames, string(item))
+	}
+	projectTarget := buildProjectTarget(options, installation.InstallationID)
+	projectSelector := strings.Join([]string{projectTarget.Owner, projectTarget.Title, projectTarget.LinkedRepository, string(projectTarget.Visibility)}, "\x00")
+	contractTitle := "Bootstrap Verification [" + installation.InstallationID + "]"
+	contractMarker := "AGX-Installation: " + installation.InstallationID
+	firstUseSelector := strings.Join([]string{contractTitle, contractMarker, "agx/bootstrap-verification-" + installation.InstallationID, "python tools/validate.py", "Validate control baseline", "validate"}, "\x00")
+	deployment := domain.DeploymentBindingV1{
+		SchemaVersion: domain.DeploymentBindingSchemaV1, InstallationID: domain.InstallationID(installation.InstallationID),
+		BundleSHA256: installation.BundleSHA256, TemplateVersion: bootstrap.TemplateSetVersion, TemplateSetSHA256: bootstrap.TemplateSetContentSHA256,
+		ProviderProfile: string(options.Profile), SelectedProviders: providerNames,
+		ControlRepository: domain.RepositoryBindingV1{
+			IdentitySHA256: domain.NamespacedIdentitySHA256("github", "repository", targets[0].Owner+"/"+targets[0].Name), RenderedContentSHA256: targets[0].Seed.Digest,
+		},
+		ContractsRepository: domain.RepositoryBindingV1{
+			IdentitySHA256: domain.NamespacedIdentitySHA256("github", "repository", targets[1].Owner+"/"+targets[1].Name), RenderedContentSHA256: targets[1].Seed.Digest,
+		},
+		ProjectIdentitySHA256:  domain.NamespacedIdentitySHA256("github", "project", projectSelector),
+		FirstUseContractSHA256: domain.NamespacedIdentitySHA256("agx", "first-use-contract", firstUseSelector),
+	}
+	deploymentDigest, err := domain.ComputeDeploymentDigest(deployment)
+	if err != nil {
+		return domain.DeploymentBindingV1{}, "", domain.SubjectBindingV1{}, "", err
+	}
+	subject := domain.SubjectBindingV1{
+		SchemaVersion: domain.EvidenceSubjectSchemaV1, Profile: options.EvidenceProfile, DeploymentDigest: deploymentDigest,
+		InstallationMarkerSHA256: domain.NamespacedIdentitySHA256("agx", "installation", installation.InstallationID),
+		GitHubSelectors: domain.GitHubSubjectSelectorsV1{
+			ControlRepositorySHA256:   deployment.ControlRepository.IdentitySHA256,
+			ContractsRepositorySHA256: deployment.ContractsRepository.IdentitySHA256,
+			ProjectSelectorSHA256:     deployment.ProjectIdentitySHA256,
+			IssueSelectorSHA256:       domain.NamespacedIdentitySHA256("github", "issue", contractTitle+"\x00"+contractMarker),
+			PullRequestSelectorSHA256: domain.NamespacedIdentitySHA256("github", "pull_request", contractTitle+"\x00"+contractMarker),
+			BranchSelectorSHA256:      domain.NamespacedIdentitySHA256("github", "branch", "agx/bootstrap-verification-"+installation.InstallationID),
+			WorkflowSHA256:            domain.NamespacedIdentitySHA256("github", "workflow", bootstrap.AgentControlValidationWorkflowSHA256),
+			CheckSelectorSHA256:       domain.NamespacedIdentitySHA256("github", "check", "validate"),
+		},
+	}
+	if options.EvidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
+		subject.MulticaSelectors = &domain.MulticaSubjectSelectorsV1{
+			WorkspaceUUID: strings.ToLower(strings.TrimSpace(options.MulticaWorkspaceID)), RuntimeUUID: strings.ToLower(strings.TrimSpace(options.MulticaRuntimeID)),
+			AgentUUID:             strings.ToLower(strings.TrimSpace(options.MulticaAgentID)),
+			ExecutionMarkerSHA256: domain.NamespacedIdentitySHA256("multica", "execution", installation.InstallationID),
+		}
+	}
+	subjectDigest, err := domain.ComputeSubjectDigest(subject)
+	if err != nil {
+		return domain.DeploymentBindingV1{}, "", domain.SubjectBindingV1{}, "", err
+	}
+	return deployment, deploymentDigest, subject, subjectDigest, nil
+}
+
+func validateDeploymentIdentity(receipt Receipt, installation installer.Receipt, options Options, deploymentDigest, subjectDigest string) error {
+	if receipt.SchemaVersion != receiptSchemaV4 && options.EvidenceProfile != "" {
+		return fmt.Errorf("AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT: existing legacy initialization receipt cannot be upgraded in place; initialize a new deployment with a new root and unused repository names")
+	}
+	if receipt.SchemaVersion == receiptSchemaV4 && options.EvidenceProfile == "" {
+		return fmt.Errorf("AGX-EVIDENCE-PROFILE-REQUIRED: existing initialization receipt requires --evidence-profile %s; rerun the original init command with the same profile", receipt.EvidenceProfile)
+	}
+	if receipt.SchemaVersion == receiptSchemaV4 &&
+		(receipt.DeploymentDigest != deploymentDigest || receipt.SubjectDigest != subjectDigest) {
+		return fmt.Errorf("AGX-INIT-EVIDENCE-BINDING-CONFLICT: existing initialization receipt is bound to different provider or selector parameters; rerun the original init command unchanged")
+	}
 	if receipt.InstallationID != installation.InstallationID || receipt.GitHubOwner != options.GitHubOwner ||
 		receipt.ControlRepository != options.ControlRepository || receipt.ContractsRepository != options.ContractsRepository ||
 		receipt.Visibility != options.Visibility || receipt.TemplateVersion != bootstrap.TemplateSetVersion ||
 		receipt.TemplateContentSHA256 != bootstrap.TemplateSetContentSHA256 || receipt.Profile != options.Profile ||
-		!sameProviders(receipt.Providers, options.Providers) && len(receipt.Providers) > 0 {
+		(receipt.EvidenceProfile != "" && receipt.EvidenceProfile != options.EvidenceProfile) ||
+		(!sameProviders(receipt.Providers, options.Providers) && len(receipt.Providers) > 0) {
 		return fmt.Errorf("AGX-INIT-CONFLICT: existing initialization receipt has different deployment parameters")
 	}
 	return nil
@@ -492,6 +625,14 @@ func initializeDeployment(ctx context.Context, options Options) (Receipt, bool, 
 			ControlRepository: prepared.options.ControlRepository, ContractsRepository: prepared.options.ContractsRepository,
 			Visibility: prepared.options.Visibility, TemplateVersion: bootstrap.TemplateSetVersion,
 			TemplateContentSHA256: bootstrap.TemplateSetContentSHA256, Profile: prepared.options.Profile,
+		}
+		if prepared.options.EvidenceProfile != "" {
+			receipt.SchemaVersion = receiptSchemaV4
+			receipt.EvidenceProfile = prepared.options.EvidenceProfile
+			receipt.DeploymentBinding = &prepared.deploymentBinding
+			receipt.DeploymentDigest = prepared.deploymentDigest
+			receipt.SubjectBinding = &prepared.subjectBinding
+			receipt.SubjectDigest = prepared.subjectDigest
 		}
 		if err := writeReceipt(prepared.options.Root, receipt); err != nil {
 			return Receipt{}, false, err
@@ -737,7 +878,7 @@ func initializeProvidersOnly(ctx context.Context, options Options) (Receipt, boo
 	}
 
 	receipt := Receipt{
-		SchemaVersion:  receiptSchema,
+		SchemaVersion:  receiptSchemaV3,
 		InstallationID: installation.InstallationID,
 		Phase:          PhaseInitialized,
 		Profile:        options.Profile,
@@ -770,6 +911,10 @@ func initializeProvidersOnly(ctx context.Context, options Options) (Receipt, boo
 }
 
 func Status(ctx context.Context, root string, runner provider.Runner, repositoryRunners ...repository.Runner) (State, error) {
+	return StatusWithEvidence(ctx, root, runner, StatusOptions{}, repositoryRunners...)
+}
+
+func StatusWithEvidence(ctx context.Context, root string, runner provider.Runner, options StatusOptions, repositoryRunners ...repository.Runner) (State, error) {
 	receipt, present, err := readReceipt(root)
 	if err != nil {
 		return State{}, err
@@ -778,6 +923,7 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 		return State{Status: StatusAbsent}, nil
 	}
 	state := State{Status: receipt.Phase, Profile: receipt.Profile, Project: receipt.Project}
+	state.Evidence = evaluateStatusEvidence(ctx, receipt, options)
 	for _, item := range receipt.Providers {
 		state.Providers = append(state.Providers, item.Name)
 	}
@@ -896,6 +1042,110 @@ func Status(ctx context.Context, root string, runner provider.Runner, repository
 		}
 	}
 	return state, nil
+}
+
+func evaluateStatusEvidence(ctx context.Context, receipt Receipt, options StatusOptions) domain.EvidenceReceipt {
+	profile := receipt.EvidenceProfile
+	deploymentDigest := receipt.DeploymentDigest
+	subjectDigest := receipt.SubjectDigest
+	var diagnostics []domain.Diagnostic
+	if receipt.SchemaVersion != receiptSchemaV4 {
+		profile = domain.EvidenceProfileID(strings.ToLower(strings.TrimSpace(string(options.EvidenceProfileOverride))))
+		if profile != "" {
+			if err := domain.ValidateEvidenceProfileSelection(profile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: "AGX-EVIDENCE-SUBJECT-INCOMPLETE", Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "temporary evidence profile selectors are invalid",
+				})
+			} else {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: "AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT", Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "legacy initialization receipts cannot accept an evidence profile override; rerun agx init with an explicit evidence profile",
+				})
+			}
+		}
+		deploymentDigest = domain.NamespacedIdentitySHA256("agx", "legacy-deployment", strings.Join([]string{
+			receipt.SchemaVersion, receipt.InstallationID, receipt.TemplateVersion, receipt.TemplateContentSHA256,
+			receipt.GitHubOwner, receipt.ControlRepository, receipt.ContractsRepository, string(receipt.Profile),
+		}, "\x00"))
+		subjectDigest = domain.NamespacedIdentitySHA256("agx", "legacy-evidence-subject", strings.Join([]string{
+			string(profile), deploymentDigest, strings.ToLower(strings.TrimSpace(options.MulticaWorkspaceID)),
+			strings.ToLower(strings.TrimSpace(options.MulticaRuntimeID)), strings.ToLower(strings.TrimSpace(options.MulticaAgentID)),
+		}, "\x00"))
+	} else if profile == "" {
+		diagnostics = append(diagnostics, domain.Diagnostic{
+			Code: "AGX-EVIDENCE-PROFILE-MISSING", Category: domain.DiagnosticCategoryPreflight,
+			Severity: domain.SeverityError, Message: "persisted v4 receipt is missing its evidence profile",
+		})
+	} else {
+		selectorOverride := options.EvidenceProfileOverride != "" || options.MulticaWorkspaceID != "" || options.MulticaRuntimeID != "" || options.MulticaAgentID != ""
+		selectedProfile := profile
+		if options.EvidenceProfileOverride != "" {
+			selectedProfile = options.EvidenceProfileOverride
+		}
+		if selectorOverride {
+			if err := domain.ValidateEvidenceProfileSelection(selectedProfile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: "AGX-EVIDENCE-SUBJECT-INCOMPLETE", Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "temporary evidence profile selectors are invalid",
+				})
+			}
+		}
+		if options.EvidenceProfileOverride != "" && options.EvidenceProfileOverride != profile {
+			diagnostics = append(diagnostics, domain.Diagnostic{
+				Code: "AGX-EVIDENCE-PROFILE-MISMATCH", Category: domain.DiagnosticCategoryPreflight,
+				Severity: domain.SeverityError, Message: "temporary evidence profile override conflicts with the persisted profile",
+			})
+		}
+		if profile == domain.EvidenceProfileMulticaExecutionV1 && selectorOverride && receipt.SubjectBinding != nil && receipt.SubjectBinding.MulticaSelectors != nil {
+			persisted := receipt.SubjectBinding.MulticaSelectors
+			if !strings.EqualFold(strings.TrimSpace(options.MulticaWorkspaceID), persisted.WorkspaceUUID) ||
+				!strings.EqualFold(strings.TrimSpace(options.MulticaRuntimeID), persisted.RuntimeUUID) ||
+				!strings.EqualFold(strings.TrimSpace(options.MulticaAgentID), persisted.AgentUUID) {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: "AGX-EVIDENCE-SUBJECT-MISMATCH", Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "temporary Multica selectors conflict with the persisted evidence subject",
+				})
+			}
+		}
+	}
+	var observations []domain.EvidenceObservation
+	if len(diagnostics) == 0 && profile != "" {
+		for _, collector := range options.Collectors {
+			if collector == nil {
+				continue
+			}
+			batch := collector.Collect(ctx, receipt)
+			observations = append(observations, batch.Observations...)
+			for range batch.Diagnostics {
+				diagnostics = append(diagnostics, collectorDiagnostic(collector.Source()))
+			}
+		}
+	}
+	evaluatedAt := options.EvaluatedAt
+	if evaluatedAt.IsZero() {
+		evaluatedAt = time.Now().UTC()
+	}
+	return domain.EvaluateEvidence(domain.EvaluationInput{
+		SchemaVersion: domain.EvidenceInputSchemaV1, EvaluatorVersion: domain.EvidenceEvaluatorV1,
+		InstallationID: domain.InstallationID(receipt.InstallationID), DeploymentDigest: deploymentDigest,
+		SubjectDigest: subjectDigest, Profile: profile, EvaluatedAt: evaluatedAt,
+		Observations: observations, Diagnostics: diagnostics,
+	})
+}
+
+func collectorDiagnostic(source domain.EvidenceSource) domain.Diagnostic {
+	code := domain.DiagnosticCode("AGX-EVIDENCE-COLLECTOR-SOURCE-INVALID")
+	message := "evidence collector returned diagnostics without a supported source"
+	switch source {
+	case domain.EvidenceSourceGitHub:
+		code = "AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED"
+		message = "GitHub evidence collector failed"
+	case domain.EvidenceSourceMultica:
+		code = "AGX-EVIDENCE-MULTICA-COLLECTOR-FAILED"
+		message = "Multica evidence collector failed"
+	}
+	return domain.Diagnostic{Code: code, Category: domain.DiagnosticCategoryPreflight, Severity: domain.SeverityError, Message: message}
 }
 
 func statusContextError(ctx context.Context) error {
@@ -1324,7 +1574,7 @@ func readReceipt(root string) (Receipt, bool, error) {
 			return Receipt{}, false, err
 		}
 	}
-	if receipt.SchemaVersion != receiptSchema || receipt.InstallationID == "" ||
+	if (receipt.SchemaVersion != receiptSchemaV3 && receipt.SchemaVersion != receiptSchemaV4) || receipt.InstallationID == "" ||
 		(receipt.Phase != PhaseInitialized && receipt.Phase != PhaseProvisioning && receipt.Phase != PhaseNeedsResume && receipt.Phase != PhaseManualCleanup) {
 		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: required fields are missing")
 	}
@@ -1361,7 +1611,7 @@ func migrateReceiptV2(receipt *Receipt) error {
 			item.RequiredPaths = append(item.RequiredPaths, file.Path)
 		}
 	}
-	receipt.SchemaVersion = receiptSchema
+	receipt.SchemaVersion = receiptSchemaV3
 	return nil
 }
 
@@ -1422,6 +1672,71 @@ func requireRealMetadataEntry(path string, info os.FileInfo, directory bool, lab
 	return nil
 }
 
+func evidenceBindingsMatchReceipt(receipt Receipt) bool {
+	deployment := receipt.DeploymentBinding
+	subject := receipt.SubjectBinding
+	if deployment == nil || subject == nil {
+		return false
+	}
+	control, controlErr := bootstrap.Render(bootstrap.KindAgentControl, bootstrap.Params{
+		Owner: receipt.GitHubOwner, Repository: receipt.ControlRepository, PluginSource: bootstrap.AgentPluginsReferenceRepository,
+	})
+	contracts, contractsErr := bootstrap.Render(bootstrap.KindAgentContracts, bootstrap.Params{
+		Owner: receipt.GitHubOwner, Repository: receipt.ContractsRepository, PluginSource: bootstrap.AgentPluginsReferenceRepository,
+	})
+	if controlErr != nil || contractsErr != nil {
+		return false
+	}
+	projectTarget := buildProjectTarget(Options{
+		GitHubOwner: receipt.GitHubOwner, ControlRepository: receipt.ControlRepository, Visibility: receipt.Visibility,
+	}, receipt.InstallationID)
+	projectSelector := strings.Join([]string{projectTarget.Owner, projectTarget.Title, projectTarget.LinkedRepository, string(projectTarget.Visibility)}, "\x00")
+	contractTitle := "Bootstrap Verification [" + receipt.InstallationID + "]"
+	contractMarker := "AGX-Installation: " + receipt.InstallationID
+	firstUseSelector := strings.Join([]string{contractTitle, contractMarker, "agx/bootstrap-verification-" + receipt.InstallationID, "python tools/validate.py", "Validate control baseline", "validate"}, "\x00")
+	expectedControl := domain.RepositoryBindingV1{
+		IdentitySHA256:        domain.NamespacedIdentitySHA256("github", "repository", receipt.GitHubOwner+"/"+receipt.ControlRepository),
+		RenderedContentSHA256: control.Digest,
+	}
+	expectedContracts := domain.RepositoryBindingV1{
+		IdentitySHA256:        domain.NamespacedIdentitySHA256("github", "repository", receipt.GitHubOwner+"/"+receipt.ContractsRepository),
+		RenderedContentSHA256: contracts.Digest,
+	}
+	if deployment.TemplateVersion != receipt.TemplateVersion || deployment.TemplateSetSHA256 != receipt.TemplateContentSHA256 ||
+		deployment.ProviderProfile != string(receipt.Profile) || deployment.ControlRepository != expectedControl ||
+		deployment.ContractsRepository != expectedContracts ||
+		deployment.ProjectIdentitySHA256 != domain.NamespacedIdentitySHA256("github", "project", projectSelector) ||
+		deployment.FirstUseContractSHA256 != domain.NamespacedIdentitySHA256("agx", "first-use-contract", firstUseSelector) {
+		return false
+	}
+	if len(receipt.Providers) > 0 {
+		providers := make([]string, 0, len(receipt.Providers))
+		for _, item := range receipt.Providers {
+			providers = append(providers, string(item.Name))
+		}
+		if !sameStrings(deployment.SelectedProviders, providers) {
+			return false
+		}
+	}
+	expectedGitHub := domain.GitHubSubjectSelectorsV1{
+		ControlRepositorySHA256: expectedControl.IdentitySHA256, ContractsRepositorySHA256: expectedContracts.IdentitySHA256,
+		ProjectSelectorSHA256:     deployment.ProjectIdentitySHA256,
+		IssueSelectorSHA256:       domain.NamespacedIdentitySHA256("github", "issue", contractTitle+"\x00"+contractMarker),
+		PullRequestSelectorSHA256: domain.NamespacedIdentitySHA256("github", "pull_request", contractTitle+"\x00"+contractMarker),
+		BranchSelectorSHA256:      domain.NamespacedIdentitySHA256("github", "branch", "agx/bootstrap-verification-"+receipt.InstallationID),
+		WorkflowSHA256:            domain.NamespacedIdentitySHA256("github", "workflow", bootstrap.AgentControlValidationWorkflowSHA256),
+		CheckSelectorSHA256:       domain.NamespacedIdentitySHA256("github", "check", "validate"),
+	}
+	if subject.InstallationMarkerSHA256 != domain.NamespacedIdentitySHA256("agx", "installation", receipt.InstallationID) ||
+		subject.GitHubSelectors != expectedGitHub {
+		return false
+	}
+	if receipt.EvidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
+		return subject.MulticaSelectors != nil && subject.MulticaSelectors.ExecutionMarkerSHA256 == domain.NamespacedIdentitySHA256("multica", "execution", receipt.InstallationID)
+	}
+	return subject.MulticaSelectors == nil
+}
+
 func validateReceipt(receipt Receipt) error {
 	deployment := receipt.GitHubOwner != "" || receipt.ControlRepository != "" || receipt.ContractsRepository != "" || receipt.Project != nil ||
 		receipt.Visibility != "" || receipt.TemplateVersion != "" || receipt.TemplateContentSHA256 != "" || len(receipt.Repositories) > 0
@@ -1448,10 +1763,11 @@ func validateReceipt(receipt Receipt) error {
 			rendered, renderErr := bootstrap.Render(kind, bootstrap.Params{
 				Owner: receipt.GitHubOwner, Repository: repositoryName, PluginSource: bootstrap.AgentPluginsReferenceRepository,
 			})
+			pathsInvalid := (receipt.SchemaVersion == receiptSchemaV4 && len(item.RequiredPaths) == 0) ||
+				(len(item.RequiredPaths) > 0 && !sameTemplatePaths(item.RequiredPaths, rendered.Files))
 			if !expected[key] || seen[key] || item.Visibility != receipt.Visibility || item.InitialCommit == "" ||
 				item.URL != "https://github.com/"+item.NameWithOwner || renderErr != nil ||
-				item.TemplateVersion != rendered.Version || item.TemplateDigest != rendered.Digest ||
-				!sameTemplatePaths(item.RequiredPaths, rendered.Files) ||
+				item.TemplateVersion != rendered.Version || item.TemplateDigest != rendered.Digest || pathsInvalid ||
 				(item.Verification != repository.VerificationReadback && item.Verification != repository.VerificationUncertain) {
 				return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repository ownership evidence is inconsistent")
 			}
@@ -1470,6 +1786,24 @@ func validateReceipt(receipt Receipt) error {
 		}
 	} else if len(receipt.Repositories) != 0 {
 		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repositories require deployment metadata")
+	}
+	if receipt.SchemaVersion == receiptSchemaV4 {
+		if receipt.EvidenceProfile == "" || receipt.DeploymentBinding == nil || receipt.DeploymentDigest == "" || receipt.SubjectBinding == nil || receipt.SubjectDigest == "" ||
+			receipt.DeploymentBinding.InstallationID != domain.InstallationID(receipt.InstallationID) ||
+			receipt.SubjectBinding.Profile != receipt.EvidenceProfile || receipt.SubjectBinding.DeploymentDigest != receipt.DeploymentDigest ||
+			!evidenceBindingsMatchReceipt(receipt) {
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: evidence binding is missing or inconsistent")
+		}
+		deploymentDigest, err := domain.ComputeDeploymentDigest(*receipt.DeploymentBinding)
+		if err != nil || deploymentDigest != receipt.DeploymentDigest {
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: deployment evidence binding is inconsistent")
+		}
+		subjectDigest, err := domain.ComputeSubjectDigest(*receipt.SubjectBinding)
+		if err != nil || subjectDigest != receipt.SubjectDigest {
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: subject evidence binding is inconsistent")
+		}
+	} else if receipt.EvidenceProfile != "" || receipt.DeploymentBinding != nil || receipt.DeploymentDigest != "" || receipt.SubjectBinding != nil || receipt.SubjectDigest != "" {
+		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: legacy receipt contains unsupported evidence metadata")
 	}
 	selected, err := Plugins(receipt.Profile)
 	if err != nil {

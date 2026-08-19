@@ -58,10 +58,10 @@ func TestLiveRuntimeReadback(t *testing.T) {
 		Multica: readback,
 	})
 	if err != nil {
-		t.Fatalf("verified receipt from live readback failed: %v", err)
+		t.Fatalf("legacy verified receipt from live readback failed: %v", err)
 	}
 	if receipt.Phase != domain.PhaseVerified {
-		t.Errorf("phase = %q, want %q", receipt.Phase, domain.PhaseVerified)
+		t.Errorf("legacy phase = %q, want %q", receipt.Phase, domain.PhaseVerified)
 	}
 
 	// A name that cannot exist must be refused, not silently verified — the

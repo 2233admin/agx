@@ -15,6 +15,7 @@ import (
 
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/bootstrap"
+	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/exitcode"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/provider"
@@ -124,14 +125,14 @@ func TestGuidedInitDiscoversBothProvidersAndPrintsWindowsApplyCommand(t *testing
 	repositoryRunner := &guidedRepositoryRunner{login: "octo-lab", missing: map[string]bool{}}
 	planCalls := 0
 	dependencies := runtimeDependencies{
-		stdin:            strings.NewReader("\n\n\n\n\n\nyes\n"),
+		stdin:            strings.NewReader("\n\n\n\n\n\n\nyes\n"),
 		providerRunner:   providerRunner,
 		repositoryRunner: repositoryRunner,
 		goos:             "windows",
 		initPlan: func(_ context.Context, options activation.Options) (activation.InitializationPlan, error) {
 			planCalls++
 			if options.GitHubOwner != "octo-lab" || options.Profile != activation.ProfileGitHub ||
-				options.Visibility != repository.VisibilityPrivate || options.ControlRepository != "agent-control" ||
+				options.EvidenceProfile != domain.EvidenceProfileGitHubDeliveryV1 || options.Visibility != repository.VisibilityPrivate || options.ControlRepository != "agent-control" ||
 				options.ContractsRepository != "agent-contracts" ||
 				!reflect.DeepEqual(options.Providers, []provider.Name{provider.Codex, provider.Claude}) {
 				t.Fatalf("guided plan options = %+v", options)
@@ -151,7 +152,7 @@ func TestGuidedInitDiscoversBothProvidersAndPrintsWindowsApplyCommand(t *testing
 	for _, want := range []string{
 		"AGX guided initialization discovery", "GitHub CLI: authenticated as octo-lab", "Recommended provider: both",
 		"Discovery and choices reviewed", "Remote repositories are retained on uninstall", "AGX initialization plan (no changes made)",
-		"--provider both --profile github --visibility private --control-repo agent-control --contracts-repo agent-contracts --apply",
+		"--provider both --profile github --evidence-profile github-delivery/v1 --visibility private --control-repo agent-control --contracts-repo agent-contracts --apply",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("guided stdout missing %q:\n%s", want, stdout.String())
@@ -167,6 +168,46 @@ func TestGuidedInitDiscoversBothProvidersAndPrintsWindowsApplyCommand(t *testing
 	}
 }
 
+func TestGuidedInitPromptsForMulticaEvidenceSelectors(t *testing.T) {
+	root := makeGuidedInstallation(t)
+	pluginSource := filepath.Join(root, "components", "agent-plugins")
+	validUUID := "123e4567-e89b-42d3-a456-426614174000"
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	code := runWithDependencies(
+		[]string{"init", "--guided", "--root", root}, "0.0.0-test", stdout, stderr,
+		runtimeDependencies{
+			stdin: strings.NewReader(strings.Join([]string{
+				"", "", "", "multica-execution/v1", "not-a-uuid", validUUID, validUUID, validUUID, "", "", "", "yes", "",
+			}, "\n")),
+			providerRunner:   newGuidedProviderRunner(pluginSource),
+			repositoryRunner: &guidedRepositoryRunner{login: "octo-lab", missing: map[string]bool{}},
+			initPlan: func(_ context.Context, options activation.Options) (activation.InitializationPlan, error) {
+				if options.EvidenceProfile != domain.EvidenceProfileMulticaExecutionV1 || options.MulticaWorkspaceID != validUUID ||
+					options.MulticaRuntimeID != validUUID || options.MulticaAgentID != validUUID {
+					t.Fatalf("guided evidence options = %+v", options)
+				}
+				return sampleInitPlan(options), nil
+			},
+		},
+	)
+	if code != exitcode.Success || stderr.Len() != 0 {
+		t.Fatalf("guided Multica evidence code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"Evidence profile", "Multica Workspace UUID", "Invalid UUID", "multica-execution/v1", "…4000"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("guided Multica evidence stdout missing %q:\n%s", want, output)
+		}
+	}
+	confirmationEnd := strings.Index(output, "Type yes to run")
+	if confirmationEnd < 0 || strings.Contains(output[:confirmationEnd], validUUID) {
+		t.Fatalf("guided confirmation exposed a full selector UUID:\n%s", output)
+	}
+	if strings.Count(output, validUUID) != 3 {
+		t.Fatalf("guided apply command did not retain exactly three selector UUIDs:\n%s", output)
+	}
+}
+
 func TestGuidedInitRecommendsClaudeWhenCodexHasSourceConflict(t *testing.T) {
 	root := makeGuidedInstallation(t)
 	pluginSource := filepath.Join(root, "components", "agent-plugins")
@@ -175,7 +216,7 @@ func TestGuidedInitRecommendsClaudeWhenCodexHasSourceConflict(t *testing.T) {
 	providerRunner.states[provider.Claude] = guidedProviderState{available: true, marketplaceSource: pluginSource, plugins: map[string]bool{}}
 	repositoryRunner := &guidedRepositoryRunner{login: "octo-lab", missing: map[string]bool{}}
 	dependencies := runtimeDependencies{
-		stdin:            strings.NewReader("\n\n\n\n\n\nyes\n"),
+		stdin:            strings.NewReader("\n\n\n\n\n\n\nyes\n"),
 		providerRunner:   providerRunner,
 		repositoryRunner: repositoryRunner,
 		goos:             "linux",
@@ -267,7 +308,7 @@ func TestGuidedInitSurfacesRepositoryCollisionBeforePrintingApplyCommand(t *test
 	code := runWithDependencies(
 		[]string{"init", "--guided", "--root", root}, "0.0.0-test", stdout, stderr,
 		runtimeDependencies{
-			stdin:            strings.NewReader("\n\n\n\n\n\nyes\n"),
+			stdin:            strings.NewReader("\n\n\n\n\n\n\nyes\n"),
 			providerRunner:   newGuidedProviderRunner(pluginSource),
 			repositoryRunner: &guidedRepositoryRunner{login: "octo-lab", missing: map[string]bool{}},
 			initPlan: func(context.Context, activation.Options) (activation.InitializationPlan, error) {
@@ -294,7 +335,7 @@ func TestGuidedInitUsesFreshPlanContextAfterPrompt(t *testing.T) {
 	code := runWithDependencies(
 		[]string{"init", "--guided", "--root", root}, "0.0.0-test", stdout, stderr,
 		runtimeDependencies{
-			stdin:            strings.NewReader("\n\n\n\n\n\nyes\n"),
+			stdin:            strings.NewReader("\n\n\n\n\n\n\nyes\n"),
 			providerRunner:   providerRunner,
 			repositoryRunner: repositoryRunner,
 			initPlan: func(ctx context.Context, options activation.Options) (activation.InitializationPlan, error) {
@@ -322,7 +363,7 @@ func TestGuidedInitRetriesInvalidProviderProfileAndVisibility(t *testing.T) {
 	code := runWithDependencies(
 		[]string{"init", "--guided", "--root", root}, "0.0.0-test", stdout, stderr,
 		runtimeDependencies{
-			stdin:            strings.NewReader("\nwat\nclaude\nbad-profile\nteam\nsideways\npublic\n\n\nyes\n"),
+			stdin:            strings.NewReader("\nwat\nclaude\nbad-profile\nteam\n\nsideways\npublic\n\n\nyes\n"),
 			providerRunner:   newGuidedProviderRunner(pluginSource),
 			repositoryRunner: &guidedRepositoryRunner{login: "octo-lab", missing: map[string]bool{}},
 			initPlan: func(_ context.Context, options activation.Options) (activation.InitializationPlan, error) {
@@ -406,7 +447,7 @@ func TestNonInteractiveInitJSONStillDoesNotPrompt(t *testing.T) {
 	root := makeGuidedInstallation(t)
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
 	code := runWithDependencies(
-		[]string{"init", "--root", root, "--github-owner", "octo-lab", "--provider", "codex", "--output", "json"},
+		[]string{"init", "--root", root, "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "github-delivery/v1", "--output", "json"},
 		"0.0.0-test", stdout, stderr,
 		runtimeDependencies{
 			stdin: strings.NewReader("this would be a prompt answer\n"),

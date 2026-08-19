@@ -1,11 +1,11 @@
 # AGX 部署可见性 MVP
 
-状态：实现中；本地自动化验收已覆盖，真实 GitHub + Agent smoke 仍是发布 Gate
+状态：Project 部署与首个真实可见闭环已交付；Evidence Profile 真值层正在分阶段接入
 日期：2026-08-18
 
 ## 要解决的问题
 
-当前 AGX 可以安装 Plugin Bundle、创建模板仓库并激活 Agent，但部署成功后不会直接创建 GitHub Project。用户必须再启动一个 Agent Session，依靠一句自由文本提示让 Agent “创建一个 Project，并完成依赖安装与验证”。因此安装状态与用户真正看得见、能工作的项目之间仍有一段未建模、未回读、不可恢复的空白。
+AGX 现在会在 `init --apply` 中创建、配置、关联并结构化回读部署专属 GitHub Project；初始化计划、恢复回执、first-use contract、`status` 与 `diagnose` 都能显示这个资源。用户仍需在新的 Agent Session 中执行版本化 first-use contract 来产生 Issue、Project item、分支/PR 与验证结果，但不再依靠一句未建模的自由文本创建看板。
 
 本 MVP 只解决三个可观察结果：
 
@@ -14,6 +14,8 @@
 3. 一个真实 Agent 能按模板完成一次最小写入闭环，并返回 Issue、Project item、分支/PR 和验证结果。
 
 Project 可见性不依赖 KA、知识内容或 Agent Plugin 是否已经在新 Session 中生效。AGX 负责创建和回读 Project；Agent 只负责真实使用 smoke。
+
+Project、模板与 first-use smoke 是 Evidence Profile 的外部 observation 来源，不是 `verified` 的快捷方式。`github-delivery/v1` 只有在完整 GitHub requirements 都与当前 installation/deployment/subject 绑定、结果匹配且仍在 freshness 窗口内时才可达到 `verified`；`multica-execution/v1` 在同一 GitHub 基线之外还要求 Workspace、Runtime、Agent 与完成的 Task 或 Run。Multica 是可选扩展，且不属于 AGX 0.1 的发布阻塞项。当前 evaluator 在 collector 尚未接入时应如实返回缺项或 `awaiting_verification`，不得从 Project 存在、Runtime online、PR opened、smoke effective 或 Agent 自报完成推断成功。
 
 ## 不在本 MVP 内
 
@@ -31,9 +33,9 @@ Project 可见性不依赖 KA、知识内容或 Agent Plugin 是否已经在新 
 | B01 | `agx apply` 安装固定 Release 的 `agent-plugins` | `internal/install/install.go` | 已有主干 |
 | B02 | `agx init --apply` 创建 `agent-control` 和 `agent-contracts` 仓 | `internal/activation/activation.go` | 已有主干 |
 | B03 | 仓库初始提交包含 README、AGENTS、Issue Forms、workflow 和验证工具 | `internal/bootstrap/templates/` | 模板内容存在 |
-| B04 | 初始化计划与回执只描述 repository/provider，没有 GitHub Project | `internal/activation/activation.go` | 缺少看板资源模型 |
+| B04 | 初始化计划、v3/v4 回执与状态输出包含 Project create/link/readback | `internal/activation/activation.go`, `internal/project/` | 已有主干 |
 | B05 | provider 只返回自由文本 first-use action | `internal/provider/provider.go` | 没有结构化 smoke 合同 |
-| B06 | 真实 Project smoke 仍是发布前未关闭 Gate | `docs/spec/TASKS.md` | 尚不能证明正常使用 |
+| B06 | 已完成一次真实 Project + Agent first-write 可见闭环；后续发布仍须按精确版本重复取证 | GitHub #42 / PR #48 交付证据 | 单次证据不等于持续 verified |
 
 ## Target flow
 
@@ -196,12 +198,12 @@ Project、模板和 Agent smoke 均成功时，最高只能记录对应的 initi
 
 - `internal/project` 已实现 Project scope/collision preflight、create/edit/link、结构化 readback 和 mutation journal；
 - `internal/repository` 已把 Issues 开关与远端 HEAD 必需模板路径纳入 readback；
-- initialization receipt 已升级为 v3，并能将 v2 在不重建部署仓的情况下迁移；
+- initialization receipt 已升级为 v4；v2 可迁移到 v3，v3 继续只读兼容，只有显式 Evidence Profile 的新初始化才持久化 v4 deployment/subject binding；
 - `agx.first-use/v1` 已绑定 Project、两个仓库、Issue/PR 标题、marker、branch、验证命令、六步 action 和四项 required output；
 - `status` / `diagnose` 已能显示 Project、仓库/template digest 与 `awaiting` / `effective` smoke evidence，并在 repository、Project、provider 或 smoke 回读被 deadline/cancellation 中断时返回 `AGX-STATUS-INCONCLUSIVE`；
 - 单元与隔离 adapter 测试覆盖 Project create/link 命令报错但远端已落地后的无重复恢复。
 
-尚未关闭的发布 Gate：在临时真实 owner 中执行一次 GitHub Project 创建、真实 Agent Issue/Project item/PR 写入，以及 Windows 11 / Ubuntu 24.04 双平台模板验证。该 Gate 完成前不得声称外部 `verified`。
+尚未关闭的 Gate：把 GitHub readback 转成当前 `github-delivery/v1` 的完整 typed observations，并在每个精确发布版本上重复 Windows 11 / Ubuntu 24.04 模板验证。可选 Multica collector 另票实现；collector 或必需 observation 缺失时保持 `awaiting_verification`，结果失败时进入 `blocked_outcome`，证据过期时进入 `blocked_freshness`，输入或能力在采集前无效时进入 `blocked_preflight`，不能弱化 Profile。任一 Gate 未取得匹配外部证据时都不得声称 `verified`。
 
 ## 后续优先级
 

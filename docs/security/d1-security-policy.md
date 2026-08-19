@@ -11,7 +11,7 @@
 ## 外部写入与验证
 
 - `status` 与 `diagnose` 只读；`verify` 要产生新的 acceptance 之前必须取得显式批准。
-- `verified` 只能由匹配的 GitHub acceptance Issue 和 Multica Task/Runtime 双侧回读证据赋予。`configured`、queued、running 或局部资源创建完成都不是成功。
+- `verified` 只能由操作者显式选择的版本化 Evidence Profile 的全部必需外部回读证据赋予：`github-delivery/v1` 要求完整、绑定一致且新鲜的 GitHub 交付证据；`multica-execution/v1` 在同一 GitHub 基线之外还要求匹配的 Multica Workspace、Runtime、Agent 与 Task/Run 证据。`configured`、queued、running、单个信号或局部资源创建完成都不是成功。
 - 缺失官方 CLI、版本不兼容、认证失败、Workspace 歧义、Runtime 离线或 JSON 合同无效时，必须在 mutation 前停在 `blocked_preflight`。
 
 ## 恢复与清理
@@ -22,4 +22,4 @@
 
 ## 审阅缺口
 
-`2233admin` 已批准 credential/redaction/cleanup 规则及平台标记/发布资格。fake fixture、mock adapter、旧项目测试或本政策本身不得代替真实 Multica 验收。
+`2233admin` 已批准 credential/redaction/cleanup 规则及平台标记/发布资格。fake fixture、mock adapter、旧项目测试或本政策本身不得代替所选 Evidence Profile 要求的真实外部验收；选择 `multica-execution/v1` 时，必须包含真实 Multica 回读。

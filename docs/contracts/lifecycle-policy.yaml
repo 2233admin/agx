@@ -1,21 +1,39 @@
-policy_version: 1
-status: approved_by_2233admin_pending_merge
-gate_issue: 5
-approved_by: 2233admin
-approval_scope:
-  - security
-  - release
+policy_version: 2
+status: pending_maintainer_review
+gate_issue: 54
+review_required:
+  - approve the github-delivery/v1 and multica-execution/v1 profile split and blocked outcome/freshness states
+  - confirm that only complete external evidence may produce verified
 success:
   terminal_state: verified
-  requires:
-    - github_acceptance_issue_readback
-    - multica_task_runtime_readback
-    - matching_installation_id
+  evidence_profile_selection: explicit
+  profiles:
+    github-delivery/v1:
+      requires:
+        - complete_github_delivery_readbacks
+        - matching_installation_deployment_subject
+        - fresh_matched_observations
+    multica-execution/v1:
+      extends: github-delivery/v1
+      requires:
+        - multica_workspace_readback
+        - multica_runtime_online
+        - multica_agent_readback
+        - multica_task_or_run_completed
+        - matching_installation_deployment_subject
+        - fresh_matched_observations
+  single_signal_never_verifies: true
+  legacy_receipts:
+    readable: true
+    infer_profile: false
+    rewrite_as_verified: false
 states:
   - planned
   - applying
   - configured
   - blocked_preflight
+  - blocked_outcome
+  - blocked_freshness
   - awaiting_verification
   - verified
   - needs_manual_cleanup

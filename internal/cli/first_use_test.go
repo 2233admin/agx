@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/2233admin/agx/internal/activation"
+	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/exitcode"
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/project"
@@ -100,7 +101,7 @@ func TestInitReturnsSoftwareWhenFirstUseContractCannotBeDerived(t *testing.T) {
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
 
 	code := runWithDependencies(
-		[]string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--apply", "--output", "json"},
+		[]string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "github-delivery/v1", "--apply", "--output", "json"},
 		"0.0.0-test", stdout, stderr,
 		runtimeDependencies{initApply: func(context.Context, activation.Options) (activation.Receipt, bool, error) {
 			return receipt, false, nil
@@ -109,6 +110,57 @@ func TestInitReturnsSoftwareWhenFirstUseContractCannotBeDerived(t *testing.T) {
 
 	if code != exitcode.Software || stdout.Len() != 0 || !strings.Contains(stderr.String(), "AGX-INIT-FIRST-USE-CONTRACT") {
 		t.Fatalf("code=%d stdout=%q stderr=%q, want stable software error without partial success output", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitErrorJSONPreservesCanonicalMulticaSubjectBinding(t *testing.T) {
+	selector := "123e4567-e89b-42d3-a456-426614174000"
+	subject := domain.SubjectBindingV1{
+		SchemaVersion: domain.EvidenceSubjectSchemaV1, Profile: domain.EvidenceProfileMulticaExecutionV1,
+		DeploymentDigest: strings.Repeat("a", 64), InstallationMarkerSHA256: strings.Repeat("b", 64),
+		GitHubSelectors: domain.GitHubSubjectSelectorsV1{
+			ControlRepositorySHA256: strings.Repeat("1", 64), ContractsRepositorySHA256: strings.Repeat("2", 64),
+			ProjectSelectorSHA256: strings.Repeat("3", 64), IssueSelectorSHA256: strings.Repeat("4", 64),
+			PullRequestSelectorSHA256: strings.Repeat("5", 64), BranchSelectorSHA256: strings.Repeat("6", 64),
+			WorkflowSHA256: strings.Repeat("7", 64), CheckSelectorSHA256: strings.Repeat("8", 64),
+		},
+		MulticaSelectors: &domain.MulticaSubjectSelectorsV1{
+			WorkspaceUUID: selector, RuntimeUUID: selector, AgentUUID: selector,
+			ExecutionMarkerSHA256: strings.Repeat("9", 64),
+		},
+	}
+	subjectDigest, err := domain.ComputeSubjectDigest(subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	code := runWithDependencies([]string{
+		"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex",
+		"--evidence-profile", "multica-execution/v1", "--multica-workspace-id", selector,
+		"--multica-runtime-id", selector, "--multica-agent-id", selector, "--apply", "--output", "json",
+	}, "0.0.0-test", stdout, stderr, runtimeDependencies{
+		initApply: func(context.Context, activation.Options) (activation.Receipt, bool, error) {
+			return activation.Receipt{
+				SchemaVersion: "agx.initialization/v4", Phase: activation.PhaseNeedsResume,
+				SubjectBinding: &subject, SubjectDigest: subjectDigest,
+			}, false, errors.New("bounded initialization failure")
+		},
+	})
+	if code != exitcode.Software {
+		t.Fatalf("init error JSON code = %d, want %d", code, exitcode.Software)
+	}
+	var result struct {
+		Receipt activation.Receipt `json:"receipt"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode init error JSON: %v", err)
+	}
+	if result.Receipt.SubjectBinding == nil || result.Receipt.SubjectBinding.MulticaSelectors == nil {
+		t.Fatal("init error JSON dropped typed Multica selectors")
+	}
+	computed, err := domain.ComputeSubjectDigest(*result.Receipt.SubjectBinding)
+	if err != nil || computed != result.Receipt.SubjectDigest {
+		t.Fatalf("init error JSON subject binding is not canonical: digest=%q err=%v", computed, err)
 	}
 }
 
@@ -123,6 +175,11 @@ func TestDeploymentVisibilityPrintsURLsTemplateEvidenceAndEffectiveSmoke(t *test
 			NameWithOwner: "octo-lab/agent-control", URL: "https://github.com/octo-lab/agent-control",
 			TemplateDigest: strings.Repeat("a", 64), Verification: repository.VerificationReadback,
 		}},
+		Evidence: domain.EvidenceReceipt{
+			Profile: domain.EvidenceProfileGitHubDeliveryV1, Phase: domain.PhaseAwaitingVerification,
+			Satisfied: []domain.RequirementResult{{ID: "github.repository", Code: "AGX-EVIDENCE-GITHUB-REPOSITORY"}},
+			Missing:   []domain.RequirementResult{{ID: "github.pull_request", Code: "AGX-EVIDENCE-GITHUB-PR"}},
+		},
 		Smoke: smoke.Evidence{
 			Status: smoke.StatusEffective, IssueURL: "https://github.com/octo-lab/agent-control/issues/12",
 			ProjectItem: "PVTI_item", PullRequestURL: "https://github.com/octo-lab/agent-control/pull/13",
@@ -136,6 +193,8 @@ func TestDeploymentVisibilityPrintsURLsTemplateEvidenceAndEffectiveSmoke(t *test
 		"https://github.com/orgs/octo-lab/projects/7", "octo-lab/agent-control", strings.Repeat("a", 64),
 		"https://github.com/octo-lab/agent-control/issues/12", "PVTI_item",
 		"https://github.com/octo-lab/agent-control/pull/13", "effective", "passed",
+		"Evidence satisfied: github.repository (AGX-EVIDENCE-GITHUB-REPOSITORY)",
+		"Evidence missing: github.pull_request (AGX-EVIDENCE-GITHUB-PR)",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("visibility output = %q, want %q", stdout.String(), want)
@@ -162,7 +221,7 @@ func TestApplyHelpAndNextStepRemainAvailable(t *testing.T) {
 	printApplyNextStep(stdout, `D:\AGX installations\default`)
 	want := fmt.Sprintf("Next: run the guided initialization preview with this %s command. It discovers gh identity, usable provider CLIs, source conflicts, repositories, and prints an exact apply command:\n", commandShellLabel()) +
 		fmt.Sprintf("  agx init --guided --root %s\n", quoteCommandArg(`D:\AGX installations\default`)) +
-		"Automation can keep using explicit agx init --root ... --github-owner ... --provider ... followed by the same command with --apply.\n" +
+		"Automation can keep using explicit agx init --root ... --github-owner ... --provider ... --evidence-profile github-delivery/v1|multica-execution/v1 followed by the same command with --apply.\n" +
 		"Installation phase is configured; initialization does not claim verified.\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("printApplyNextStep() = %q, want %q", got, want)
@@ -453,6 +512,110 @@ func TestStatusAndDiagnoseHideInconclusivePartialState(t *testing.T) {
 	}
 }
 
+func TestInitRejectsInvalidEvidenceSelectionBeforePlanning(t *testing.T) {
+	validUUID := "123e4567-e89b-42d3-a456-426614174000"
+	tests := []struct {
+		name string
+		args []string
+		code string
+	}{
+		{
+			name: "missing profile",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex"},
+			code: "AGX-EVIDENCE-PROFILE-REQUIRED",
+		},
+		{
+			name: "whitespace-only profile",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", " \t "},
+			code: "AGX-EVIDENCE-PROFILE-REQUIRED",
+		},
+		{
+			name: "unsupported profile",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "github-delivery/v2"},
+			code: "AGX-EVIDENCE-PROFILE-UNSUPPORTED",
+		},
+		{
+			name: "incomplete Multica selectors",
+			args: []string{"init", "--root", t.TempDir(), "--github-owner", "octo-lab", "--provider", "codex", "--evidence-profile", "multica-execution/v1", "--multica-workspace-id", validUUID},
+			code: "AGX-EVIDENCE-SUBJECT-INCOMPLETE",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			planned := false
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			result := runWithDependencies(test.args, "0.0.0-test", stdout, stderr, runtimeDependencies{
+				initPlan: func(context.Context, activation.Options) (activation.InitializationPlan, error) {
+					planned = true
+					return activation.InitializationPlan{}, nil
+				},
+			})
+			if result != exitcode.Usage || planned || stdout.Len() != 0 || !strings.Contains(stderr.String(), test.code) ||
+				!strings.Contains(stderr.String(), "--evidence-profile github-delivery/v1|multica-execution/v1") {
+				t.Fatalf("runWithDependencies() code=%d planned=%v stdout=%q stderr=%q, want preflight %s plus accepted values", result, planned, stdout.String(), stderr.String(), test.code)
+			}
+		})
+	}
+}
+
+func TestStatusAndDiagnoseRejectInvalidEvidenceSelectorsBeforeReadback(t *testing.T) {
+	root := makeGuidedInstallation(t)
+	validUUID := "123e4567-e89b-42d3-a456-426614174000"
+	for _, command := range []string{"status", "diagnose"} {
+		t.Run(command, func(t *testing.T) {
+			readbackCalled := false
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			code := runWithDependencies([]string{
+				command, "--root", root, "--evidence-profile", "multica-execution/v1",
+				"--multica-workspace-id", validUUID, "--multica-runtime-id", "runtime", "--multica-agent-id", validUUID,
+			}, "0.0.0-test", stdout, stderr, runtimeDependencies{
+				statusWithEvidence: func(context.Context, string, provider.Runner, activation.StatusOptions, ...repository.Runner) (activation.State, error) {
+					readbackCalled = true
+					return activation.State{}, nil
+				},
+			})
+			if code != exitcode.Usage || readbackCalled || stdout.Len() != 0 || !strings.Contains(stderr.String(), "AGX-EVIDENCE-SUBJECT-INCOMPLETE") {
+				t.Fatalf("%s malformed selectors code=%d readback=%v stdout=%q stderr=%q", command, code, readbackCalled, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestPrintStatusNextReportsEvidenceAndDeploymentActions(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	printStatusNext(stdout, `D:\agx`, "configured", nil, nil, activation.State{
+		Status: activation.PhaseInitialized,
+		Evidence: domain.EvidenceReceipt{
+			Phase:     domain.PhaseAwaitingVerification,
+			NextSteps: []string{"read back the delivery PR"},
+		},
+		Smoke:    smoke.Evidence{Status: smoke.StatusAwaiting},
+		Problems: []string{"repository octo-lab/agent-control drifted"},
+	})
+	for _, want := range []string{"read back the delivery PR", "start a new Agent session", "resolve each initialization problem"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("printStatusNext() = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestDiagnoseEvidenceAndFirstUseNextStepsCoexist(t *testing.T) {
+	next := diagnoseNextSteps("ignored", installer.State{Phase: "configured"}, activation.State{
+		Status: activation.PhaseInitialized,
+		Evidence: domain.EvidenceReceipt{
+			Phase:     domain.PhaseAwaitingVerification,
+			NextSteps: []string{"read back the delivery PR"},
+		},
+		Smoke: smoke.Evidence{Status: smoke.StatusAwaiting},
+	})
+	joined := strings.Join(next, "\n")
+	for _, want := range []string{"read back the delivery PR", "run one first-use Agent prompt"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("diagnoseNextSteps() = %#v, want %q", next, want)
+		}
+	}
+}
+
 func TestInitPlanResultHasStableMachineReadableEnvelope(t *testing.T) {
 	plan := activation.InitializationPlan{
 		InstallationID: "install-test", TemplateVersion: "bootstrap-test",
@@ -467,7 +630,7 @@ func TestInitPlanResultHasStableMachineReadableEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"mode":"plan","mutation_performed":false,"plan":{"installation_id":"install-test","template_version":"bootstrap-test","template_content_sha256":"` + strings.Repeat("a", 64) + `","plugin_source":"zaurakworks/agent-plugins","profile":"core","providers":[],"repositories":[],"project":{"owner":"octo-lab","title":"agent-control deployment (install-test)","visibility":"private","linked_repository":"octo-lab/agent-control","action":"create","retained_on_uninstall":true}}}`
+	want := `{"mode":"plan","mutation_performed":false,"plan":{"installation_id":"install-test","template_version":"bootstrap-test","template_content_sha256":"` + strings.Repeat("a", 64) + `","plugin_source":"zaurakworks/agent-plugins","profile":"core","evidence_profile":"","deployment_digest":"","subject_digest":"","providers":[],"repositories":[],"project":{"owner":"octo-lab","title":"agent-control deployment (install-test)","visibility":"private","linked_repository":"octo-lab/agent-control","action":"create","retained_on_uninstall":true}}}`
 	if string(data) != want {
 		t.Fatalf("init plan JSON = %s, want %s", data, want)
 	}

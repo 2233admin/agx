@@ -15,11 +15,11 @@ AGXCLI (`agx`) 是小型部署与生命周期 CLI：它安装固定版本的 `ag
 ```text
 agx apply --root D:\agx\installations\default
 agx init --guided --root D:\agx\installations\default
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --apply
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1 --apply
 ```
 
-`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、profile、visibility 与两个部署仓名。确认后执行的只读 plan preflight 才检查 Projects `project` scope，并打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
+`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、能力 profile、Evidence Profile、visibility 与两个部署仓名；选择 Multica Profile 时还会校验三个 selector UUID。确认后执行的只读 plan preflight 才检查 Projects `project` scope，并打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
 ## 四仓部署速查
 
@@ -37,7 +37,7 @@ AGX 交付时用户会看到四类仓库，但它们不是同一层东西：
 ```powershell
 agx apply --root D:\agx\installations\default
 agx init --guided --root D:\agx\installations\default
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider <guided-recommendation> --profile github --apply
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider <guided-recommendation> --profile github --evidence-profile github-delivery/v1 --apply
 ```
 
 第二条命令必须先看计划：它会列出目标 owner、两个仓库、Project title/link、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名资源冲突行为，并根据无冲突 provider 给出推荐。第三条命令才创建远端仓库与 Project、完成结构化回读并激活 Codex/Claude。初始化后用户已经能直接打开 Project；再开启新的 Agent 会话，执行输出中的 `agx.first-use/v1` 合同，创建 Bootstrap Verification Issue、Project item 和未合并 PR。`agx status` / `agx diagnose` 会回读这些 evidence，并报告 `awaiting` 或 `effective`。如果远端回读期间达到 deadline 或被取消，命令返回 `AGX-STATUS-INCONCLUSIVE`，不会把未完成的观察误报为 drift；远端状态可能已变化，应重新运行 `agx status` 或 `agx diagnose`，该失败路径不会执行任何写入。
@@ -82,8 +82,8 @@ go run ./cmd/agx init --help
 ```powershell
 go run ./cmd/agx apply --root D:\agx\installations\default
 go run ./cmd/agx init --guided --root D:\agx\installations\default
-go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
-go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --apply
+go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --evidence-profile github-delivery/v1
+go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --evidence-profile github-delivery/v1 --apply
 go run ./cmd/agx status --root D:\agx\installations\default
 go run ./cmd/agx diagnose --root D:\agx\installations\default
 go run ./cmd/agx uninstall --root D:\agx\installations\default
@@ -99,7 +99,7 @@ go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-202
 
 重复应用同一 Bundle 或重复执行同一初始化不会重复写入；不同 Bundle 不会覆盖既有安装。初始化中断后，重试会先验证回执记录的远端仓库及其初始提交，再只继续缺失的步骤；AGX 不把一个碰巧同名的仓库当成自己创建的仓库。
 
-`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle。两个部署仓、关联 Project、任何未知文件和预存运行端对象都会保留。此阶段最高安装状态是 `configured`；GitHub 与 Multica 双侧证据完成前不会输出 `verified`。
+`uninstall` 先撤销初始化回执证明由 AGX 新增的插件。若 Marketplace 也由 AGX 新增，随后一并撤销；若它在初始化前已经存在，AGX 会保留它，并在它仍引用安装目录时停止删除对应 Bundle。两个部署仓、关联 Project、任何未知文件和预存运行端对象都会保留。此阶段最高安装状态是 `configured`；只有当前 Evidence Profile 的全部必需证据完成后才会输出 `verified`。`github-delivery/v1` 不要求 Multica 证据，`multica-execution/v1` 则同时要求 GitHub 与 Multica 证据。
 
 ## 初始化能力包
 
@@ -109,7 +109,7 @@ go run ./cmd/agx apply --bundle testdata/bundles/v2-production-agx-bootstrap-202
 agx init --guided --root D:\agx\installations\default
 ```
 
-自动化仍使用显式 `init` 参数。显式 `init` 必须指定 GitHub owner 和运行端；不传 `--profile` 时默认是 `core`，仓库默认私有。guided 入口为了首次部署可用性默认建议 `github` profile，并要求用户在输出 apply 命令前确认：
+自动化仍使用显式 `init` 参数。显式 `init` 必须指定 GitHub owner、运行端和 Evidence Profile；不传 `--profile` 时默认是 `core`，仓库默认私有。`github-delivery/v1` 只以 GitHub 交付资源为 subject；`multica-execution/v1` 还必须显式指定格式正确的 workspace、runtime 和 agent UUID。未知 Profile、缺少选择器或格式错误会在文件系统及远端写入前停止。guided 入口为了首次部署可用性默认建议 `github` 能力包和 `github-delivery/v1` Evidence Profile，并要求用户在输出 apply 命令前确认：
 
 首次初始化前先确认本机入口，不需要把任何凭据交给 AGX：
 
@@ -121,12 +121,12 @@ claude --version  # 只选 Codex 时可省略
 ```
 
 ```powershell
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --visibility public
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --control-repo my-control --contracts-repo my-contracts --apply --output json
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --evidence-profile github-delivery/v1
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --evidence-profile github-delivery/v1 --visibility public
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider both --profile full --evidence-profile multica-execution/v1 --multica-workspace-id 123e4567-e89b-42d3-a456-426614174000 --multica-runtime-id 123e4567-e89b-42d3-a456-426614174001 --multica-agent-id 123e4567-e89b-42d3-a456-426614174002 --control-repo my-control --contracts-repo my-contracts --apply --output json
 ```
 
-不带 `--apply` 的结果是只读初始化计划；带 `--apply` 的成功结果中，`repositories` 记录目标 URL、visibility、初始 commit、模板 digest 与必需路径，`project` 记录 number、node ID、URL、visibility 和控制仓 link，`first_use_contract` / `first_use` 提供版本化合同和每个 Agent 一条自包含 prompt。部分成功会保留可恢复回执并返回错误，不会删除已经创建的远端资源。
+不带 `--apply` 的结果是只读初始化计划；带 `--apply` 的成功结果中，`repositories` 记录目标 URL、visibility、初始 revision、精确 rendered-content digest 与必需路径，`project` 记录 number、node ID、URL、visibility 和控制仓 link，`first_use_contract` / `first_use` 提供版本化合同和每个 Agent 一条自包含 prompt。初始化回执 v4 另外固定 Evidence Profile、deployment digest 和精确 subject binding，但不保存 token、API key、cookie、授权头或原始凭据。guided 确认摘要只显示 Multica selector 类型与 UUID 后四位；确认后的唯一一条精确、可复制 `--apply` 命令会包含完整 UUID，成功回执也会把这些允许持久化的 typed IDs 固定在 subject binding 中。`status` / `diagnose` 使用同一 evaluator：只有当前 Profile 的必需观测全部匹配绑定、在 freshness 窗口内且没有拒绝或漂移结果时才会输出 `verified`；GitHub-only 状态可由 `github-delivery/v1` 独立证明，`multica-execution/v1` 则额外显示 Workspace、Runtime、Agent 与 Task/Run readback。其它 Profile 的观测不会补齐当前 Profile。旧版回执仍可读取，并保持原有非 `verified` 状态。部分成功会保留可恢复回执并返回错误，不会删除已经创建的远端资源。
 
 若默认的 `<owner>/agent-control` 或 `<owner>/agent-contracts` 已存在，AGX 会在写入前停止，不会把它们静默当成自己创建的仓库。此时用 `--control-repo` / `--contracts-repo` 选择未占用名称，再重新运行只读计划。若 provider 已有同名 Marketplace 指向别处，AGX 同样不会改绑；先确认并处理原来源，或只选择没有冲突的 provider。初始化中断时没有单独的 `agx resume` 命令：修复输出的问题后，原样重跑此前的 `agx init ... --apply`，AGX 会根据恢复回执继续缺失步骤。
 

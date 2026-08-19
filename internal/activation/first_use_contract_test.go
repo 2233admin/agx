@@ -22,14 +22,14 @@ func TestFirstUseContractBindsDeploymentResourcesAndRequiredOutputs(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contract.SchemaVersion != smoke.ContractVersionV1 || contract.InstallationID != "install-test" ||
+	if contract.SchemaVersion != smoke.ContractVersionV1 || contract.InstallationID != testInstallationID ||
 		contract.ProjectURL != "https://github.com/orgs/octo-lab/projects/7" ||
 		contract.ControlRepositoryURL != "https://github.com/octo-lab/agent-control" ||
 		contract.ContractsRepositoryURL != "https://github.com/octo-lab/agent-contracts" ||
 		contract.Profile != "core" || contract.Objective != "complete bootstrap verification" ||
-		contract.IssueTitle != "Bootstrap Verification [install-test]" ||
-		contract.PullRequestTitle != contract.IssueTitle || contract.Marker != "AGX-Installation: install-test" ||
-		contract.Branch != "agx/bootstrap-verification-install-test" ||
+		contract.IssueTitle != "Bootstrap Verification ["+testInstallationID+"]" ||
+		contract.PullRequestTitle != contract.IssueTitle || contract.Marker != "AGX-Installation: "+testInstallationID ||
+		contract.Branch != "agx/bootstrap-verification-"+testInstallationID ||
 		contract.ValidationCommand != "python tools/validate.py" ||
 		contract.ValidationWorkflow != "Validate control baseline" || contract.ValidationCheck != "validate" ||
 		contract.ValidationWorkflowSHA256 != bootstrap.AgentControlValidationWorkflowSHA256 ||

@@ -223,7 +223,7 @@ func TestOSRunnerErrorOmitsStartedCommandStderr(t *testing.T) {
 	}
 }
 
-func TestReadbackFeedsVerifiedReceipt(t *testing.T) {
+func TestReadbackFeedsLegacyVerifiedReceipt(t *testing.T) {
 	runner := &fakeRunner{output: []byte(arrayShape)}
 
 	multicaSide, err := RuntimeReadback(context.Background(), "inst-1", "Claude (AU-5090)", runner)
@@ -244,14 +244,15 @@ func TestReadbackFeedsVerifiedReceipt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if receipt.Phase != domain.PhaseVerified {
-		t.Errorf("phase = %q, want %q", receipt.Phase, domain.PhaseVerified)
+		t.Errorf("legacy phase = %q, want %q", receipt.Phase, domain.PhaseVerified)
 	}
 
-	// Without the Multica half the receipt must not reach `verified`.
+	// The compatibility constructor still refuses an incomplete legacy pair;
+	// production evidence evaluation uses domain.EvaluateEvidence instead.
 	if _, err := domain.NewVerifiedReceipt("inst-1", domain.Verification{
 		GitHub: githubSide,
 	}); err == nil {
-		t.Error("expected verification to fail without a Multica readback")
+		t.Error("expected legacy verification to fail without a Multica readback")
 	}
 }
 

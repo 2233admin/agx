@@ -78,6 +78,8 @@ type Severity string
 
 const (
 	DiagnosticCategoryPreflight DiagnosticCategory = "preflight"
+	DiagnosticCategoryOutcome   DiagnosticCategory = "outcome"
+	DiagnosticCategoryFreshness DiagnosticCategory = "freshness"
 	SeverityWarning             Severity           = "warning"
 	SeverityError               Severity           = "error"
 )
