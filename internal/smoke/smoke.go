@@ -258,23 +258,25 @@ func validateContract(contract Contract) (string, error) {
 		contract.Objective != "complete bootstrap verification" || contract.Cleanup != "operator-owned" {
 		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: invalid first-use contract")
 	}
-	parsed, err := url.Parse(contract.ControlRepositoryURL)
-	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil {
+	controlOwner, controlRepository, valid := repositoryCoordinates(contract.ControlRepositoryURL)
+	if !valid {
 		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: invalid control repository URL")
 	}
-	slug := strings.Trim(parsed.Path, "/")
-	if strings.Count(slug, "/") != 1 {
-		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: invalid control repository URL")
+	contractsOwner, _, valid := repositoryCoordinates(contract.ContractsRepositoryURL)
+	if !valid {
+		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: invalid contracts repository URL")
+	}
+	if !strings.EqualFold(contractsOwner, controlOwner) {
+		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: deployment repository owners do not match")
 	}
 	projectOwner, _, err := projectCoordinates(contract.ProjectURL)
-	controlOwner, _, _ := strings.Cut(slug, "/")
 	if err != nil {
 		return "", err
 	}
 	if !strings.EqualFold(projectOwner, controlOwner) {
 		return "", fmt.Errorf("AGX-SMOKE-CONTRACT: Project owner does not match control repository owner")
 	}
-	return slug, nil
+	return controlOwner + "/" + controlRepository, nil
 }
 
 func validSHA256(value string) bool {
@@ -574,6 +576,19 @@ func rejectDuplicateJSONKeys(data []byte) error {
 		return fmt.Errorf("trailing data")
 	}
 	return nil
+}
+
+func repositoryCoordinates(value string) (string, string, bool) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawPath != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.Opaque != "" {
+		return "", "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if !strings.HasPrefix(parsed.Path, "/") || len(parts) != 2 || !validProjectOwner(parts[0]) || !validRepositoryName(parts[1]) {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func issueCoordinates(value string) (string, string, bool) {

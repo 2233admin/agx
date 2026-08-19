@@ -112,11 +112,26 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content))})
 	}
 	if args[0] == "api" && strings.Contains(args[1], "/contents/.github/workflows/validate.yml") {
-		workflow := "name: Validate control baseline\n\non:\n  pull_request:\n  push:\n    branches:\n      - main\n\npermissions:\n  contents: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Check out repository\n        uses: actions/checkout@v4\n      - name: Set up Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: \"3.11\"\n      - name: Validate repository baseline\n        run: python tools/validate.py\n"
-		if runner.wrongWorkflow {
-			workflow = "name: Validate control baseline\njobs:\n  validate:\n    steps:\n      - name: Skip validation\n        run: echo skipped\n"
+		rendered, err := bootstrap.Render(bootstrap.KindAgentControl, bootstrap.Params{
+			Owner: "octo-lab", Repository: "agent-control", PluginSource: bootstrap.AgentPluginsReferenceRepository,
+		})
+		if err != nil {
+			return nil, err
 		}
-		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(workflow))})
+		var workflow []byte
+		for _, file := range rendered.Files {
+			if file.Path == ".github/workflows/validate.yml" {
+				workflow = file.Content
+				break
+			}
+		}
+		if workflow == nil {
+			return nil, errors.New("validation workflow fixture is missing")
+		}
+		if runner.wrongWorkflow {
+			workflow = []byte("name: Validate control baseline\njobs:\n  validate:\n    steps:\n      - name: Skip validation\n        run: echo skipped\n")
+		}
+		return json.Marshal(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString(workflow)})
 	}
 	return nil, errors.New("unexpected gh command")
 }
@@ -291,6 +306,62 @@ func TestValidateContractRejectsProjectOwnerDifferentFromControlRepository(t *te
 	contract.ProjectURL = "https://github.com/orgs/other-owner/projects/7"
 	if _, err := validateContract(contract); err == nil {
 		t.Fatal("validateContract() accepted a Project owned outside the control repository owner")
+	}
+}
+
+func TestValidateContractRequiresCanonicalDeploymentRepositoryURLs(t *testing.T) {
+	invalid := map[string]string{
+		"http scheme":        "http://github.com/octo-lab/agent-control",
+		"userinfo":           "https://user@github.com/octo-lab/agent-control",
+		"port":               "https://github.com:443/octo-lab/agent-control",
+		"query":              "https://github.com/octo-lab/agent-control?tab=readme",
+		"force query":        "https://github.com/octo-lab/agent-control?",
+		"fragment":           "https://github.com/octo-lab/agent-control#readme",
+		"opaque":             "https:github.com/octo-lab/agent-control",
+		"encoded path":       "https://github.com/octo-lab%2Fagent-control",
+		"parent traversal":   "https://github.com/octo-lab/../agent-control",
+		"current traversal":  "https://github.com/octo-lab/./agent-control",
+		"trailing slash":     "https://github.com/octo-lab/agent-control/",
+		"extra path":         "https://github.com/octo-lab/agent-control/settings",
+		"invalid owner":      "https://github.com/bad_owner/agent-control",
+		"invalid repository": "https://github.com/octo-lab/agent~control",
+		"git suffix":         "https://github.com/octo-lab/agent-control.git",
+	}
+	for name, repositoryURL := range invalid {
+		t.Run("control "+name, func(t *testing.T) {
+			contract := testContract()
+			contract.ControlRepositoryURL = repositoryURL
+			if _, err := validateContract(contract); err == nil {
+				t.Fatalf("validateContract() accepted control repository URL %q", repositoryURL)
+			}
+		})
+		t.Run("contracts "+name, func(t *testing.T) {
+			contract := testContract()
+			contract.ContractsRepositoryURL = repositoryURL
+			if _, err := validateContract(contract); err == nil {
+				t.Fatalf("validateContract() accepted contracts repository URL %q", repositoryURL)
+			}
+		})
+	}
+}
+
+func TestValidateContractRequiresMatchingDeploymentRepositoryOwners(t *testing.T) {
+	contract := testContract()
+	contract.ContractsRepositoryURL = "https://github.com/other-owner/agent-contracts"
+	if _, err := validateContract(contract); err == nil {
+		t.Fatal("validateContract() accepted deployment repositories with different owners")
+	}
+}
+
+func TestValidateContractAcceptsCaseInsensitiveDeploymentOwnerMatch(t *testing.T) {
+	contract := testContract()
+	contract.ContractsRepositoryURL = "https://github.com/OCTO-LAB/agent-contracts"
+	slug, err := validateContract(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "octo-lab/agent-control" {
+		t.Fatalf("validateContract() slug = %q", slug)
 	}
 }
 

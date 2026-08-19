@@ -14,23 +14,33 @@ import (
 )
 
 func TestAgentControlValidationWorkflowDigest(t *testing.T) {
-	rendered, err := Render(KindAgentControl, Params{
-		Owner: "octo-lab", Repository: "agent-control", PluginSource: AgentPluginsReferenceRepository,
-	})
-	if err != nil {
-		t.Fatal(err)
+	parameters := []Params{
+		{Owner: "octo-lab", Repository: "agent-control", PluginSource: AgentPluginsReferenceRepository},
+		{Owner: "another-owner", Repository: "another-control", PluginSource: AgentPluginsReferenceRepository},
 	}
-	for _, file := range rendered.Files {
-		if file.Path != ".github/workflows/validate.yml" {
-			continue
+	workflows := make([][]byte, 0, len(parameters))
+	for _, params := range parameters {
+		rendered, err := Render(KindAgentControl, params)
+		if err != nil {
+			t.Fatal(err)
 		}
-		digest := sha256.Sum256(file.Content)
-		if got := hex.EncodeToString(digest[:]); got != AgentControlValidationWorkflowSHA256 {
-			t.Fatalf("validation workflow digest = %q, constant = %q", got, AgentControlValidationWorkflowSHA256)
+		for _, file := range rendered.Files {
+			if file.Path == ".github/workflows/validate.yml" {
+				workflows = append(workflows, file.Content)
+				break
+			}
 		}
-		return
 	}
-	t.Fatal("agent-control validation workflow is missing")
+	if len(workflows) != len(parameters) {
+		t.Fatal("agent-control validation workflow is missing")
+	}
+	if !bytes.Equal(workflows[0], workflows[1]) || bytes.Contains(workflows[0], []byte("@@AGX_")) {
+		t.Fatalf("validation workflow must be deployment-independent and placeholder-free:\n%s", workflows[0])
+	}
+	digest := sha256.Sum256(workflows[0])
+	if got := hex.EncodeToString(digest[:]); got != AgentControlValidationWorkflowSHA256 {
+		t.Fatalf("validation workflow digest = %q, constant = %q", got, AgentControlValidationWorkflowSHA256)
+	}
 }
 
 var goldenPaths = map[Kind][]string{

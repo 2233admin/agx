@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/project"
@@ -60,6 +61,90 @@ func newDeploymentRepositoryRunner() *deploymentRepositoryRunner {
 		malformedReadbacks: map[string]int{},
 		inspectErrors:      map[string]error{},
 	}
+}
+
+type statusContextRepositoryRunner struct {
+	delegate         repository.Runner
+	target           func(string, []string) bool
+	expire           func()
+	readErr          error
+	targetHits       int
+	targetSawHealthy bool
+}
+
+func (runner *statusContextRepositoryRunner) LookPath(name string) (string, error) {
+	return runner.delegate.LookPath(name)
+}
+
+func (runner *statusContextRepositoryRunner) Run(ctx context.Context, workdir, name string, args ...string) ([]byte, error) {
+	if runner.target(name, args) {
+		runner.targetHits++
+		runner.targetSawHealthy = ctx.Err() == nil
+		if runner.expire != nil {
+			runner.expire()
+		}
+		if runner.readErr != nil {
+			return nil, runner.readErr
+		}
+		return nil, ctx.Err()
+	}
+	return runner.delegate.Run(ctx, workdir, name, args...)
+}
+
+type statusContextProviderRunner struct {
+	delegate         provider.Runner
+	target           func(string, []string) bool
+	expire           func()
+	targetHits       int
+	targetSawHealthy bool
+}
+
+func (runner *statusContextProviderRunner) LookPath(name string) (string, error) {
+	return runner.delegate.LookPath(name)
+}
+
+func (runner *statusContextProviderRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if runner.target(name, args) {
+		runner.targetHits++
+		runner.targetSawHealthy = ctx.Err() == nil
+		runner.expire()
+		return nil, ctx.Err()
+	}
+	return runner.delegate.Run(ctx, name, args...)
+}
+
+type targetedStatusContext struct {
+	parent context.Context
+	done   chan struct{}
+	err    error
+}
+
+func newTargetedStatusContext(parent context.Context) *targetedStatusContext {
+	return &targetedStatusContext{parent: parent, done: make(chan struct{})}
+}
+
+func (ctx *targetedStatusContext) Deadline() (time.Time, bool) {
+	return ctx.parent.Deadline()
+}
+
+func (ctx *targetedStatusContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *targetedStatusContext) Err() error {
+	return ctx.err
+}
+
+func (ctx *targetedStatusContext) Value(key any) any {
+	return ctx.parent.Value(key)
+}
+
+func (ctx *targetedStatusContext) expire(err error) {
+	if ctx.err != nil {
+		panic("targeted status context expired more than once")
+	}
+	ctx.err = err
+	close(ctx.done)
 }
 
 func (runner *deploymentRepositoryRunner) LookPath(name string) (string, error) {
@@ -830,6 +915,169 @@ func TestUncertainRepositoryInconclusiveInspectionIsDriftAndPreservesCause(t *te
 	}
 }
 
+func TestStatusReturnsInconclusiveWhenReadbackContextExpires(t *testing.T) {
+	repositoryReadback := func(repositoryName, commit string) func(string, []string) bool {
+		return func(name string, args []string) bool {
+			return name == "gh" && len(args) >= 2 && args[0] == "api" && args[1] == "graphql" &&
+				graphQLArgument(args, "owner") == "octo-lab" && graphQLArgument(args, "name") == repositoryName &&
+				graphQLArgument(args, "commit") == commit
+		}
+	}
+	projectVerifyReadback := func(name string, args []string) bool {
+		return name == "gh" && argumentsEqual(args, []string{"repo", "view", "octo-lab/agent-control", "--json", "hasIssuesEnabled,projectsV2"})
+	}
+	projectRevalidateReadback := func(name string, args []string) bool {
+		return name == "gh" && argumentsEqual(args, []string{"auth", "status", "--active", "--json", "hosts"})
+	}
+	providerReadback := func(name string, args []string) bool {
+		return name == "codex" && argumentsEqual(args, []string{"plugin", "marketplace", "list", "--json"})
+	}
+	smokeReadback := func(name string, args []string) bool {
+		return name == "gh" && argumentsEqual(args, []string{"project", "list", "--owner", "octo-lab", "--limit", "100", "--format", "json"})
+	}
+
+	tests := []struct {
+		name           string
+		setup          string
+		projectBranch  string
+		repositoryCall func(string, []string) bool
+		providerCall   func(string, []string) bool
+		cause          error
+	}{
+		{name: "uncertain repository inspect", setup: "uncertain absent", repositoryCall: repositoryReadback("agent-contracts", "HEAD"), cause: context.Canceled},
+		{name: "uncertain repository verify", setup: "uncertain present", repositoryCall: repositoryReadback("agent-contracts", deploymentCommit), cause: context.DeadlineExceeded},
+		{name: "repository verify", setup: "initialized", repositoryCall: repositoryReadback("agent-control", deploymentCommit), cause: context.Canceled},
+		{name: "Project verify", setup: "initialized", projectBranch: "verify", repositoryCall: projectVerifyReadback, cause: context.DeadlineExceeded},
+		{name: "Project revalidate", setup: "partial Project", projectBranch: "revalidate", repositoryCall: projectRevalidateReadback, cause: context.Canceled},
+		{name: "provider verify", setup: "initialized", providerCall: providerReadback, cause: context.DeadlineExceeded},
+		{name: "smoke inspect", setup: "initialized", repositoryCall: smokeReadback, cause: context.Canceled},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := makeInstallation(t)
+			providerRunner := newRunner()
+			repositoryRunner := newDeploymentRepositoryRunner()
+			slug := "octo-lab/agent-contracts"
+			switch test.setup {
+			case "uncertain absent":
+				repositoryRunner.failCreate[slug] = true
+				repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			case "uncertain present":
+				repositoryRunner.failCreate[slug] = true
+				repositoryRunner.landOnFailure[slug] = true
+				repositoryRunner.malformedReadbacks[strings.ToLower(slug)] = 1
+			case "partial Project":
+				repositoryRunner.failProjectLink = true
+			}
+
+			receipt, _, initializationErr := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner))
+			if test.setup == "initialized" {
+				if initializationErr != nil || receipt.Phase != activation.PhaseInitialized {
+					t.Fatalf("Initialize() receipt=%+v err=%v", receipt, initializationErr)
+				}
+			} else if initializationErr == nil || receipt.Phase != activation.PhaseNeedsResume {
+				t.Fatalf("partial Initialize() receipt=%+v err=%v", receipt, initializationErr)
+			}
+			switch test.projectBranch {
+			case "verify":
+				if receipt.Project == nil || !receipt.Project.Linked || receipt.Project.Verification != project.VerificationReadback {
+					t.Fatalf("Project Verify setup receipt=%+v, want linked readback receipt", receipt.Project)
+				}
+			case "revalidate":
+				if receipt.Project == nil || (receipt.Project.Linked && receipt.Project.Verification == project.VerificationReadback) {
+					t.Fatalf("Project Revalidate setup receipt=%+v, want receipt outside Verify branch", receipt.Project)
+				}
+			}
+
+			contextKey := struct{ name string }{"target-value"}
+			ctx := newTargetedStatusContext(context.WithValue(context.Background(), contextKey, "forwarded"))
+			if ctx.Err() != nil || ctx.Value(contextKey) != "forwarded" {
+				t.Fatalf("target context was not healthy or did not forward parent values before Status(): err=%v value=%v", ctx.Err(), ctx.Value(contextKey))
+			}
+			var statusProvider provider.Runner = providerRunner
+			var providerTarget *statusContextProviderRunner
+			if test.providerCall != nil {
+				providerTarget = &statusContextProviderRunner{
+					delegate: providerRunner,
+					target:   test.providerCall,
+					expire:   func() { ctx.expire(test.cause) },
+				}
+				statusProvider = providerTarget
+			}
+			var statusRepository repository.Runner = repositoryRunner
+			var repositoryTarget *statusContextRepositoryRunner
+			if test.repositoryCall != nil {
+				repositoryTarget = &statusContextRepositoryRunner{
+					delegate: repositoryRunner,
+					target:   test.repositoryCall,
+					expire:   func() { ctx.expire(test.cause) },
+				}
+				statusRepository = repositoryTarget
+			}
+
+			repositoryMutations := repositoryRunner.mutationCalls
+			providerMutations := len(providerRunner.mutations)
+			state, statusErr := activation.Status(ctx, root, statusProvider, statusRepository)
+			if statusErr == nil || !strings.Contains(statusErr.Error(), "AGX-STATUS-INCONCLUSIVE") ||
+				!strings.Contains(statusErr.Error(), "rerun agx status or agx diagnose") || !errors.Is(statusErr, test.cause) {
+				t.Fatalf("Status() state=%+v err=%v, want stable inconclusive error wrapping %v", state, statusErr, test.cause)
+			}
+			if state.Status == activation.StatusDrifted || len(state.Problems) != 0 || state.Smoke.Status == smoke.StatusAwaiting {
+				t.Fatalf("Status() state=%+v, context expiry must not report drift or awaiting smoke", state)
+			}
+			targetHits, targetSawHealthy := 0, false
+			if repositoryTarget != nil {
+				targetHits, targetSawHealthy = repositoryTarget.targetHits, repositoryTarget.targetSawHealthy
+			} else {
+				targetHits, targetSawHealthy = providerTarget.targetHits, providerTarget.targetSawHealthy
+			}
+			if targetHits != 1 || !targetSawHealthy {
+				t.Fatalf("target readback hits=%d healthy=%v, want exactly one hit reached with a healthy context", targetHits, targetSawHealthy)
+			}
+			if !errors.Is(ctx.Err(), test.cause) {
+				t.Fatalf("target context err=%v, want %v", ctx.Err(), test.cause)
+			}
+			select {
+			case <-ctx.Done():
+			default:
+				t.Fatal("target context Done channel remained open after expiry")
+			}
+			if repositoryRunner.mutationCalls != repositoryMutations || len(providerRunner.mutations) != providerMutations {
+				t.Fatalf("Status() mutated remote state after context expiry: repository=%d want=%d provider=%d want=%d",
+					repositoryRunner.mutationCalls, repositoryMutations, len(providerRunner.mutations), providerMutations)
+			}
+		})
+	}
+}
+
+func TestStatusKeepsReadbackFailureSemanticsWhenContextIsHealthy(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	receipt, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner))
+	if err != nil || receipt.Phase != activation.PhaseInitialized {
+		t.Fatalf("Initialize() receipt=%+v err=%v", receipt, err)
+	}
+	statusRepository := &statusContextRepositoryRunner{
+		delegate: repositoryRunner,
+		target: func(name string, args []string) bool {
+			return name == "gh" && len(args) >= 2 && args[0] == "api" && args[1] == "graphql" &&
+				graphQLArgument(args, "owner") == "octo-lab" && graphQLArgument(args, "name") == "agent-control" &&
+				graphQLArgument(args, "commit") == deploymentCommit
+		},
+		readErr: context.Canceled,
+	}
+
+	state, statusErr := activation.Status(context.Background(), root, providerRunner, statusRepository)
+	if statusErr != nil || state.Status != activation.StatusDrifted || !strings.Contains(strings.Join(state.Problems, "\n"), "repository octo-lab/agent-control drifted") {
+		t.Fatalf("Status() state=%+v err=%v, want ordinary repository drift with healthy context", state, statusErr)
+	}
+	if statusRepository.targetHits != 1 || !statusRepository.targetSawHealthy {
+		t.Fatalf("healthy-context target hits=%d healthy=%v, want one ordinary runner cancellation", statusRepository.targetHits, statusRepository.targetSawHealthy)
+	}
+}
+
 func TestInitializeRevalidatesPartialProjectBeforeMissingRepositoryCreate(t *testing.T) {
 	root := makeInstallation(t)
 	providerRunner := newRunner()
@@ -898,6 +1146,18 @@ func containsArgument(args []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func argumentsEqual(values, wanted []string) bool {
+	if len(values) != len(wanted) {
+		return false
+	}
+	for index := range values {
+		if values[index] != wanted[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func countString(values []string, wanted string) int {

@@ -19,7 +19,7 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --apply
 ```
 
-`--guided` 先只读发现当前 `gh` 身份、Projects 权限、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、profile、visibility 与两个部署仓名。确认后它只打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
+`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、profile、visibility 与两个部署仓名。确认后执行的只读 plan preflight 才检查 Projects `project` scope，并打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
 ## 四仓部署速查
 
@@ -40,7 +40,7 @@ agx init --guided --root D:\agx\installations\default
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider <guided-recommendation> --profile github --apply
 ```
 
-第二条命令必须先看计划：它会列出目标 owner、两个仓库、Project title/link、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名资源冲突行为，并根据无冲突 provider 给出推荐。第三条命令才创建远端仓库与 Project、完成结构化回读并激活 Codex/Claude。初始化后用户已经能直接打开 Project；再开启新的 Agent 会话，执行输出中的 `agx.first-use/v1` 合同，创建 Bootstrap Verification Issue、Project item 和未合并 PR。`agx status` / `agx diagnose` 会回读这些 evidence，并报告 `awaiting` 或 `effective`。
+第二条命令必须先看计划：它会列出目标 owner、两个仓库、Project title/link、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名资源冲突行为，并根据无冲突 provider 给出推荐。第三条命令才创建远端仓库与 Project、完成结构化回读并激活 Codex/Claude。初始化后用户已经能直接打开 Project；再开启新的 Agent 会话，执行输出中的 `agx.first-use/v1` 合同，创建 Bootstrap Verification Issue、Project item 和未合并 PR。`agx status` / `agx diagnose` 会回读这些 evidence，并报告 `awaiting` 或 `effective`。如果远端回读期间达到 deadline 或被取消，命令返回 `AGX-STATUS-INCONCLUSIVE`，不会把未完成的观察误报为 drift；远端状态可能已变化，应重新运行 `agx status` 或 `agx diagnose`，该失败路径不会执行任何写入。
 
 卸载边界也要直接理解：`agx uninstall` 只撤销回执证明由 AGX 新增的本地文件和 provider 激活；不会删除 `<owner>/agent-control`、`<owner>/agent-contracts` 或关联的 GitHub Project。远端资源要由 operator 自己决定是否归档、迁移或删除。
 
