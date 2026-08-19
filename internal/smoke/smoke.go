@@ -412,7 +412,7 @@ func validNodeID(value string) bool {
 func verifyProjectInventory(ctx context.Context, contract Contract, owner string, number int, runner Runner) error {
 	limit := 100
 	for attempts := 0; attempts < 8; attempts++ {
-		output, err := runner.Run(ctx, "", "gh", "project", "list", "--owner", owner, "--limit", strconv.Itoa(limit), "--format", "json")
+		output, err := runner.Run(ctx, "", "gh", "project", "list", "--owner", owner, "--closed", "--limit", strconv.Itoa(limit), "--format", "json")
 		if err != nil {
 			return fmt.Errorf("AGX-SMOKE-PROJECT-INVENTORY: cannot inspect owner Project inventory: %w", err)
 		}

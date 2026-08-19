@@ -395,11 +395,20 @@ type ownerInventoryRunner struct {
 	outputs [][]byte
 	calls   int
 	limits  []string
+	closed  []bool
 }
 
 func (runner *ownerInventoryRunner) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	if name == "gh" && len(args) >= 2 && args[0] == "project" && args[1] == "list" {
 		runner.limits = append(runner.limits, argumentAfter(args, "--limit"))
+		closed := false
+		for _, arg := range args {
+			if arg == "--closed" {
+				closed = true
+				break
+			}
+		}
+		runner.closed = append(runner.closed, closed)
 		index := runner.calls
 		runner.calls++
 		if index >= len(runner.outputs) {
@@ -418,7 +427,7 @@ func TestInspectExpandsOwnerProjectInventoryToTotalCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if evidence.Status != StatusEffective || runner.calls != 2 || strings.Join(runner.limits, ",") != "100,101" {
+	if evidence.Status != StatusEffective || runner.calls != 2 || strings.Join(runner.limits, ",") != "100,101" || !runner.closed[0] || !runner.closed[1] {
 		t.Fatalf("evidence=%+v calls=%d limits=%v", evidence, runner.calls, runner.limits)
 	}
 }
