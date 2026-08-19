@@ -609,6 +609,9 @@ func evidenceStatusOptions(values map[string]string) (activation.StatusOptions, 
 }
 
 func readActivationStatus(ctx context.Context, root string, options activation.StatusOptions, dependencies runtimeDependencies) (activation.State, error) {
+	if len(options.Collectors) == 0 {
+		options.Collectors = []activation.EvidenceCollector{activation.NewGitHubEvidenceCollector(dependencies.repositoryRunner)}
+	}
 	if dependencies.statusWithEvidence != nil {
 		return dependencies.statusWithEvidence(ctx, root, dependencies.providerRunner, options, dependencies.repositoryRunner)
 	}

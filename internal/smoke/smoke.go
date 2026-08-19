@@ -24,6 +24,10 @@ const ContractVersionV1 = "agx.first-use/v1"
 const (
 	StatusAwaiting  = "awaiting"
 	StatusEffective = "effective"
+
+	ValidationResultAwaiting        = "awaiting"
+	ValidationResultPassed          = "passed"
+	ValidationResultPendingOrFailed = "pending_or_failed"
 )
 
 type Contract struct {
@@ -49,13 +53,16 @@ type Contract struct {
 }
 
 type Evidence struct {
-	Status           string   `json:"status"`
-	IssueURL         string   `json:"issue_url,omitempty"`
-	ProjectItem      string   `json:"project_item,omitempty"`
-	PullRequestURL   string   `json:"pull_request_url,omitempty"`
-	WorkPointer      string   `json:"work_pointer,omitempty"`
-	ValidationResult string   `json:"validation_result,omitempty"`
-	Problems         []string `json:"problems,omitempty"`
+	Status            string   `json:"status"`
+	IssueURL          string   `json:"issue_url,omitempty"`
+	IssueNumber       int      `json:"issue_number,omitempty"`
+	ProjectItem       string   `json:"project_item,omitempty"`
+	PullRequestURL    string   `json:"pull_request_url,omitempty"`
+	PullRequestNumber int      `json:"pull_request_number,omitempty"`
+	Revision          string   `json:"revision,omitempty"`
+	WorkPointer       string   `json:"work_pointer,omitempty"`
+	ValidationResult  string   `json:"validation_result,omitempty"`
+	Problems          []string `json:"problems,omitempty"`
 }
 
 type Runner interface {
@@ -90,7 +97,7 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	if _, err := runner.LookPath("gh"); err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-CLI-MISSING: gh is unavailable")
 	}
-	evidence := Evidence{Status: StatusAwaiting, ValidationResult: "awaiting"}
+	evidence := Evidence{Status: StatusAwaiting, ValidationResult: ValidationResultAwaiting}
 	marker := contract.Marker
 	projectOwner, projectNumber, err := projectCoordinates(contract.ProjectURL)
 	if err != nil {
@@ -105,9 +112,10 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-ISSUE: cannot inspect Bootstrap Verification Issue: %w", err)
 	}
 	var issues []struct {
-		URL   string `json:"url"`
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
 	}
 	if err := decodeJSON(issueOutput, &issues); err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-ISSUE: invalid Issue inventory: %w", err)
@@ -115,10 +123,11 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	for _, issue := range issues {
 		owner, repositoryName, validURL := issueCoordinates(issue.URL)
 		if issue.Title != contract.IssueTitle || !strings.Contains(issue.Body, marker) || !validURL ||
-			!strings.EqualFold(owner+"/"+repositoryName, slug) {
+			!strings.EqualFold(owner+"/"+repositoryName, slug) || issue.Number <= 0 {
 			continue
 		}
 		evidence.IssueURL = issue.URL
+		evidence.IssueNumber = issue.Number
 		break
 	}
 	if evidence.IssueURL == "" {
@@ -143,15 +152,17 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		}
 	}
 
-	prOutput, err := runner.Run(ctx, "", "gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.PullRequestTitle+" in:title", "--json", "number,url,title,body,headRefName,state,mergedAt,files,statusCheckRollup")
+	prOutput, err := runner.Run(ctx, "", "gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "20", "--search", contract.PullRequestTitle+" in:title", "--json", "number,url,title,body,headRefName,headRefOid,state,mergedAt,files,statusCheckRollup")
 	if err != nil {
 		return Evidence{}, fmt.Errorf("AGX-SMOKE-PR: cannot inspect Bootstrap Verification PR: %w", err)
 	}
 	var pullRequests []struct {
+		Number      int     `json:"number"`
 		URL         string  `json:"url"`
 		Title       string  `json:"title"`
 		Body        string  `json:"body"`
 		HeadRefName string  `json:"headRefName"`
+		HeadRefOid  string  `json:"headRefOid"`
 		State       string  `json:"state"`
 		MergedAt    *string `json:"mergedAt"`
 		Files       []struct {
@@ -172,10 +183,13 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		owner, repositoryName, validURL := pullRequestCoordinates(pullRequest.URL)
 		if pullRequest.Title != contract.PullRequestTitle || !strings.Contains(pullRequest.Body, marker) || !validURL ||
 			!strings.EqualFold(owner+"/"+repositoryName, slug) || pullRequest.HeadRefName != contract.Branch ||
-			!strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.MergedAt != nil {
+			!strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.MergedAt != nil ||
+			pullRequest.Number <= 0 || !validSHA1(pullRequest.HeadRefOid) {
 			continue
 		}
 		evidence.PullRequestURL = pullRequest.URL
+		evidence.PullRequestNumber = pullRequest.Number
+		evidence.Revision = pullRequest.HeadRefOid
 		bodyHasValidation := strings.Contains(pullRequest.Body, "Validation-Command: "+contract.ValidationCommand) &&
 			strings.Contains(pullRequest.Body, "Validation-Result: passed")
 		changedWorkPointer := false
@@ -216,9 +230,9 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 			}
 		}
 		if checksPassed && validationCheckPassed && workflowMatches && bodyHasValidation {
-			evidence.ValidationResult = "passed"
+			evidence.ValidationResult = ValidationResultPassed
 		} else {
-			evidence.ValidationResult = "pending_or_failed"
+			evidence.ValidationResult = ValidationResultPendingOrFailed
 		}
 		if changedWorkPointer && evidence.IssueURL != "" {
 			endpoint := "repos/" + slug + "/contents/work/current.md?ref=" + url.QueryEscape(contract.Branch)
@@ -236,13 +250,13 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 	}
 	if evidence.PullRequestURL == "" {
 		evidence.Problems = append(evidence.Problems, "Bootstrap Verification PR is missing")
-	} else if evidence.ValidationResult != "passed" {
+	} else if evidence.ValidationResult != ValidationResultPassed {
 		evidence.Problems = append(evidence.Problems, "Bootstrap Verification validation has not passed")
 	}
 	if evidence.PullRequestURL != "" && evidence.WorkPointer == "" {
 		evidence.Problems = append(evidence.Problems, "work/current.md does not point to the Bootstrap Verification Issue")
 	}
-	if evidence.IssueURL != "" && evidence.ProjectItem != "" && evidence.PullRequestURL != "" && evidence.WorkPointer != "" && evidence.ValidationResult == "passed" {
+	if evidence.IssueURL != "" && evidence.ProjectItem != "" && evidence.PullRequestURL != "" && evidence.WorkPointer != "" && evidence.ValidationResult == ValidationResultPassed {
 		evidence.Status = StatusEffective
 		evidence.Problems = nil
 	}
@@ -281,6 +295,14 @@ func validateContract(contract Contract) (string, error) {
 
 func validSHA256(value string) bool {
 	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validSHA1(value string) bool {
+	if len(value) != 40 || strings.ToLower(value) != value {
 		return false
 	}
 	_, err := hex.DecodeString(value)
