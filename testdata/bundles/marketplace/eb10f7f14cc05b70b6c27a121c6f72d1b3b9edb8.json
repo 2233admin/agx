@@ -1,0 +1,101 @@
+{
+  "name": "agent-plugins",
+  "interface": {
+    "displayName": "Agent Plugins"
+  },
+  "plugins": [
+    {
+      "name": "grilling",
+      "version": "0.1.2",
+      "source": {
+        "source": "local",
+        "path": "./plugins/grilling"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "self-improvement",
+      "version": "0.1.6",
+      "source": {
+        "source": "local",
+        "path": "./plugins/self-improvement"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "knowledge-maintenance",
+      "version": "0.1.3",
+      "source": {
+        "source": "local",
+        "path": "./plugins/knowledge-maintenance"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "orchestrated-collaboration",
+      "version": "0.2.6",
+      "source": {
+        "source": "local",
+        "path": "./plugins/orchestrated-collaboration"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "adaptive-problem-solving",
+      "version": "0.2.11",
+      "source": {
+        "source": "local",
+        "path": "./plugins/adaptive-problem-solving"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "github-collaboration",
+      "version": "0.3.18",
+      "description": "Drive a GitHub issue subtree from any Session, including bounded continuation, safe natural owner decisions, contract compaction, delivery, integration, and reclamation.",
+      "source": {
+        "source": "local",
+        "path": "./plugins/github-collaboration"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "resource-observability",
+      "version": "0.2.4",
+      "description": "只读的 Codex／Claude 账户容量与单会话 Token 回执；不负责调度。",
+      "source": {
+        "source": "local",
+        "path": "./plugins/resource-observability"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
