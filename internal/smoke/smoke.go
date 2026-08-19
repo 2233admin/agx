@@ -205,6 +205,13 @@ func Inspect(ctx context.Context, contract Contract, runner Runner) (Evidence, e
 		checksPassed := len(pullRequest.Checks) > 0
 		validationCheckPassed := false
 		for _, check := range pullRequest.Checks {
+			// GitHub's statusCheckRollup also contains StatusContext entries
+			// (for example CodeRabbit and GitGuardian) without CheckRun status
+			// or conclusion fields. They are not validation checks and must not
+			// make an otherwise successful required CheckRun fail.
+			if check.Status == "" && check.Conclusion == "" {
+				continue
+			}
 			if !strings.EqualFold(check.Status, "COMPLETED") || !strings.EqualFold(check.Conclusion, "SUCCESS") {
 				checksPassed = false
 				continue

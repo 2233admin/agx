@@ -23,6 +23,7 @@ type fakeRunner struct {
 	impostorCheck        bool
 	wrongWorkflow        bool
 	changesWorkflow      bool
+	statusContext        bool
 }
 
 func (fakeRunner) LookPath(name string) (string, error) {
@@ -92,6 +93,13 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 		if runner.changesWorkflow {
 			files = append(files, map[string]any{"path": ".github/workflows/validate.yml"})
 		}
+		checks := []map[string]any{{
+			"__typename": "CheckRun", "name": checkName, "workflowName": workflowName,
+			"status": "COMPLETED", "conclusion": "SUCCESS",
+		}}
+		if runner.statusContext {
+			checks = append(checks, map[string]any{"__typename": "StatusContext", "context": "CodeRabbit", "state": "SUCCESS"})
+		}
 		return json.Marshal([]map[string]any{{
 			"number": 13, "url": pullRequestURL,
 			"title":       "Bootstrap Verification [install-test]",
@@ -99,10 +107,7 @@ func (runner fakeRunner) Run(_ context.Context, _ string, name string, args ...s
 			"headRefName": "agx/bootstrap-verification-install-test",
 			"headRefOid":  strings.Repeat("a", 40),
 			"state":       state, "mergedAt": mergedAt, "files": files,
-			"statusCheckRollup": []map[string]any{{
-				"__typename": "CheckRun", "name": checkName, "workflowName": workflowName,
-				"status": "COMPLETED", "conclusion": "SUCCESS",
-			}},
+			"statusCheckRollup": checks,
 		}})
 	}
 	if args[0] == "api" && strings.Contains(args[1], "/contents/work/current.md") {
@@ -219,6 +224,16 @@ func TestInspectReturnsEffectiveOnlyForIssueProjectItemPRAndSuccessfulValidation
 		evidence.WorkPointer != "work/current.md" || evidence.PullRequestURL == "" ||
 		evidence.ValidationResult != "passed" || len(evidence.Problems) != 0 {
 		t.Fatalf("evidence = %+v", evidence)
+	}
+}
+
+func TestInspectIgnoresStatusContextAlongsideSuccessfulValidationCheck(t *testing.T) {
+	evidence, err := Inspect(context.Background(), testContract(), fakeRunner{statusContext: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.ValidationResult != ValidationResultPassed || evidence.Status != StatusEffective {
+		t.Fatalf("evidence = %+v, want effective with passed validation", evidence)
 	}
 }
 
