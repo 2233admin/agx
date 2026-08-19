@@ -21,16 +21,35 @@ const (
 
 var evaluatedAt = time.Date(2026, 8, 19, 1, 0, 0, 0, time.UTC)
 
+func TestLegacyNewVerifiedReceiptRemainsReadable(t *testing.T) {
+	installationID := domain.InstallationID("install-legacy")
+	receipt, err := domain.NewVerifiedReceipt(installationID, domain.Verification{
+		GitHub:  domain.Readback{Source: domain.ReadbackSourceGitHub, InstallationID: installationID, EvidenceID: "github-readback"},
+		Multica: domain.Readback{Source: domain.ReadbackSourceMultica, InstallationID: installationID, EvidenceID: "multica-readback"},
+	})
+	if err != nil || receipt.Phase != domain.PhaseVerified {
+		t.Fatalf("legacy verified receipt = %+v, %v", receipt, err)
+	}
+}
+
 func TestValidateEvidenceProfileSelectionRequiresStrictMulticaUUIDs(t *testing.T) {
 	if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileGitHubDeliveryV1, "", "", ""); err != nil {
 		t.Fatalf("GitHub profile selection err=%v", err)
 	}
 	valid := "123e4567-e89b-42d3-a456-426614174000"
+	if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileGitHubDeliveryV1, valid, "", ""); err == nil || err.Error() != "AGX-EVIDENCE-SUBJECT-INCOMPLETE" {
+		t.Fatalf("GitHub profile with Multica selector err=%v", err)
+	}
 	if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileMulticaExecutionV1, valid, valid, valid); err != nil {
 		t.Fatalf("Multica profile selection err=%v", err)
 	}
 	if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileMulticaExecutionV1, valid, "runtime", valid); err == nil || err.Error() != "AGX-EVIDENCE-SUBJECT-INCOMPLETE" {
 		t.Fatalf("invalid Multica selection err=%v", err)
+	}
+	for _, nonCanonical := range []string{strings.ToUpper(valid), " " + valid, valid + " "} {
+		if err := domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileMulticaExecutionV1, valid, nonCanonical, valid); err == nil || err.Error() != "AGX-EVIDENCE-SUBJECT-INCOMPLETE" {
+			t.Fatalf("non-canonical Multica selection %q err=%v", nonCanonical, err)
+		}
 	}
 }
 
@@ -58,7 +77,7 @@ func TestEvaluateEvidenceMulticaProfileRequiresGitHubBaseAndEveryExtension(t *te
 	)
 	receipt := domain.EvaluateEvidence(input)
 	if receipt.Phase != domain.PhaseAwaitingVerification || len(receipt.Missing) != 1 || receipt.Missing[0].Code != "AGX-EVIDENCE-MULTICA-EXECUTION-MISSING" {
-		t.Fatalf("missing Multica execution = phase %q, missing %#v", receipt.Phase, receipt.Missing)
+		t.Fatalf("missing Multica execution = phase %q, missing %#v, diagnostics %#v", receipt.Phase, receipt.Missing, receipt.Diagnostics)
 	}
 
 	input.Observations = append(input.Observations, observation(domain.EvidenceMulticaTaskCompleted, domain.ObservationMatched))
@@ -125,6 +144,69 @@ func TestEvaluateEvidenceRejectsWrongBindingsOutcomesAndTime(t *testing.T) {
 	}
 }
 
+func TestEvaluateEvidenceRebuildsInputDiagnosticsWithoutCallerText(t *testing.T) {
+	input := githubInput()
+	secretText := "Authorization: Bearer " + "diagnostic-secret-marker"
+	windowsPath := "C:" + `\Users\example\private\receipt.json`
+	unixPath := "/" + "home/example/private/receipt.json"
+	input.Diagnostics = []domain.Diagnostic{
+		{
+			Code:     "AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED",
+			Category: domain.DiagnosticCategoryOutcome,
+			Severity: domain.SeverityWarning,
+			Message:  secretText + " " + windowsPath,
+		},
+		{
+			Code:     "CALLER-CONTROLLED-CODE",
+			Category: domain.DiagnosticCategoryFreshness,
+			Severity: domain.SeverityWarning,
+			Message:  unixPath,
+		},
+	}
+
+	receipt := domain.EvaluateEvidence(input)
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, forbidden := range []string{secretText, windowsPath, unixPath, "CALLER-CONTROLLED-CODE"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatal("EvaluateEvidence retained caller-controlled diagnostic material")
+		}
+	}
+	for _, code := range []string{"AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED", "AGX-EVIDENCE-DIAGNOSTIC-UNSUPPORTED"} {
+		if !strings.Contains(text, code) {
+			t.Fatalf("EvaluateEvidence omitted safe diagnostic code %q", code)
+		}
+	}
+}
+
+func TestEvaluateEvidenceClassifiesBindingMismatchAsOutcome(t *testing.T) {
+	for _, mutate := range []func(*domain.EvidenceObservation){
+		func(value *domain.EvidenceObservation) { value.InstallationID = "install-fedcba9876543210" },
+		func(value *domain.EvidenceObservation) { value.DeploymentDigest = strings.Repeat("f", 64) },
+		func(value *domain.EvidenceObservation) { value.SubjectDigest = strings.Repeat("f", 64) },
+	} {
+		input := githubInput()
+		mutate(&input.Observations[0])
+		if receipt := domain.EvaluateEvidence(input); receipt.Phase != domain.PhaseBlockedOutcome {
+			t.Fatalf("binding mismatch phase = %q, want %q", receipt.Phase, domain.PhaseBlockedOutcome)
+		}
+	}
+}
+
+func TestEvaluateEvidenceRejectedAndExpiredUsesOutcomePrecedence(t *testing.T) {
+	input := githubInput()
+	input.Observations[0].Outcome = domain.ObservationRejected
+	input.Observations[0].ObservedAt = input.EvaluatedAt.Add(-time.Hour)
+	receipt := domain.EvaluateEvidence(input)
+	if receipt.Phase != domain.PhaseBlockedOutcome || !hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-REJECTED") ||
+		len(receipt.Satisfied) != 7 || len(receipt.Missing) != 1 {
+		t.Fatalf("rejected expired evidence = phase %q diagnostics %#v", receipt.Phase, receipt.Diagnostics)
+	}
+}
+
 func TestEvaluateEvidenceBlocksVerifiedWhenForeignEvidenceIsMixedWithCompleteEvidence(t *testing.T) {
 	input := githubInput()
 	foreign := input.Observations[0]
@@ -133,8 +215,9 @@ func TestEvaluateEvidenceBlocksVerifiedWhenForeignEvidenceIsMixedWithCompleteEvi
 	input.Observations = append(input.Observations, foreign)
 
 	receipt := domain.EvaluateEvidence(input)
-	if receipt.Phase != domain.PhaseBlockedPreflight || !hasDiagnostic(receipt, "AGX-EVIDENCE-INSTALLATION-MISMATCH") {
-		t.Fatalf("EvaluateEvidence() = phase %q, diagnostics %#v, want foreign evidence to block verified", receipt.Phase, receipt.Diagnostics)
+	if receipt.Phase == domain.PhaseVerified || !hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-AMBIGUOUS") ||
+		len(receipt.Satisfied) != 7 || len(receipt.Missing) != 1 {
+		t.Fatalf("EvaluateEvidence() = phase %q, diagnostics %#v, want foreign identity conflict to block verified", receipt.Phase, receipt.Diagnostics)
 	}
 }
 
@@ -155,6 +238,18 @@ func TestEvaluateEvidenceBlocksUnsupportedOrMalformedEnvelopes(t *testing.T) {
 		{"kind resource mismatch", func(input *domain.EvaluationInput) {
 			input.Observations[0].Ref.ResourceType = domain.ResourceRuntime
 		}, "AGX-EVIDENCE-OBSERVATION-INVALID"},
+		{"numbered GitHub excess hash", func(input *domain.EvaluationInput) {
+			for index := range input.Observations {
+				if input.Observations[index].Kind == domain.EvidenceGitHubContractIssue {
+					input.Observations[index].Ref.IdentitySHA256 = strings.Repeat("f", 64)
+				}
+			}
+		}, "AGX-EVIDENCE-OBSERVATION-INVALID"},
+		{"Multica task excess number", func(input *domain.EvaluationInput) {
+			value := observation(domain.EvidenceMulticaTaskCompleted, domain.ObservationMatched)
+			value.Ref.Number = 1
+			input.Observations = append(input.Observations, value)
+		}, "AGX-EVIDENCE-OBSERVATION-INVALID"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -163,6 +258,64 @@ func TestEvaluateEvidenceBlocksUnsupportedOrMalformedEnvelopes(t *testing.T) {
 			receipt := domain.EvaluateEvidence(input)
 			if receipt.Phase != domain.PhaseBlockedPreflight || !hasDiagnostic(receipt, test.code) {
 				t.Fatalf("EvaluateEvidence() = phase %q, diagnostics %#v", receipt.Phase, receipt.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestEvaluateEvidenceEnforcesExactRefShapeForEveryKind(t *testing.T) {
+	kinds := []domain.EvidenceKind{
+		domain.EvidenceGitHubControlRepository,
+		domain.EvidenceGitHubContractsRepository,
+		domain.EvidenceGitHubProject,
+		domain.EvidenceGitHubProjectItem,
+		domain.EvidenceGitHubContractIssue,
+		domain.EvidenceGitHubAgentFirstWrite,
+		domain.EvidenceGitHubCurrentWork,
+		domain.EvidenceGitHubDeliveryPROpen,
+		domain.EvidenceGitHubDeliveryResult,
+		domain.EvidenceGitHubChecksPassed,
+		domain.EvidenceGitHubIndependentVerifier,
+		domain.EvidenceMulticaWorkspace,
+		domain.EvidenceMulticaRuntimeOnline,
+		domain.EvidenceMulticaAgent,
+		domain.EvidenceMulticaTaskCompleted,
+		domain.EvidenceMulticaRunCompleted,
+	}
+	for _, kind := range kinds {
+		t.Run(string(kind), func(t *testing.T) {
+			valid := observation(kind, domain.ObservationMatched)
+			input := githubInput()
+			input.Observations = []domain.EvidenceObservation{valid}
+			if valid.Source == domain.EvidenceSourceMultica {
+				input.Profile = domain.EvidenceProfileMulticaExecutionV1
+			}
+			if receipt := domain.EvaluateEvidence(input); hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-INVALID") {
+				t.Fatal("valid typed evidence reference was rejected")
+			}
+
+			wrongResource := valid
+			wrongResource.Ref.ResourceType = domain.ResourceRepository
+			if valid.Ref.ResourceType == domain.ResourceRepository {
+				wrongResource.Ref.ResourceType = domain.ResourceRun
+			}
+			input.Observations = []domain.EvidenceObservation{wrongResource}
+			if receipt := domain.EvaluateEvidence(input); !hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-INVALID") {
+				t.Fatal("wrong resource type was accepted")
+			}
+
+			excess := valid
+			switch {
+			case excess.Ref.Number != 0:
+				excess.Ref.IdentitySHA256 = identity
+			case excess.Ref.UUID != "":
+				excess.Ref.Number = 1
+			default:
+				excess.Ref.UUID = "123e4567-e89b-42d3-a456-426614174000"
+			}
+			input.Observations = []domain.EvidenceObservation{excess}
+			if receipt := domain.EvaluateEvidence(input); !hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-INVALID") {
+				t.Fatal("excess evidence identity field was accepted")
 			}
 		})
 	}
@@ -189,24 +342,79 @@ func TestEvaluateEvidenceIsDeterministicAcrossPermutationAndDuplicates(t *testin
 }
 
 func TestEvaluateEvidenceRejectsConflictingIdentityAndRevision(t *testing.T) {
-	input := githubInput()
-	conflict := input.Observations[0]
-	conflict.Fingerprint = strings.Repeat("f", 64)
-	input.Observations = append(input.Observations, conflict)
-	receipt := domain.EvaluateEvidence(input)
-	if receipt.Phase == domain.PhaseVerified || !hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-AMBIGUOUS") {
-		t.Fatalf("conflicting identity = phase %q, diagnostics %#v", receipt.Phase, receipt.Diagnostics)
+	for _, test := range []struct {
+		name   string
+		mutate func(*domain.EvidenceObservation)
+	}{
+		{name: "fingerprint", mutate: func(value *domain.EvidenceObservation) { value.Fingerprint = strings.Repeat("f", 64) }},
+		{name: "outcome", mutate: func(value *domain.EvidenceObservation) { value.Outcome = domain.ObservationRejected }},
+		{name: "freshness", mutate: func(value *domain.EvidenceObservation) { value.ObservedAt = evaluatedAt.Add(-15 * time.Minute) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			forward := githubInput()
+			conflict := forward.Observations[0]
+			test.mutate(&conflict)
+			forward.Observations = append(forward.Observations, conflict)
+			backward := githubInput()
+			backward.Observations = append([]domain.EvidenceObservation{conflict}, backward.Observations...)
+
+			forwardReceipt := domain.EvaluateEvidence(forward)
+			backwardReceipt := domain.EvaluateEvidence(backward)
+			if forwardReceipt.Phase == domain.PhaseVerified || !hasDiagnostic(forwardReceipt, "AGX-EVIDENCE-OBSERVATION-AMBIGUOUS") {
+				t.Fatalf("conflicting identity = phase %q, diagnostics %#v", forwardReceipt.Phase, forwardReceipt.Diagnostics)
+			}
+			forwardJSON, err := json.Marshal(forwardReceipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backwardJSON, err := json.Marshal(backwardReceipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(forwardJSON, backwardJSON) {
+				t.Fatal("conflicting identity verdict changed with input permutation")
+			}
+		})
 	}
 
-	input = githubInput()
+	input := githubInput()
 	for index := range input.Observations {
 		if input.Observations[index].Kind == domain.EvidenceGitHubChecksPassed {
 			input.Observations[index].Ref.Revision = strings.Repeat("f", 40)
 		}
 	}
-	receipt = domain.EvaluateEvidence(input)
+	receipt := domain.EvaluateEvidence(input)
 	if receipt.Phase == domain.PhaseVerified || !hasDiagnostic(receipt, "AGX-EVIDENCE-REVISION-MISMATCH") {
 		t.Fatalf("revision mismatch = phase %q, diagnostics %#v", receipt.Phase, receipt.Diagnostics)
+	}
+}
+
+func TestEvaluateEvidenceOrdersOutcomeBeforeFreshnessAndMissing(t *testing.T) {
+	input := githubInput()
+	for index := range input.Observations {
+		switch input.Observations[index].Kind {
+		case domain.EvidenceGitHubDeliveryPROpen:
+			input.Observations[index].Outcome = domain.ObservationRejected
+		case domain.EvidenceGitHubProject:
+			input.Observations[index].ObservedAt = input.EvaluatedAt.Add(-time.Hour)
+		}
+	}
+	receipt := domain.EvaluateEvidence(input)
+	if receipt.Phase != domain.PhaseBlockedOutcome || !hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-REJECTED") || !hasDiagnostic(receipt, "AGX-EVIDENCE-OBSERVATION-EXPIRED") ||
+		len(receipt.Satisfied) != 6 || len(receipt.Missing) != 2 {
+		t.Fatalf("phase precedence = phase %q, diagnostics %#v", receipt.Phase, receipt.Diagnostics)
+	}
+}
+
+func TestEvaluateEvidenceValidatesSourceBeforeProfileRelevance(t *testing.T) {
+	input := githubInput()
+	irrelevant := observation(domain.EvidenceMulticaRuntimeOnline, domain.ObservationMatched)
+	irrelevant.Source = domain.EvidenceSourceGitHub
+	input.Observations = append(input.Observations, irrelevant)
+
+	receipt := domain.EvaluateEvidence(input)
+	if receipt.Phase != domain.PhaseBlockedPreflight || !hasDiagnostic(receipt, "AGX-EVIDENCE-SOURCE-MISMATCH") {
+		t.Fatalf("wrong-source irrelevant evidence = phase %q, diagnostics %#v", receipt.Phase, receipt.Diagnostics)
 	}
 }
 
@@ -220,14 +428,18 @@ func TestDecodeEvaluationInputIsBoundedAndStrict(t *testing.T) {
 		t.Fatalf("DecodeEvaluationInput() error = %v", err)
 	}
 
-	for name, payload := range map[string][]byte{
-		"unknown field":   []byte(`{"schema_version":"agx/evidence-input/v1","unexpected":true}`),
-		"second document": append(append([]byte(nil), data...), []byte(` {}`)...),
-		"oversize":        bytes.Repeat([]byte("x"), domain.MaxEvidenceInputBytes+1),
+	for name, test := range map[string]struct {
+		payload []byte
+		code    string
+	}{
+		"unknown field":   {[]byte(`{"schema_version":"agx/evidence-input/v1","unexpected":true}`), "AGX-EVIDENCE-INPUT-INVALID"},
+		"second document": {append(append([]byte(nil), data...), []byte(` {}`)...), "AGX-EVIDENCE-INPUT-TRAILING-DATA"},
+		"oversize":        {bytes.Repeat([]byte("x"), domain.MaxEvidenceInputBytes+1), "AGX-EVIDENCE-INPUT-TOO-LARGE"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := domain.DecodeEvaluationInput(payload); err == nil {
-				t.Fatal("DecodeEvaluationInput() error = nil")
+			_, err := domain.DecodeEvaluationInput(test.payload)
+			if err == nil || err.Error() != test.code {
+				t.Fatalf("DecodeEvaluationInput() error = %v, want %s", err, test.code)
 			}
 		})
 	}
@@ -247,13 +459,48 @@ func TestEvidenceBindingDigestsAreCanonicalAndSensitive(t *testing.T) {
 	if first != second {
 		t.Fatalf("provider permutation changed digest: %s != %s", first, second)
 	}
+	const goldenDeploymentDigest = "322a674f6332784674db997fc32823401d3a45eb53d9bedadfb21ec2ebb03b12"
+	if first != goldenDeploymentDigest {
+		t.Fatalf("deployment digest = %s", first)
+	}
+	for name, mutate := range map[string]func(*domain.DeploymentBindingV1){
+		"empty template": func(value *domain.DeploymentBindingV1) { value.TemplateVersion = "" },
+		"non-canonical template": func(value *domain.DeploymentBindingV1) {
+			value.TemplateVersion = " agx/bootstrap/v1"
+		},
+		"unknown profile":     func(value *domain.DeploymentBindingV1) { value.ProviderProfile = "unknown" },
+		"missing providers":   func(value *domain.DeploymentBindingV1) { value.SelectedProviders = nil },
+		"duplicate providers": func(value *domain.DeploymentBindingV1) { value.SelectedProviders = []string{"codex", "codex"} },
+		"unknown provider":    func(value *domain.DeploymentBindingV1) { value.SelectedProviders = []string{"other"} },
+		"duplicate repository identity": func(value *domain.DeploymentBindingV1) {
+			value.ContractsRepository.IdentitySHA256 = value.ControlRepository.IdentitySHA256
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := deploymentBinding()
+			mutate(&invalid)
+			if _, err := domain.ComputeDeploymentDigest(invalid); err == nil {
+				t.Fatal("ComputeDeploymentDigest() accepted invalid binding")
+			}
+		})
+	}
+	sensitive := deploymentBinding()
+	sensitive.ProjectIdentitySHA256 = strings.Repeat("a", 64)
+	changed, err := domain.ComputeDeploymentDigest(sensitive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == first {
+		t.Fatal("deployment digest did not change with a canonical binding field")
+	}
 
 	subject := subjectBinding(first, domain.EvidenceProfileGitHubDeliveryV1)
 	firstSubject, err := domain.ComputeSubjectDigest(subject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first == firstSubject || !isLowerHex(firstSubject, 64) {
+	const goldenSubjectDigest = "69748646b1df4590da7b76f7fef8748a7996f1f5349b80ecf59d0f9355ede7c1"
+	if first == firstSubject || !isLowerHex(firstSubject, 64) || firstSubject != goldenSubjectDigest {
 		t.Fatalf("subject digest = %q", firstSubject)
 	}
 
@@ -378,10 +625,10 @@ func hasDiagnostic(receipt domain.EvidenceReceipt, code string) bool {
 func deploymentBinding() domain.DeploymentBindingV1 {
 	return domain.DeploymentBindingV1{
 		SchemaVersion: domain.DeploymentBindingSchemaV1, InstallationID: installationID,
-		BundleSHA256: strings.Repeat("1", 64), TemplateVersion: "agx/bootstrap/v1", TemplateSHA256: strings.Repeat("2", 64),
+		BundleSHA256: strings.Repeat("1", 64), TemplateVersion: "agx/bootstrap/v1", TemplateSetSHA256: strings.Repeat("2", 64),
 		ProviderProfile: "core", SelectedProviders: []string{"claude", "codex"},
-		ControlRepository:     domain.RepositoryBindingV1{IdentitySHA256: strings.Repeat("3", 64), TemplateSHA256: strings.Repeat("4", 64)},
-		ContractsRepository:   domain.RepositoryBindingV1{IdentitySHA256: strings.Repeat("5", 64), TemplateSHA256: strings.Repeat("6", 64)},
+		ControlRepository:     domain.RepositoryBindingV1{IdentitySHA256: strings.Repeat("3", 64), RenderedContentSHA256: strings.Repeat("4", 64)},
+		ContractsRepository:   domain.RepositoryBindingV1{IdentitySHA256: strings.Repeat("5", 64), RenderedContentSHA256: strings.Repeat("6", 64)},
 		ProjectIdentitySHA256: strings.Repeat("7", 64), FirstUseContractSHA256: strings.Repeat("8", 64),
 	}
 }

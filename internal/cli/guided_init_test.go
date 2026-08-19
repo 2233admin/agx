@@ -168,6 +168,46 @@ func TestGuidedInitDiscoversBothProvidersAndPrintsWindowsApplyCommand(t *testing
 	}
 }
 
+func TestGuidedInitPromptsForMulticaEvidenceSelectors(t *testing.T) {
+	root := makeGuidedInstallation(t)
+	pluginSource := filepath.Join(root, "components", "agent-plugins")
+	validUUID := "123e4567-e89b-42d3-a456-426614174000"
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	code := runWithDependencies(
+		[]string{"init", "--guided", "--root", root}, "0.0.0-test", stdout, stderr,
+		runtimeDependencies{
+			stdin: strings.NewReader(strings.Join([]string{
+				"", "", "", "multica-execution/v1", "not-a-uuid", validUUID, validUUID, validUUID, "", "", "", "yes", "",
+			}, "\n")),
+			providerRunner:   newGuidedProviderRunner(pluginSource),
+			repositoryRunner: &guidedRepositoryRunner{login: "octo-lab", missing: map[string]bool{}},
+			initPlan: func(_ context.Context, options activation.Options) (activation.InitializationPlan, error) {
+				if options.EvidenceProfile != domain.EvidenceProfileMulticaExecutionV1 || options.MulticaWorkspaceID != validUUID ||
+					options.MulticaRuntimeID != validUUID || options.MulticaAgentID != validUUID {
+					t.Fatalf("guided evidence options = %+v", options)
+				}
+				return sampleInitPlan(options), nil
+			},
+		},
+	)
+	if code != exitcode.Success || stderr.Len() != 0 {
+		t.Fatalf("guided Multica evidence code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"Evidence profile", "Multica Workspace UUID", "Invalid UUID", "multica-execution/v1", "…4000"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("guided Multica evidence stdout missing %q:\n%s", want, output)
+		}
+	}
+	confirmationEnd := strings.Index(output, "Type yes to run")
+	if confirmationEnd < 0 || strings.Contains(output[:confirmationEnd], validUUID) {
+		t.Fatalf("guided confirmation exposed a full selector UUID:\n%s", output)
+	}
+	if strings.Count(output, validUUID) != 3 {
+		t.Fatalf("guided apply command did not retain exactly three selector UUIDs:\n%s", output)
+	}
+}
+
 func TestGuidedInitRecommendsClaudeWhenCodexHasSourceConflict(t *testing.T) {
 	root := makeGuidedInstallation(t)
 	pluginSource := filepath.Join(root, "components", "agent-plugins")

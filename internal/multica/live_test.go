@@ -49,6 +49,21 @@ func TestLiveRuntimeReadback(t *testing.T) {
 	}
 	t.Logf("live evidence for %q: %s", runtimeName, readback.EvidenceID)
 
+	receipt, err := domain.NewVerifiedReceipt(installationID, domain.Verification{
+		GitHub: domain.Readback{
+			Source:         domain.ReadbackSourceGitHub,
+			InstallationID: installationID,
+			EvidenceID:     "probe-github-evidence",
+		},
+		Multica: readback,
+	})
+	if err != nil {
+		t.Fatalf("legacy verified receipt from live readback failed: %v", err)
+	}
+	if receipt.Phase != domain.PhaseVerified {
+		t.Errorf("legacy phase = %q, want %q", receipt.Phase, domain.PhaseVerified)
+	}
+
 	// A name that cannot exist must be refused, not silently verified — the
 	// whole point of the adapter is that it can say no against a live server.
 	if _, err := RuntimeReadback(

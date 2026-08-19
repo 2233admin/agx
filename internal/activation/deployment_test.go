@@ -1,6 +1,7 @@
 package activation_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -599,11 +600,43 @@ func TestInitializedReceiptBindsEachRenderedTemplateDigest(t *testing.T) {
 	}
 }
 
-func TestInitializedReceiptCannotDropRequiredTemplatePaths(t *testing.T) {
+func TestInitializedReceiptRejectsUnknownRepositoryFields(t *testing.T) {
 	root := makeInstallation(t)
 	providerRunner := newRunner()
 	repositoryRunner := newDeploymentRepositoryRunner()
 	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	if _, _, err := activation.Initialize(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".agx", "initialization.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"name_with_owner":`, `"unsupported_nested_field":"redacted","name_with_owner":`, 1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activation.Status(context.Background(), root, providerRunner, repositoryRunner); err == nil || !strings.Contains(err.Error(), "AGX-INIT-RECEIPT-INVALID") {
+		t.Fatalf("Status() err=%v, want nested unknown-field rejection", err)
+	}
+}
+
+func TestInitializedReceiptCannotDropRequiredTemplatePaths(t *testing.T) {
+	root := makeInstallation(t)
+	installationPath := filepath.Join(root, ".agx", "receipt.json")
+	installationData, err := os.ReadFile(installationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installationData = []byte(strings.Replace(string(installationData), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(installationPath, installationData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileGitHubDeliveryV1
 	if _, _, err := activation.Initialize(context.Background(), options); err != nil {
 		t.Fatal(err)
 	}
@@ -626,6 +659,93 @@ func TestInitializedReceiptCannotDropRequiredTemplatePaths(t *testing.T) {
 	}
 	if _, _, err := activation.Initialize(context.Background(), options); err == nil || !strings.Contains(err.Error(), "AGX-INIT-RECEIPT-INVALID") {
 		t.Fatalf("Initialize() accepted receipt without required template paths: %v", err)
+	}
+}
+
+func TestVersionThreeReceiptWithoutRequiredPathsRemainsReadable(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	if _, _, err := activation.Initialize(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".agx", "initialization.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt activation.Receipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	for index := range receipt.Repositories {
+		receipt.Repositories[index].RequiredPaths = nil
+	}
+	data, err = json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := activation.StatusWithEvidence(context.Background(), root, providerRunner, activation.StatusOptions{}, repositoryRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Evidence.Profile != "" || state.Evidence.Phase != domain.PhaseBlockedPreflight {
+		t.Fatalf("legacy v3 evidence = profile %q phase %q", state.Evidence.Profile, state.Evidence.Phase)
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), "required_paths") || strings.Contains(string(persisted), "evidence_profile") {
+		t.Fatalf("legacy v3 receipt was rewritten: %s", persisted)
+	}
+}
+
+func TestVersionThreeReceiptRejectsInPlaceEvidenceProfileUpgrade(t *testing.T) {
+	root := makeInstallation(t)
+	installationPath := filepath.Join(root, ".agx", "receipt.json")
+	installationData, err := os.ReadFile(installationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installationData = []byte(strings.Replace(string(installationData), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(installationPath, installationData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	legacyOptions := deploymentOptions(root, providerRunner, repositoryRunner)
+	if _, _, err := activation.Initialize(context.Background(), legacyOptions); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(root, ".agx", "initialization.json")
+	before, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryMutations := repositoryRunner.mutationCalls
+	providerMutations := len(providerRunner.mutations)
+
+	profileOptions := legacyOptions
+	profileOptions.EvidenceProfile = domain.EvidenceProfileGitHubDeliveryV1
+	if _, _, err := activation.Initialize(context.Background(), profileOptions); err == nil ||
+		!strings.Contains(err.Error(), "AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT") {
+		t.Fatalf("Initialize() legacy profile upgrade error = %v", err)
+	}
+	after, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("legacy initialization receipt changed during rejected profile upgrade")
+	}
+	if repositoryRunner.mutationCalls != repositoryMutations || len(providerRunner.mutations) != providerMutations {
+		t.Fatal("external mutations ran during rejected profile upgrade")
 	}
 }
 
@@ -1141,8 +1261,188 @@ func TestExplicitEvidenceProfilePersistsVersionFourBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(persisted), `"schema_version": "agx.initialization/v4"`) || strings.Contains(strings.ToLower(string(persisted)), "credential") {
-		t.Fatalf("persisted v4 receipt is incomplete or contains credential material: %s", persisted)
+	persistedText := string(persisted)
+	if !strings.Contains(persistedText, `"schema_version": "agx.initialization/v4"`) ||
+		!strings.Contains(persistedText, `"rendered_content_sha256": "`+receipt.Repositories[0].TemplateDigest+`"`) {
+		t.Fatal("persisted v4 receipt is incomplete or lacks the canonical rendered-content binding")
+	}
+	for _, forbidden := range []string{"authorization", "bearer ", "credential", "cookie", "api_key", "apikey", "secret", "password", `"token"`} {
+		if strings.Contains(strings.ToLower(persistedText), forbidden) {
+			t.Fatalf("persisted v4 receipt contains forbidden credential marker %q", forbidden)
+		}
+	}
+	for _, forbiddenPath := range []string{root, filepath.ToSlash(root)} {
+		if strings.Contains(strings.ToLower(persistedText), strings.ToLower(forbiddenPath)) {
+			t.Fatal("persisted v4 receipt contains the absolute installation root")
+		}
+	}
+}
+
+func TestVersionFourReceiptRejectsChangedMulticaSelectorsOnRerun(t *testing.T) {
+	root := makeInstallation(t)
+	installationPath := filepath.Join(root, ".agx", "receipt.json")
+	installationData, err := os.ReadFile(installationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installationData = []byte(strings.Replace(string(installationData), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(installationPath, installationData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileMulticaExecutionV1
+	options.MulticaWorkspaceID = "123e4567-e89b-42d3-a456-426614174000"
+	options.MulticaRuntimeID = "223e4567-e89b-42d3-a456-426614174000"
+	options.MulticaAgentID = "323e4567-e89b-42d3-a456-426614174000"
+	if _, _, err := activation.Initialize(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(root, ".agx", "initialization.json")
+	before, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryMutations := repositoryRunner.mutationCalls
+	providerMutations := len(providerRunner.mutations)
+
+	changed := options
+	changed.MulticaWorkspaceID = "423e4567-e89b-42d3-a456-426614174000"
+	if _, _, err := activation.Initialize(context.Background(), changed); err == nil ||
+		!strings.Contains(err.Error(), "AGX-INIT-EVIDENCE-BINDING-CONFLICT") {
+		t.Fatalf("Initialize() changed selector error = %v", err)
+	}
+	after, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("v4 initialization receipt changed during rejected selector drift")
+	}
+	if repositoryRunner.mutationCalls != repositoryMutations || len(providerRunner.mutations) != providerMutations {
+		t.Fatal("external mutations ran during rejected selector drift")
+	}
+}
+
+func TestStatusRejectsProfileOverrideDriftBeforeCollection(t *testing.T) {
+	root := makeInstallation(t)
+	path := filepath.Join(root, ".agx", "receipt.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileGitHubDeliveryV1
+	if _, _, err := activation.Initialize(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+
+	collectorCalls := 0
+	state, err := activation.StatusWithEvidence(context.Background(), root, providerRunner, activation.StatusOptions{
+		EvidenceProfileOverride: domain.EvidenceProfileMulticaExecutionV1,
+		MulticaWorkspaceID:      "123e4567-e89b-42d3-a456-426614174000",
+		MulticaRuntimeID:        "223e4567-e89b-42d3-a456-426614174000",
+		MulticaAgentID:          "323e4567-e89b-42d3-a456-426614174000",
+		Collectors: []activation.EvidenceCollector{evidenceCollectorFunc(func(context.Context, activation.Receipt) domain.ObservationBatch {
+			collectorCalls++
+			return domain.ObservationBatch{}
+		})},
+	}, repositoryRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Evidence.Phase != domain.PhaseBlockedPreflight || !evidenceDiagnosticPresent(state.Evidence, "AGX-EVIDENCE-PROFILE-MISMATCH") || collectorCalls != 0 {
+		t.Fatalf("profile drift = phase %q diagnostics %#v collectorCalls=%d", state.Evidence.Phase, state.Evidence.Diagnostics, collectorCalls)
+	}
+}
+
+func TestStatusRejectsMulticaSelectorDriftBeforeCollection(t *testing.T) {
+	root := makeInstallation(t)
+	path := filepath.Join(root, ".agx", "receipt.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileMulticaExecutionV1
+	options.MulticaWorkspaceID = "123e4567-e89b-42d3-a456-426614174000"
+	options.MulticaRuntimeID = "223e4567-e89b-42d3-a456-426614174000"
+	options.MulticaAgentID = "323e4567-e89b-42d3-a456-426614174000"
+	if _, _, err := activation.Initialize(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+
+	collectorCalls := 0
+	state, err := activation.StatusWithEvidence(context.Background(), root, providerRunner, activation.StatusOptions{
+		EvidenceProfileOverride: domain.EvidenceProfileMulticaExecutionV1,
+		MulticaWorkspaceID:      "423e4567-e89b-42d3-a456-426614174000",
+		MulticaRuntimeID:        options.MulticaRuntimeID,
+		MulticaAgentID:          options.MulticaAgentID,
+		Collectors: []activation.EvidenceCollector{evidenceCollectorFunc(func(context.Context, activation.Receipt) domain.ObservationBatch {
+			collectorCalls++
+			return domain.ObservationBatch{}
+		})},
+	}, repositoryRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Evidence.Phase != domain.PhaseBlockedPreflight || !evidenceDiagnosticPresent(state.Evidence, "AGX-EVIDENCE-SUBJECT-MISMATCH") || collectorCalls != 0 {
+		t.Fatalf("selector drift = phase %q diagnostics %#v collectorCalls=%d", state.Evidence.Phase, state.Evidence.Diagnostics, collectorCalls)
+	}
+}
+
+func TestStatusRejectsSelfConsistentBindingThatConflictsWithReceipt(t *testing.T) {
+	root := makeInstallation(t)
+	path := filepath.Join(root, ".agx", "receipt.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileGitHubDeliveryV1
+	receipt, _, err := activation.Initialize(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.DeploymentBinding.ProviderProfile = "team"
+	receipt.DeploymentDigest, err = domain.ComputeDeploymentDigest(*receipt.DeploymentBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.SubjectBinding.DeploymentDigest = receipt.DeploymentDigest
+	receipt.SubjectDigest, err = domain.ComputeSubjectDigest(*receipt.SubjectBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agx", "initialization.json"), persisted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activation.Status(context.Background(), root, providerRunner, repositoryRunner); err == nil || !strings.Contains(err.Error(), "AGX-INIT-RECEIPT-INVALID") {
+		t.Fatalf("Status() err=%v, want cross-field evidence binding rejection", err)
 	}
 }
 
@@ -1209,6 +1509,87 @@ func TestLegacyStatusRejectsIncompleteMulticaSelectors(t *testing.T) {
 	if state.Evidence.Phase != domain.PhaseBlockedPreflight || !found {
 		t.Fatalf("legacy Multica override = phase %q diagnostics %#v", state.Evidence.Phase, state.Evidence.Diagnostics)
 	}
+}
+
+func TestLegacyStatusRejectsValidProfileOverrideWithoutDroppingIt(t *testing.T) {
+	root := makeInstallation(t)
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	if _, _, err := activation.Initialize(context.Background(), deploymentOptions(root, providerRunner, repositoryRunner)); err != nil {
+		t.Fatal(err)
+	}
+	collectorCalls := 0
+	state, err := activation.StatusWithEvidence(context.Background(), root, providerRunner, activation.StatusOptions{
+		EvidenceProfileOverride: domain.EvidenceProfileGitHubDeliveryV1,
+		Collectors: []activation.EvidenceCollector{evidenceCollectorFunc(func(context.Context, activation.Receipt) domain.ObservationBatch {
+			collectorCalls++
+			return domain.ObservationBatch{}
+		})},
+	}, repositoryRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Evidence.Phase != domain.PhaseBlockedPreflight ||
+		!evidenceDiagnosticPresent(state.Evidence, "AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT") || collectorCalls != 0 {
+		t.Fatalf("legacy profile override = phase %q profile %q diagnostics %#v collectorCalls=%d", state.Evidence.Phase, state.Evidence.Profile, state.Evidence.Diagnostics, collectorCalls)
+	}
+}
+
+func TestStatusMapsCollectorDiagnosticsWithoutCredentialMaterial(t *testing.T) {
+	root := makeInstallation(t)
+	installationPath := filepath.Join(root, ".agx", "receipt.json")
+	data, err := os.ReadFile(installationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"installation_id":"install-test"`, `"installation_id":"install-0123456789abcdef"`, 1))
+	if err := os.WriteFile(installationPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerRunner := newRunner()
+	repositoryRunner := newDeploymentRepositoryRunner()
+	options := deploymentOptions(root, providerRunner, repositoryRunner)
+	options.EvidenceProfile = domain.EvidenceProfileGitHubDeliveryV1
+	if _, _, err := activation.Initialize(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := activation.StatusWithEvidence(context.Background(), root, providerRunner, activation.StatusOptions{
+		Collectors: []activation.EvidenceCollector{evidenceCollectorFunc(func(context.Context, activation.Receipt) domain.ObservationBatch {
+			return domain.ObservationBatch{Diagnostics: []domain.Diagnostic{{
+				Code: "RAW-UPSTREAM-ERROR", Category: domain.DiagnosticCategoryPreflight, Severity: domain.SeverityError,
+				Message: "Authorization: Bearer AGX-SECRET-SENTINEL",
+			}}}
+		})},
+	}, repositoryRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(state.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "AGX-SECRET-SENTINEL") || strings.Contains(string(encoded), "RAW-UPSTREAM-ERROR") ||
+		!evidenceDiagnosticPresent(state.Evidence, "AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED") {
+		t.Fatal("collector diagnostic was not safely mapped")
+	}
+}
+
+type evidenceCollectorFunc func(context.Context, activation.Receipt) domain.ObservationBatch
+
+func (evidenceCollectorFunc) Source() domain.EvidenceSource { return domain.EvidenceSourceGitHub }
+
+func (collect evidenceCollectorFunc) Collect(ctx context.Context, receipt activation.Receipt) domain.ObservationBatch {
+	return collect(ctx, receipt)
+}
+
+func evidenceDiagnosticPresent(receipt domain.EvidenceReceipt, code domain.DiagnosticCode) bool {
+	for _, diagnostic := range receipt.Diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func deploymentOptions(root string, providerRunner provider.Runner, repositoryRunner repository.Runner) activation.Options {

@@ -33,7 +33,7 @@ func TestRunShowsDiagnoseHelp(t *testing.T) {
 	if code != exitcode.Success || stderr.Len() != 0 {
 		t.Fatalf("Run(diagnose --help) code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, text := range []string{"--root", "--output human|json", "Project/repository evidence", "Agent smoke", "Read-only"} {
+	for _, text := range []string{"--root", "--evidence-profile", "multica-execution/v1", "--output human|json", "Project/repository evidence", "Agent smoke", "Read-only"} {
 		if !strings.Contains(stdout.String(), text) {
 			t.Fatalf("Run(diagnose --help) stdout does not contain %q: %q", text, stdout.String())
 		}
@@ -48,7 +48,7 @@ func TestRunShowsInitHelp(t *testing.T) {
 		t.Fatalf("Run(init --help) exit code = %d, want %d", code, exitcode.Success)
 	}
 	for _, text := range []string{
-		"--root", "--github-owner", "--provider", "core|github|team|full", "--apply", "safe uninstall",
+		"--root", "--github-owner", "--provider", "--evidence-profile", "github-delivery/v1|multica-execution/v1", "core|github|team|full", "--apply", "safe uninstall",
 		"Prerequisites", "Defaults", "profile: core", "visibility: private",
 		"Repository model", "2233admin/agx", "zaurakworks/agent-plugins", "<owner>/agent-control", "<owner>/agent-contracts",
 		"First deployment order", "A same-name repository is a collision",

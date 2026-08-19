@@ -1,10 +1,9 @@
 policy_version: 2
-status: approved_by_2233admin_pending_merge
-gate_issue: 5
-approved_by: 2233admin
-approval_scope:
-  - security
-  - release
+status: pending_maintainer_review
+gate_issue: 54
+review_required:
+  - approve the v2 Evidence Profile split and blocked outcome/freshness states
+  - confirm that only complete external evidence may produce verified
 success:
   terminal_state: verified
   evidence_profile_selection: explicit
@@ -33,6 +32,8 @@ states:
   - applying
   - configured
   - blocked_preflight
+  - blocked_outcome
+  - blocked_freshness
   - awaiting_verification
   - verified
   - needs_manual_cleanup

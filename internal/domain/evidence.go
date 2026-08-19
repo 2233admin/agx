@@ -48,10 +48,13 @@ func ValidateEvidenceProfileSelection(profile EvidenceProfileID, multicaWorkspac
 		return err
 	}
 	if parsed != EvidenceProfileMulticaExecutionV1 {
+		if strings.TrimSpace(multicaWorkspaceID) != "" || strings.TrimSpace(multicaRuntimeID) != "" || strings.TrimSpace(multicaAgentID) != "" {
+			return fmt.Errorf("AGX-EVIDENCE-SUBJECT-INCOMPLETE")
+		}
 		return nil
 	}
 	for _, value := range []string{multicaWorkspaceID, multicaRuntimeID, multicaAgentID} {
-		if !uuidPattern.MatchString(strings.ToLower(strings.TrimSpace(value))) {
+		if value != strings.TrimSpace(value) || value != strings.ToLower(value) || !uuidPattern.MatchString(value) {
 			return fmt.Errorf("AGX-EVIDENCE-SUBJECT-INCOMPLETE")
 		}
 	}
@@ -182,8 +185,8 @@ type EvidenceReceipt struct {
 }
 
 type RepositoryBindingV1 struct {
-	IdentitySHA256 string `json:"identity_sha256"`
-	TemplateSHA256 string `json:"template_sha256"`
+	IdentitySHA256        string `json:"identity_sha256"`
+	RenderedContentSHA256 string `json:"rendered_content_sha256"`
 }
 
 type DeploymentBindingV1 struct {
@@ -191,7 +194,7 @@ type DeploymentBindingV1 struct {
 	InstallationID         InstallationID      `json:"installation_id"`
 	BundleSHA256           string              `json:"bundle_sha256"`
 	TemplateVersion        string              `json:"template_version"`
-	TemplateSHA256         string              `json:"template_sha256"`
+	TemplateSetSHA256      string              `json:"template_set_sha256"`
 	ProviderProfile        string              `json:"provider_profile"`
 	SelectedProviders      []string            `json:"selected_providers"`
 	ControlRepository      RepositoryBindingV1 `json:"control_repository"`
@@ -257,6 +260,7 @@ var (
 	hex40Pattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	installPattern = regexp.MustCompile(`^install-[0-9a-f]{16}$`)
 	uuidPattern    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	versionPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*$`)
 )
 
 func DecodeEvaluationInput(data []byte) (EvaluationInput, error) {
@@ -287,75 +291,85 @@ func EvaluateEvidence(input EvaluationInput) EvidenceReceipt {
 		Diagnostics: []Diagnostic{}, NextSteps: []string{}, Evidence: []ObservationRef{},
 	}
 	requirements, profileOK := profileRequirements(input.Profile)
-	preflight := append(validateEvaluationEnvelope(input, profileOK), input.Diagnostics...)
-	preflight = dedupeDiagnostics(preflight)
-	if len(preflight) > 0 {
-		receipt.Diagnostics = preflight
+	receipt.Diagnostics = dedupeDiagnostics(append(validateEvaluationEnvelope(input, profileOK), normalizeInputDiagnostics(input.Diagnostics)...))
+	if len(receipt.Diagnostics) > 0 {
 		appendMissing(&receipt, requirements)
 		return receipt
 	}
 
 	observations := append([]EvidenceObservation(nil), input.Observations...)
 	sort.Slice(observations, func(i, j int) bool { return observationSortKey(observations[i]) < observationSortKey(observations[j]) })
-	validByKind := make(map[EvidenceKind][]EvidenceObservation)
 	identity := make(map[string]EvidenceObservation)
 	ambiguousIdentity := make(map[string]bool)
+	outcomeBlocked := false
 	for _, observation := range observations {
-		if diagnostics := validateObservationEnvelope(observation); len(diagnostics) > 0 {
-			receipt.Phase = PhaseBlockedPreflight
-			receipt.Diagnostics = append(receipt.Diagnostics, diagnostics...)
-			continue
-		}
-		if !kindRelevant(input.Profile, observation.Kind) {
-			continue
-		}
 		if observation.Source != sourceForKind(observation.Kind) {
 			addDiagnostic(&receipt, "AGX-EVIDENCE-SOURCE-MISMATCH", "evidence source does not match its kind")
-			continue
-		}
-		if observation.InstallationID != input.InstallationID {
-			addDiagnostic(&receipt, "AGX-EVIDENCE-INSTALLATION-MISMATCH", "evidence belongs to another installation")
-			continue
-		}
-		if observation.DeploymentDigest != input.DeploymentDigest {
-			addDiagnostic(&receipt, "AGX-EVIDENCE-DEPLOYMENT-MISMATCH", "evidence belongs to another deployment")
-			continue
-		}
-		if observation.SubjectDigest != input.SubjectDigest {
-			addDiagnostic(&receipt, "AGX-EVIDENCE-SUBJECT-MISMATCH", "evidence belongs to another subject")
-			continue
-		}
-		if observation.ObservedAt.After(input.EvaluatedAt) {
-			addDiagnostic(&receipt, "AGX-EVIDENCE-OBSERVATION-FUTURE", "evidence observation is in the future")
-			continue
-		}
-		if !input.EvaluatedAt.Before(observation.ObservedAt.Add(evidenceMaxAge)) {
-			addDiagnostic(&receipt, "AGX-EVIDENCE-OBSERVATION-EXPIRED", "evidence observation is stale")
-			continue
-		}
-		if observation.Outcome != ObservationMatched {
-			addDiagnostic(&receipt, outcomeDiagnostic(observation.Outcome), "evidence observation did not match")
 			continue
 		}
 		key := observationIdentityKey(observation)
 		if previous, exists := identity[key]; exists {
 			if observationSortKey(previous) != observationSortKey(observation) {
 				ambiguousIdentity[key] = true
+				addDiagnosticWithCategory(&receipt, DiagnosticCategoryOutcome, "AGX-EVIDENCE-OBSERVATION-AMBIGUOUS", "conflicting evidence observations share one identity")
+				outcomeBlocked = true
 			}
 			continue
 		}
 		identity[key] = observation
 	}
+	if hasPreflightDiagnostic(receipt.Diagnostics) {
+		receipt.Diagnostics = dedupeDiagnostics(receipt.Diagnostics)
+		appendMissing(&receipt, requirements)
+		return receipt
+	}
+	validByKind := make(map[EvidenceKind][]EvidenceObservation)
+	freshnessBlocked := false
 	for key, observation := range identity {
-		if ambiguousIdentity[key] {
-			addDiagnostic(&receipt, "AGX-EVIDENCE-OBSERVATION-AMBIGUOUS", "conflicting evidence observations share one identity")
+		if ambiguousIdentity[key] || !kindRelevant(input.Profile, observation.Kind) {
+			continue
+		}
+		if observation.InstallationID != input.InstallationID {
+			addDiagnosticWithCategory(&receipt, DiagnosticCategoryOutcome, "AGX-EVIDENCE-INSTALLATION-MISMATCH", "evidence belongs to another installation")
+			outcomeBlocked = true
+			continue
+		}
+		if observation.DeploymentDigest != input.DeploymentDigest {
+			addDiagnosticWithCategory(&receipt, DiagnosticCategoryOutcome, "AGX-EVIDENCE-DEPLOYMENT-MISMATCH", "evidence belongs to another deployment")
+			outcomeBlocked = true
+			continue
+		}
+		if observation.SubjectDigest != input.SubjectDigest {
+			addDiagnosticWithCategory(&receipt, DiagnosticCategoryOutcome, "AGX-EVIDENCE-SUBJECT-MISMATCH", "evidence belongs to another subject")
+			outcomeBlocked = true
+			continue
+		}
+		if observation.Outcome != ObservationMatched {
+			addDiagnosticWithCategory(&receipt, DiagnosticCategoryOutcome, outcomeDiagnostic(observation.Outcome), "evidence observation did not match")
+			outcomeBlocked = true
+			continue
+		}
+		if observation.ObservedAt.After(input.EvaluatedAt) {
+			addDiagnosticWithCategory(&receipt, DiagnosticCategoryFreshness, "AGX-EVIDENCE-OBSERVATION-FUTURE", "evidence observation is in the future")
+			freshnessBlocked = true
+			continue
+		}
+		if !input.EvaluatedAt.Before(observation.ObservedAt.Add(evidenceMaxAge)) {
+			addDiagnosticWithCategory(&receipt, DiagnosticCategoryFreshness, "AGX-EVIDENCE-OBSERVATION-EXPIRED", "evidence observation is stale")
+			freshnessBlocked = true
 			continue
 		}
 		validByKind[observation.Kind] = append(validByKind[observation.Kind], observation)
 	}
+	if hasPreflightDiagnostic(receipt.Diagnostics) {
+		receipt.Diagnostics = dedupeDiagnostics(receipt.Diagnostics)
+		appendMissing(&receipt, requirements)
+		return receipt
+	}
 	for kind, values := range validByKind {
 		if len(values) > 1 {
-			addDiagnostic(&receipt, "AGX-EVIDENCE-OBSERVATION-AMBIGUOUS", "multiple evidence observations satisfy one singleton kind")
+			addDiagnosticWithCategory(&receipt, DiagnosticCategoryOutcome, "AGX-EVIDENCE-OBSERVATION-AMBIGUOUS", "multiple evidence observations satisfy one singleton kind")
+			outcomeBlocked = true
 			delete(validByKind, kind)
 		}
 	}
@@ -373,7 +387,8 @@ func EvaluateEvidence(input EvaluationInput) EvidenceReceipt {
 		}
 	}
 	if revisionMismatch {
-		addDiagnostic(&receipt, "AGX-EVIDENCE-REVISION-MISMATCH", "correlated evidence revisions do not match")
+		addDiagnosticWithCategory(&receipt, DiagnosticCategoryOutcome, "AGX-EVIDENCE-REVISION-MISMATCH", "correlated evidence revisions do not match")
+		outcomeBlocked = true
 	}
 
 	for _, requirement := range requirements {
@@ -390,7 +405,6 @@ func EvaluateEvidence(input EvaluationInput) EvidenceReceipt {
 		if selected == nil {
 			receipt.Missing = append(receipt.Missing, result)
 			receipt.NextSteps = append(receipt.NextSteps, requirement.next)
-			addDiagnostic(&receipt, requirement.code, "required evidence is missing")
 			continue
 		}
 		receipt.Satisfied = append(receipt.Satisfied, result)
@@ -399,10 +413,15 @@ func EvaluateEvidence(input EvaluationInput) EvidenceReceipt {
 			Ref: selected.Ref, ObservedAt: selected.ObservedAt,
 		})
 	}
-	if hasPreflightDiagnostic(receipt.Diagnostics) {
-		receipt.Phase = PhaseBlockedPreflight
-	} else if len(receipt.Missing) == 0 {
+	receipt.Diagnostics = dedupeDiagnostics(receipt.Diagnostics)
+	if outcomeBlocked {
+		receipt.Phase = PhaseBlockedOutcome
+	} else if freshnessBlocked {
+		receipt.Phase = PhaseBlockedFreshness
+	} else if len(receipt.Missing) == 0 && len(receipt.Diagnostics) == 0 {
 		receipt.Phase = PhaseVerified
+	} else if revisionMismatch || len(receipt.Diagnostics) > 0 {
+		receipt.Phase = PhaseBlockedOutcome
 	} else {
 		receipt.Phase = PhaseAwaitingVerification
 	}
@@ -510,14 +529,17 @@ func validateEvidenceRef(kind EvidenceKind, ref EvidenceRef) string {
 		if ref.Number == 0 {
 			return "positive evidence number is required"
 		}
-		if ref.UUID != "" {
-			return "UUID is not allowed for GitHub numbered evidence"
+		if ref.UUID != "" || ref.IdentitySHA256 != "" {
+			return "hash and UUID are not allowed for GitHub numbered evidence"
 		}
 	case EvidenceMulticaWorkspace, EvidenceMulticaRuntimeOnline, EvidenceMulticaAgent:
 		if ref.UUID == "" || ref.IdentitySHA256 != "" || ref.Number != 0 {
 			return "strict UUID is required for selected Multica evidence"
 		}
 	case EvidenceMulticaTaskCompleted, EvidenceMulticaRunCompleted:
+		if ref.Number != 0 {
+			return "number is not allowed for Multica task or run evidence"
+		}
 		if ref.UUID == "" && ref.IdentitySHA256 == "" {
 			return "typed task or run identity is required"
 		}
@@ -603,13 +625,10 @@ func requiresRevision(kind EvidenceKind) bool {
 
 func observationIdentityKey(observation EvidenceObservation) string {
 	data, _ := json.Marshal(struct {
-		Source           EvidenceSource `json:"source"`
-		Kind             EvidenceKind   `json:"kind"`
-		InstallationID   InstallationID `json:"installation_id"`
-		DeploymentDigest string         `json:"deployment_digest"`
-		SubjectDigest    string         `json:"subject_digest"`
-		Ref              EvidenceRef    `json:"ref"`
-	}{observation.Source, observation.Kind, observation.InstallationID, observation.DeploymentDigest, observation.SubjectDigest, observation.Ref})
+		Source EvidenceSource `json:"source"`
+		Kind   EvidenceKind   `json:"kind"`
+		Ref    EvidenceRef    `json:"ref"`
+	}{observation.Source, observation.Kind, observation.Ref})
 	return string(data)
 }
 
@@ -635,13 +654,51 @@ func evidenceDiagnostic(code, message string) Diagnostic {
 	return Diagnostic{Code: DiagnosticCode(code), Category: DiagnosticCategoryPreflight, Severity: SeverityError, Message: message}
 }
 
+var inputDiagnosticRegistry = map[DiagnosticCode]Diagnostic{
+	"AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT": evidenceDiagnostic("AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT", "legacy initialization receipts cannot accept an evidence profile override"),
+	"AGX-EVIDENCE-PROFILE-MISSING":        evidenceDiagnostic("AGX-EVIDENCE-PROFILE-MISSING", "persisted initialization receipt is missing its evidence profile"),
+	"AGX-EVIDENCE-PROFILE-MISMATCH":       evidenceDiagnostic("AGX-EVIDENCE-PROFILE-MISMATCH", "requested evidence profile conflicts with the persisted profile"),
+	"AGX-EVIDENCE-SUBJECT-INCOMPLETE":     evidenceDiagnostic("AGX-EVIDENCE-SUBJECT-INCOMPLETE", "evidence profile selectors are incomplete or invalid"),
+	"AGX-EVIDENCE-SUBJECT-MISMATCH":       evidenceDiagnostic("AGX-EVIDENCE-SUBJECT-MISMATCH", "requested evidence selectors conflict with the persisted subject"),
+	"AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED": evidenceDiagnostic(
+		"AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED", "GitHub evidence collector failed",
+	),
+	"AGX-EVIDENCE-MULTICA-COLLECTOR-FAILED": evidenceDiagnostic(
+		"AGX-EVIDENCE-MULTICA-COLLECTOR-FAILED", "Multica evidence collector failed",
+	),
+	"AGX-EVIDENCE-COLLECTOR-SOURCE-INVALID": evidenceDiagnostic(
+		"AGX-EVIDENCE-COLLECTOR-SOURCE-INVALID", "evidence collector has an unsupported source",
+	),
+}
+
+func normalizeInputDiagnostics(values []Diagnostic) []Diagnostic {
+	result := make([]Diagnostic, 0, len(values))
+	for _, value := range values {
+		if diagnostic, ok := inputDiagnosticRegistry[value.Code]; ok {
+			result = append(result, diagnostic)
+			continue
+		}
+		result = append(result, evidenceDiagnostic(
+			"AGX-EVIDENCE-DIAGNOSTIC-UNSUPPORTED",
+			"evidence input contained an unsupported diagnostic code",
+		))
+	}
+	return dedupeDiagnostics(result)
+}
+
 func addDiagnostic(receipt *EvidenceReceipt, code, message string) {
+	addDiagnosticWithCategory(receipt, DiagnosticCategoryPreflight, code, message)
+}
+
+func addDiagnosticWithCategory(receipt *EvidenceReceipt, category DiagnosticCategory, code, message string) {
 	for _, diagnostic := range receipt.Diagnostics {
 		if string(diagnostic.Code) == code {
 			return
 		}
 	}
-	receipt.Diagnostics = append(receipt.Diagnostics, evidenceDiagnostic(code, message))
+	receipt.Diagnostics = append(receipt.Diagnostics, Diagnostic{
+		Code: DiagnosticCode(code), Category: category, Severity: SeverityError, Message: message,
+	})
 }
 
 func dedupeDiagnostics(values []Diagnostic) []Diagnostic {
@@ -680,10 +737,7 @@ func hasPreflightDiagnostic(values []Diagnostic) bool {
 			"AGX-EVIDENCE-OBSERVATION-LIMIT",
 			"AGX-EVIDENCE-KIND-UNSUPPORTED",
 			"AGX-EVIDENCE-OBSERVATION-INVALID",
-			"AGX-EVIDENCE-SOURCE-MISMATCH",
-			"AGX-EVIDENCE-INSTALLATION-MISMATCH",
-			"AGX-EVIDENCE-DEPLOYMENT-MISMATCH",
-			"AGX-EVIDENCE-SUBJECT-MISMATCH":
+			"AGX-EVIDENCE-SOURCE-MISMATCH":
 			return true
 		}
 	}
@@ -704,14 +758,34 @@ func NamespacedIdentitySHA256(source, resourceType, raw string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func supportedProviderProfile(profile string) bool {
+	switch profile {
+	case "core", "github", "team", "full":
+		return true
+	default:
+		return false
+	}
+}
+
 func ComputeDeploymentDigest(binding DeploymentBindingV1) (string, error) {
-	if binding.SchemaVersion != DeploymentBindingSchemaV1 || !installPattern.MatchString(string(binding.InstallationID)) {
+	if binding.SchemaVersion != DeploymentBindingSchemaV1 || !installPattern.MatchString(string(binding.InstallationID)) ||
+		!versionPattern.MatchString(binding.TemplateVersion) || !supportedProviderProfile(binding.ProviderProfile) || len(binding.SelectedProviders) == 0 {
 		return "", fmt.Errorf("AGX-EVIDENCE-DEPLOYMENT-BINDING-INVALID")
 	}
-	for _, value := range []string{binding.BundleSHA256, binding.TemplateSHA256, binding.ControlRepository.IdentitySHA256, binding.ControlRepository.TemplateSHA256, binding.ContractsRepository.IdentitySHA256, binding.ContractsRepository.TemplateSHA256, binding.ProjectIdentitySHA256, binding.FirstUseContractSHA256} {
+	seenProviders := make(map[string]bool, len(binding.SelectedProviders))
+	for _, selected := range binding.SelectedProviders {
+		if (selected != "codex" && selected != "claude") || seenProviders[selected] {
+			return "", fmt.Errorf("AGX-EVIDENCE-DEPLOYMENT-BINDING-INVALID")
+		}
+		seenProviders[selected] = true
+	}
+	for _, value := range []string{binding.BundleSHA256, binding.TemplateSetSHA256, binding.ControlRepository.IdentitySHA256, binding.ControlRepository.RenderedContentSHA256, binding.ContractsRepository.IdentitySHA256, binding.ContractsRepository.RenderedContentSHA256, binding.ProjectIdentitySHA256, binding.FirstUseContractSHA256} {
 		if !hex64Pattern.MatchString(value) {
 			return "", fmt.Errorf("AGX-EVIDENCE-DEPLOYMENT-BINDING-INVALID")
 		}
+	}
+	if binding.ControlRepository.IdentitySHA256 == binding.ContractsRepository.IdentitySHA256 {
+		return "", fmt.Errorf("AGX-EVIDENCE-DEPLOYMENT-BINDING-INVALID")
 	}
 	copyBinding := binding
 	copyBinding.SelectedProviders = append([]string(nil), binding.SelectedProviders...)

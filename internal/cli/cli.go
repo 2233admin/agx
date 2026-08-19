@@ -127,6 +127,7 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 	}
 	if values["--evidence-profile"] == "" {
 		fmt.Fprintln(stderr, "AGX-EVIDENCE-PROFILE-REQUIRED")
+		printInitUsage(stderr)
 		return exitcode.Usage
 	}
 	profileName := values["--profile"]
@@ -146,10 +147,12 @@ func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDepend
 	evidenceProfile, err := domain.ParseEvidenceProfile(values["--evidence-profile"])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
+		printInitUsage(stderr)
 		return exitcode.Usage
 	}
 	if err := domain.ValidateEvidenceProfileSelection(evidenceProfile, values["--multica-workspace-id"], values["--multica-runtime-id"], values["--multica-agent-id"]); err != nil {
 		fmt.Fprintln(stderr, err)
+		printInitUsage(stderr)
 		return exitcode.Usage
 	}
 	visibility := repository.VisibilityPrivate
@@ -289,7 +292,7 @@ func printInitializationPlan(output io.Writer, plan activation.InitializationPla
 	fmt.Fprintln(output, "Deployment model: AGX keeps agent-plugins as the only installed source, then creates deployment-owned agent-control and agent-contracts repositories from clean templates.")
 	fmt.Fprintln(output, "Repositories:")
 	for _, item := range plan.Repositories {
-		fmt.Fprintf(output, "  - %s %s/%s (%s; %s; template %s %s)\n", item.Action, item.Owner, item.Name, item.Visibility, item.Kind, item.TemplateVersion, item.TemplateDigest)
+		fmt.Fprintf(output, "  - %s %s/%s (%s; %s; template %s rendered %s)\n", item.Action, item.Owner, item.Name, item.Visibility, item.Kind, item.TemplateVersion, item.TemplateDigest)
 	}
 	if plan.Project.Owner != "" {
 		fmt.Fprintf(output, "Project %s: %q for %s (%s; link %s; retained on uninstall: %t)\n",
@@ -573,7 +576,7 @@ func printApplyNextStep(stdout io.Writer, root ...string) {
 	}
 	fmt.Fprintf(stdout, "Next: run the guided initialization preview with this %s command. It discovers gh identity, usable provider CLIs, source conflicts, repositories, and prints an exact apply command:\n", commandShellLabel())
 	fmt.Fprintf(stdout, "  agx init --guided --root %s\n", rootValue)
-	fmt.Fprintln(stdout, "Automation can keep using explicit agx init --root ... --github-owner ... --provider ... followed by the same command with --apply.")
+	fmt.Fprintln(stdout, "Automation can keep using explicit agx init --root ... --github-owner ... --provider ... --evidence-profile github-delivery/v1|multica-execution/v1 followed by the same command with --apply.")
 	fmt.Fprintln(stdout, "Installation phase is configured; initialization does not claim verified.")
 }
 
@@ -584,17 +587,28 @@ func evidenceStatusFlags() map[string]bool {
 	}
 }
 
-func readActivationStatus(ctx context.Context, root string, values map[string]string, dependencies runtimeDependencies) (activation.State, error) {
+func evidenceStatusOptions(values map[string]string) (activation.StatusOptions, error) {
 	options := activation.StatusOptions{
 		MulticaWorkspaceID: values["--multica-workspace-id"], MulticaRuntimeID: values["--multica-runtime-id"], MulticaAgentID: values["--multica-agent-id"],
 	}
-	if values["--evidence-profile"] != "" {
-		profile, err := domain.ParseEvidenceProfile(values["--evidence-profile"])
-		if err != nil {
-			return activation.State{}, err
+	if values["--evidence-profile"] == "" {
+		if options.MulticaWorkspaceID != "" || options.MulticaRuntimeID != "" || options.MulticaAgentID != "" {
+			return activation.StatusOptions{}, fmt.Errorf("AGX-EVIDENCE-SUBJECT-INCOMPLETE")
 		}
-		options.EvidenceProfileOverride = profile
+		return options, nil
 	}
+	profile, err := domain.ParseEvidenceProfile(values["--evidence-profile"])
+	if err != nil {
+		return activation.StatusOptions{}, err
+	}
+	if err := domain.ValidateEvidenceProfileSelection(profile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
+		return activation.StatusOptions{}, err
+	}
+	options.EvidenceProfileOverride = profile
+	return options, nil
+}
+
+func readActivationStatus(ctx context.Context, root string, options activation.StatusOptions, dependencies runtimeDependencies) (activation.State, error) {
 	if dependencies.statusWithEvidence != nil {
 		return dependencies.statusWithEvidence(ctx, root, dependencies.providerRunner, options, dependencies.repositoryRunner)
 	}
@@ -610,6 +624,12 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 		fmt.Fprintln(stderr, "AGX-USAGE-STATUS: --root <directory> [--evidence-profile github-delivery/v1|multica-execution/v1] [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--output human|json]")
 		return exitcode.Usage
 	}
+	evidenceOptions, err := evidenceStatusOptions(values)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		fmt.Fprintln(stderr, "Accepted evidence profiles: github-delivery/v1 or multica-execution/v1; Multica requires Workspace, Runtime, and Agent UUIDs.")
+		return exitcode.Usage
+	}
 	state, err := installer.Status(values["--root"])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -617,7 +637,7 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	initialization, initializationErr := readActivationStatus(ctx, values["--root"], values, dependencies)
+	initialization, initializationErr := readActivationStatus(ctx, values["--root"], evidenceOptions, dependencies)
 	if initializationErr != nil {
 		fmt.Fprintln(stderr, initializationErr)
 		return exitcode.Data
@@ -667,7 +687,7 @@ func printDeploymentVisibility(output io.Writer, state activation.State) {
 		if deployedRepository.Verification == repository.VerificationUncertain {
 			evidence = "readback uncertain"
 		}
-		fmt.Fprintf(output, "Deployment repository: %s (%s; template digest %s; %s)\n",
+		fmt.Fprintf(output, "Deployment repository: %s (%s; rendered content SHA-256 %s; %s)\n",
 			deployedRepository.URL, deployedRepository.NameWithOwner, deployedRepository.TemplateDigest, evidence)
 	}
 	if len(state.RepositoryDetails) == 0 {
@@ -682,11 +702,14 @@ func printDeploymentVisibility(output io.Writer, state activation.State) {
 	if state.Evidence.Phase != "" {
 		fmt.Fprintf(output, "Evidence profile: %s\n", state.Evidence.Profile)
 		fmt.Fprintf(output, "Evidence phase: %s\n", state.Evidence.Phase)
+		for _, requirement := range state.Evidence.Satisfied {
+			fmt.Fprintf(output, "Evidence satisfied: %s (%s)\n", requirement.ID, requirement.Code)
+		}
+		for _, requirement := range state.Evidence.Missing {
+			fmt.Fprintf(output, "Evidence missing: %s (%s)\n", requirement.ID, requirement.Code)
+		}
 		for _, diagnostic := range state.Evidence.Diagnostics {
 			fmt.Fprintf(output, "Evidence diagnostic: %s: %s\n", diagnostic.Code, diagnostic.Message)
-		}
-		for _, next := range state.Evidence.NextSteps {
-			fmt.Fprintf(output, "Evidence next: %s\n", next)
 		}
 	}
 	if state.Smoke.Status != "" {
@@ -718,6 +741,12 @@ func runDiagnose(args []string, stdout, stderr io.Writer, dependencies runtimeDe
 		fmt.Fprintln(stderr, "AGX-USAGE-DIAGNOSE: --root <directory> [--evidence-profile github-delivery/v1|multica-execution/v1] [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--output human|json]")
 		return exitcode.Usage
 	}
+	evidenceOptions, err := evidenceStatusOptions(values)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		fmt.Fprintln(stderr, "Accepted evidence profiles: github-delivery/v1 or multica-execution/v1; Multica requires Workspace, Runtime, and Agent UUIDs.")
+		return exitcode.Usage
+	}
 	installation, err := installer.Status(values["--root"])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -725,7 +754,7 @@ func runDiagnose(args []string, stdout, stderr io.Writer, dependencies runtimeDe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	initialization, initializationErr := readActivationStatus(ctx, values["--root"], values, dependencies)
+	initialization, initializationErr := readActivationStatus(ctx, values["--root"], evidenceOptions, dependencies)
 	if initializationErr != nil {
 		fmt.Fprintln(stderr, initializationErr)
 		return exitcode.Data
@@ -778,7 +807,8 @@ func diagnoseNextSteps(_ string, installation installer.State, initialization ac
 	}
 	if initialization.Evidence.Phase != "" {
 		next = append(next, initialization.Evidence.NextSteps...)
-	} else if initialization.Smoke.Status == smoke.StatusAwaiting {
+	}
+	if initialization.Smoke.Status == smoke.StatusAwaiting {
 		next = append(next, "run one first-use Agent prompt from the initialization result, then run agx status --root "+quotedRoot)
 	}
 	return next
@@ -805,15 +835,23 @@ func printStatusNext(output io.Writer, root, installationPhase string, missing, 
 		fmt.Fprintln(output, "Next: there is no separate resume command. Resolve the initialization problem, then rerun the original agx init ... --apply command unchanged.")
 		return
 	}
+	if len(initialization.Problems) > 0 {
+		fmt.Fprintln(output, "Next: resolve each initialization problem listed above.")
+	}
+	needsStatusRerun := false
 	if initialization.Evidence.Phase != "" {
 		for _, next := range initialization.Evidence.NextSteps {
 			fmt.Fprintf(output, "Next: %s.\n", next)
 		}
 		if initialization.Evidence.Phase != domain.PhaseVerified {
-			fmt.Fprintf(output, "Then rerun this %s command: %s\n", commandShellLabel(), statusCommand)
+			needsStatusRerun = true
 		}
-	} else if initialization.Smoke.Status == smoke.StatusAwaiting {
+	}
+	if initialization.Smoke.Status == smoke.StatusAwaiting {
 		fmt.Fprintln(output, "Next: start a new Agent session and run one first-use prompt emitted by agx init.")
+		needsStatusRerun = true
+	}
+	if needsStatusRerun {
 		fmt.Fprintf(output, "Then rerun this %s command: %s\n", commandShellLabel(), statusCommand)
 	}
 }
@@ -1039,7 +1077,7 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		return exitcode.Success
 	case "init":
 		fmt.Fprintln(stdout, "Usage: agx init --guided --root <directory>")
-		fmt.Fprintln(stdout, "   or: agx init --root <directory> --github-owner <owner> --provider codex|claude|both [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
+		fmt.Fprintln(stdout, "   or: agx init --root <directory> --github-owner <owner> --provider codex|claude|both --evidence-profile github-delivery/v1|multica-execution/v1 [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--profile core|github|team|full] [--visibility private|public] [--control-repo <name>] [--contracts-repo <name>] [--apply] [--output human|json]")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Preview a side-effect-free initialization plan. Use --guided for first run discovery and confirmation; add --apply only to create deployment repositories, link a GitHub Project, and activate the pinned agent-plugins component.")
 		fmt.Fprintln(stdout, "Ownership is recorded for safe uninstall and recovery; remote repositories and the Project are always retained.")
@@ -1051,6 +1089,7 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Defaults:")
 		fmt.Fprintln(stdout, "  - explicit init profile: core")
 		fmt.Fprintln(stdout, "  - guided init suggested profile: github")
+		fmt.Fprintln(stdout, "  - guided init suggested Evidence Profile: github-delivery/v1; explicit init must select one")
 		fmt.Fprintln(stdout, "  - visibility: private")
 		fmt.Fprintln(stdout, "  - repositories: agent-control and agent-contracts")
 		fmt.Fprintln(stdout, "")
@@ -1063,17 +1102,17 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "First deployment order:")
 		fmt.Fprintln(stdout, "  agx apply --root '<new-install-dir>'")
 		fmt.Fprintln(stdout, "  agx init --guided --root '<new-install-dir>'")
-		fmt.Fprintln(stdout, "  agx init --root '<new-install-dir>' --github-owner '<owner>' --provider '<recommended>' --profile github --apply")
+		fmt.Fprintln(stdout, "  agx init --root '<new-install-dir>' --github-owner '<owner>' --provider '<recommended>' --profile github --evidence-profile github-delivery/v1 --apply")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "A same-name repository is a collision: AGX stops before writes and never adopts or overwrites it. The same rule applies to the deployment Project.")
 		return exitcode.Success
 	case "status":
-		fmt.Fprintln(stdout, "Usage: agx status --root <directory> [--output human|json]")
+		fmt.Fprintln(stdout, "Usage: agx status --root <directory> [--evidence-profile github-delivery/v1|multica-execution/v1] [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--output human|json]")
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Read the local receipt and detect missing AGX-owned files without writing.")
+		fmt.Fprintln(stdout, "Read the local receipt, deployment resources, and selected Evidence Profile without writing.")
 		return exitcode.Success
 	case "diagnose":
-		fmt.Fprintln(stdout, "Usage: agx diagnose --root <directory> [--output human|json]")
+		fmt.Fprintln(stdout, "Usage: agx diagnose --root <directory> [--evidence-profile github-delivery/v1|multica-execution/v1] [--multica-workspace-id UUID --multica-runtime-id UUID --multica-agent-id UUID] [--output human|json]")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Read-only diagnostics for installation integrity, Project/repository evidence, Agent smoke, and next steps.")
 		return exitcode.Success

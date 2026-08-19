@@ -13,7 +13,7 @@
 
 ## 状态和安全语义
 
-允许状态至少包括 `planned`、`provisioning`、`needs_resume`、`initialized`、`configured`、`blocked_preflight`、`awaiting_verification`、`verified` 与 `needs_manual_cleanup`。`configured`、`initialized` 和 `awaiting_verification` 绝不等于外部验收成功。恢复必须先重新发现远端仓库、初始提交和 provider 状态；不确定的外部结果不得触发破坏性补偿。
+允许状态至少包括 `planned`、`provisioning`、`needs_resume`、`initialized`、`configured`、`blocked_preflight`、`blocked_outcome`、`blocked_freshness`、`awaiting_verification`、`verified` 与 `needs_manual_cleanup`。`configured`、`initialized` 和 `awaiting_verification` 绝不等于外部验收成功。恢复必须先重新发现远端仓库、初始提交和 provider 状态；不确定的外部结果不得触发破坏性补偿。
 
 序列化边界采用默认拒绝：未知敏感字段、token、cookie、OAuth code、邮箱、业务正文和完整本地路径不得进入日志、fixture、回执或支持包。
 

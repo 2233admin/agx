@@ -284,13 +284,13 @@ func promptGuidedChoices(reader *bufio.Reader, output io.Writer, root string, di
 		return guidedInitChoices{}, err
 	}
 	if choices.evidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
-		if choices.multicaWorkspaceID, err = promptValue(reader, output, "Multica Workspace UUID", ""); err != nil {
+		if choices.multicaWorkspaceID, err = promptEvidenceUUID(reader, output, "Multica Workspace UUID"); err != nil {
 			return guidedInitChoices{}, err
 		}
-		if choices.multicaRuntimeID, err = promptValue(reader, output, "Multica Runtime UUID", ""); err != nil {
+		if choices.multicaRuntimeID, err = promptEvidenceUUID(reader, output, "Multica Runtime UUID"); err != nil {
 			return guidedInitChoices{}, err
 		}
-		if choices.multicaAgentID, err = promptValue(reader, output, "Multica Agent UUID", ""); err != nil {
+		if choices.multicaAgentID, err = promptEvidenceUUID(reader, output, "Multica Agent UUID"); err != nil {
 			return guidedInitChoices{}, err
 		}
 	}
@@ -354,7 +354,7 @@ func promptEvidenceProfile(reader *bufio.Reader, output io.Writer, defaultValue 
 		last = err
 		fmt.Fprintf(output, "Invalid evidence profile. Use github-delivery/v1 or multica-execution/v1 (%d attempt(s) left).\n", guidedPromptAttempts-attempt)
 	}
-	return "", fmt.Errorf("%v. Next: rerun guided init and choose an explicit evidence profile; no changes were made.", last)
+	return "", fmt.Errorf("%v; next: rerun guided init and choose an explicit evidence profile; no changes were made", last)
 }
 
 func promptVisibility(reader *bufio.Reader, output io.Writer, defaultValue repository.Visibility) (repository.Visibility, error) {
@@ -395,6 +395,20 @@ func promptValue(reader *bufio.Reader, output io.Writer, label, defaultValue str
 	return value, nil
 }
 
+func promptEvidenceUUID(reader *bufio.Reader, output io.Writer, label string) (string, error) {
+	for attempt := 1; attempt <= guidedPromptAttempts; attempt++ {
+		value, err := promptValue(reader, output, label, "")
+		if err != nil {
+			return "", err
+		}
+		if domain.ValidateEvidenceProfileSelection(domain.EvidenceProfileMulticaExecutionV1, value, value, value) == nil {
+			return value, nil
+		}
+		fmt.Fprintf(output, "Invalid UUID (%d attempt(s) left).\n", guidedPromptAttempts-attempt)
+	}
+	return "", fmt.Errorf("AGX-EVIDENCE-SUBJECT-INCOMPLETE: rerun guided init with a canonical UUID; no changes were made")
+}
+
 func printGuidedConfirmation(output io.Writer, choices guidedInitChoices) {
 	fmt.Fprintln(output, "")
 	fmt.Fprintln(output, "Discovery and choices reviewed; no repositories or provider state were changed.")
@@ -404,14 +418,21 @@ func printGuidedConfirmation(output io.Writer, choices guidedInitChoices) {
 	fmt.Fprintf(output, "  - profile: %s\n", choices.profile)
 	fmt.Fprintf(output, "  - evidence profile: %s\n", choices.evidenceProfile)
 	if choices.evidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
-		fmt.Fprintf(output, "  - Multica Workspace: %s\n", choices.multicaWorkspaceID)
-		fmt.Fprintf(output, "  - Multica Runtime: %s\n", choices.multicaRuntimeID)
-		fmt.Fprintf(output, "  - Multica Agent: %s\n", choices.multicaAgentID)
+		fmt.Fprintf(output, "  - Multica Workspace: …%s\n", uuidSuffix(choices.multicaWorkspaceID))
+		fmt.Fprintf(output, "  - Multica Runtime: …%s\n", uuidSuffix(choices.multicaRuntimeID))
+		fmt.Fprintf(output, "  - Multica Agent: …%s\n", uuidSuffix(choices.multicaAgentID))
 	}
 	fmt.Fprintf(output, "  - visibility: %s\n", choices.visibility)
 	fmt.Fprintf(output, "  - control repo: %s/%s\n", choices.githubOwner, choices.controlRepository)
 	fmt.Fprintf(output, "  - contracts repo: %s/%s\n", choices.githubOwner, choices.contractsRepository)
 	fmt.Fprintln(output, "Remote repositories are retained on uninstall; same-name repositories stop initialization before writes.")
+}
+
+func uuidSuffix(value string) string {
+	if len(value) <= 4 {
+		return value
+	}
+	return value[len(value)-4:]
 }
 
 func promptRequiredConfirmation(reader *bufio.Reader, output io.Writer) (bool, error) {

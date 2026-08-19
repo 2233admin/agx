@@ -135,6 +135,7 @@ type Options struct {
 }
 
 type EvidenceCollector interface {
+	Source() domain.EvidenceSource
 	Collect(context.Context, Receipt) domain.ObservationBatch
 }
 
@@ -404,7 +405,7 @@ func prepareDeployment(ctx context.Context, options Options) (preparedDeployment
 		return preparedDeployment{}, err
 	}
 	if present {
-		if err := validateDeploymentIdentity(existing, installation, options); err != nil {
+		if err := validateDeploymentIdentity(existing, installation, options, deploymentDigest, subjectDigest); err != nil {
 			return preparedDeployment{}, err
 		}
 		if existing.Phase == PhaseManualCleanup {
@@ -536,13 +537,13 @@ func buildEvidenceBindings(options Options, installation installer.Receipt, targ
 	firstUseSelector := strings.Join([]string{contractTitle, contractMarker, "agx/bootstrap-verification-" + installation.InstallationID, "python tools/validate.py", "Validate control baseline", "validate"}, "\x00")
 	deployment := domain.DeploymentBindingV1{
 		SchemaVersion: domain.DeploymentBindingSchemaV1, InstallationID: domain.InstallationID(installation.InstallationID),
-		BundleSHA256: installation.BundleSHA256, TemplateVersion: bootstrap.TemplateSetVersion, TemplateSHA256: bootstrap.TemplateSetContentSHA256,
+		BundleSHA256: installation.BundleSHA256, TemplateVersion: bootstrap.TemplateSetVersion, TemplateSetSHA256: bootstrap.TemplateSetContentSHA256,
 		ProviderProfile: string(options.Profile), SelectedProviders: providerNames,
 		ControlRepository: domain.RepositoryBindingV1{
-			IdentitySHA256: domain.NamespacedIdentitySHA256("github", "repository", targets[0].Owner+"/"+targets[0].Name), TemplateSHA256: targets[0].Seed.Digest,
+			IdentitySHA256: domain.NamespacedIdentitySHA256("github", "repository", targets[0].Owner+"/"+targets[0].Name), RenderedContentSHA256: targets[0].Seed.Digest,
 		},
 		ContractsRepository: domain.RepositoryBindingV1{
-			IdentitySHA256: domain.NamespacedIdentitySHA256("github", "repository", targets[1].Owner+"/"+targets[1].Name), TemplateSHA256: targets[1].Seed.Digest,
+			IdentitySHA256: domain.NamespacedIdentitySHA256("github", "repository", targets[1].Owner+"/"+targets[1].Name), RenderedContentSHA256: targets[1].Seed.Digest,
 		},
 		ProjectIdentitySHA256:  domain.NamespacedIdentitySHA256("github", "project", projectSelector),
 		FirstUseContractSHA256: domain.NamespacedIdentitySHA256("agx", "first-use-contract", firstUseSelector),
@@ -579,7 +580,14 @@ func buildEvidenceBindings(options Options, installation installer.Receipt, targ
 	return deployment, deploymentDigest, subject, subjectDigest, nil
 }
 
-func validateDeploymentIdentity(receipt Receipt, installation installer.Receipt, options Options) error {
+func validateDeploymentIdentity(receipt Receipt, installation installer.Receipt, options Options, deploymentDigest, subjectDigest string) error {
+	if receipt.SchemaVersion != receiptSchemaV4 && options.EvidenceProfile != "" {
+		return fmt.Errorf("AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT: existing legacy initialization receipt cannot be upgraded in place; initialize a new deployment with a new root and unused repository names")
+	}
+	if receipt.SchemaVersion == receiptSchemaV4 &&
+		(receipt.DeploymentDigest != deploymentDigest || receipt.SubjectDigest != subjectDigest) {
+		return fmt.Errorf("AGX-INIT-EVIDENCE-BINDING-CONFLICT: existing initialization receipt is bound to different provider or selector parameters; rerun the original init command unchanged")
+	}
 	if receipt.InstallationID != installation.InstallationID || receipt.GitHubOwner != options.GitHubOwner ||
 		receipt.ControlRepository != options.ControlRepository || receipt.ContractsRepository != options.ContractsRepository ||
 		receipt.Visibility != options.Visibility || receipt.TemplateVersion != bootstrap.TemplateSetVersion ||
@@ -1039,8 +1047,13 @@ func evaluateStatusEvidence(ctx context.Context, receipt Receipt, options Status
 		if profile != "" {
 			if err := domain.ValidateEvidenceProfileSelection(profile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
 				diagnostics = append(diagnostics, domain.Diagnostic{
-					Code: domain.DiagnosticCode(err.Error()), Category: domain.DiagnosticCategoryPreflight,
+					Code: "AGX-EVIDENCE-SUBJECT-INCOMPLETE", Category: domain.DiagnosticCategoryPreflight,
 					Severity: domain.SeverityError, Message: "temporary evidence profile selectors are invalid",
+				})
+			} else {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: "AGX-EVIDENCE-PROFILE-LEGACY-RECEIPT", Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "legacy initialization receipts cannot accept an evidence profile override; rerun agx init with an explicit evidence profile",
 				})
 			}
 		}
@@ -1052,20 +1065,55 @@ func evaluateStatusEvidence(ctx context.Context, receipt Receipt, options Status
 			string(profile), deploymentDigest, strings.ToLower(strings.TrimSpace(options.MulticaWorkspaceID)),
 			strings.ToLower(strings.TrimSpace(options.MulticaRuntimeID)), strings.ToLower(strings.TrimSpace(options.MulticaAgentID)),
 		}, "\x00"))
-	} else if options.EvidenceProfileOverride != "" && options.EvidenceProfileOverride != profile {
+	} else if profile == "" {
 		diagnostics = append(diagnostics, domain.Diagnostic{
-			Code: "AGX-EVIDENCE-PROFILE-MISMATCH", Category: domain.DiagnosticCategoryPreflight,
-			Severity: domain.SeverityError, Message: "temporary evidence profile override conflicts with the persisted profile",
+			Code: "AGX-EVIDENCE-PROFILE-MISSING", Category: domain.DiagnosticCategoryPreflight,
+			Severity: domain.SeverityError, Message: "persisted v4 receipt is missing its evidence profile",
 		})
+	} else {
+		selectorOverride := options.EvidenceProfileOverride != "" || options.MulticaWorkspaceID != "" || options.MulticaRuntimeID != "" || options.MulticaAgentID != ""
+		selectedProfile := profile
+		if options.EvidenceProfileOverride != "" {
+			selectedProfile = options.EvidenceProfileOverride
+		}
+		if selectorOverride {
+			if err := domain.ValidateEvidenceProfileSelection(selectedProfile, options.MulticaWorkspaceID, options.MulticaRuntimeID, options.MulticaAgentID); err != nil {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: "AGX-EVIDENCE-SUBJECT-INCOMPLETE", Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "temporary evidence profile selectors are invalid",
+				})
+			}
+		}
+		if options.EvidenceProfileOverride != "" && options.EvidenceProfileOverride != profile {
+			diagnostics = append(diagnostics, domain.Diagnostic{
+				Code: "AGX-EVIDENCE-PROFILE-MISMATCH", Category: domain.DiagnosticCategoryPreflight,
+				Severity: domain.SeverityError, Message: "temporary evidence profile override conflicts with the persisted profile",
+			})
+		}
+		if profile == domain.EvidenceProfileMulticaExecutionV1 && selectorOverride && receipt.SubjectBinding != nil && receipt.SubjectBinding.MulticaSelectors != nil {
+			persisted := receipt.SubjectBinding.MulticaSelectors
+			if !strings.EqualFold(strings.TrimSpace(options.MulticaWorkspaceID), persisted.WorkspaceUUID) ||
+				!strings.EqualFold(strings.TrimSpace(options.MulticaRuntimeID), persisted.RuntimeUUID) ||
+				!strings.EqualFold(strings.TrimSpace(options.MulticaAgentID), persisted.AgentUUID) {
+				diagnostics = append(diagnostics, domain.Diagnostic{
+					Code: "AGX-EVIDENCE-SUBJECT-MISMATCH", Category: domain.DiagnosticCategoryPreflight,
+					Severity: domain.SeverityError, Message: "temporary Multica selectors conflict with the persisted evidence subject",
+				})
+			}
+		}
 	}
 	var observations []domain.EvidenceObservation
-	for _, collector := range options.Collectors {
-		if collector == nil {
-			continue
+	if len(diagnostics) == 0 && profile != "" {
+		for _, collector := range options.Collectors {
+			if collector == nil {
+				continue
+			}
+			batch := collector.Collect(ctx, receipt)
+			observations = append(observations, batch.Observations...)
+			for range batch.Diagnostics {
+				diagnostics = append(diagnostics, collectorDiagnostic(collector.Source()))
+			}
 		}
-		batch := collector.Collect(ctx, receipt)
-		observations = append(observations, batch.Observations...)
-		diagnostics = append(diagnostics, batch.Diagnostics...)
 	}
 	evaluatedAt := options.EvaluatedAt
 	if evaluatedAt.IsZero() {
@@ -1077,6 +1125,20 @@ func evaluateStatusEvidence(ctx context.Context, receipt Receipt, options Status
 		SubjectDigest: subjectDigest, Profile: profile, EvaluatedAt: evaluatedAt,
 		Observations: observations, Diagnostics: diagnostics,
 	})
+}
+
+func collectorDiagnostic(source domain.EvidenceSource) domain.Diagnostic {
+	code := domain.DiagnosticCode("AGX-EVIDENCE-COLLECTOR-SOURCE-INVALID")
+	message := "evidence collector returned diagnostics without a supported source"
+	switch source {
+	case domain.EvidenceSourceGitHub:
+		code = "AGX-EVIDENCE-GITHUB-COLLECTOR-FAILED"
+		message = "GitHub evidence collector failed"
+	case domain.EvidenceSourceMultica:
+		code = "AGX-EVIDENCE-MULTICA-COLLECTOR-FAILED"
+		message = "Multica evidence collector failed"
+	}
+	return domain.Diagnostic{Code: code, Category: domain.DiagnosticCategoryPreflight, Severity: domain.SeverityError, Message: message}
 }
 
 func statusContextError(ctx context.Context) error {
@@ -1603,6 +1665,71 @@ func requireRealMetadataEntry(path string, info os.FileInfo, directory bool, lab
 	return nil
 }
 
+func evidenceBindingsMatchReceipt(receipt Receipt) bool {
+	deployment := receipt.DeploymentBinding
+	subject := receipt.SubjectBinding
+	if deployment == nil || subject == nil {
+		return false
+	}
+	control, controlErr := bootstrap.Render(bootstrap.KindAgentControl, bootstrap.Params{
+		Owner: receipt.GitHubOwner, Repository: receipt.ControlRepository, PluginSource: bootstrap.AgentPluginsReferenceRepository,
+	})
+	contracts, contractsErr := bootstrap.Render(bootstrap.KindAgentContracts, bootstrap.Params{
+		Owner: receipt.GitHubOwner, Repository: receipt.ContractsRepository, PluginSource: bootstrap.AgentPluginsReferenceRepository,
+	})
+	if controlErr != nil || contractsErr != nil {
+		return false
+	}
+	projectTarget := buildProjectTarget(Options{
+		GitHubOwner: receipt.GitHubOwner, ControlRepository: receipt.ControlRepository, Visibility: receipt.Visibility,
+	}, receipt.InstallationID)
+	projectSelector := strings.Join([]string{projectTarget.Owner, projectTarget.Title, projectTarget.LinkedRepository, string(projectTarget.Visibility)}, "\x00")
+	contractTitle := "Bootstrap Verification [" + receipt.InstallationID + "]"
+	contractMarker := "AGX-Installation: " + receipt.InstallationID
+	firstUseSelector := strings.Join([]string{contractTitle, contractMarker, "agx/bootstrap-verification-" + receipt.InstallationID, "python tools/validate.py", "Validate control baseline", "validate"}, "\x00")
+	expectedControl := domain.RepositoryBindingV1{
+		IdentitySHA256:        domain.NamespacedIdentitySHA256("github", "repository", receipt.GitHubOwner+"/"+receipt.ControlRepository),
+		RenderedContentSHA256: control.Digest,
+	}
+	expectedContracts := domain.RepositoryBindingV1{
+		IdentitySHA256:        domain.NamespacedIdentitySHA256("github", "repository", receipt.GitHubOwner+"/"+receipt.ContractsRepository),
+		RenderedContentSHA256: contracts.Digest,
+	}
+	if deployment.TemplateVersion != receipt.TemplateVersion || deployment.TemplateSetSHA256 != receipt.TemplateContentSHA256 ||
+		deployment.ProviderProfile != string(receipt.Profile) || deployment.ControlRepository != expectedControl ||
+		deployment.ContractsRepository != expectedContracts ||
+		deployment.ProjectIdentitySHA256 != domain.NamespacedIdentitySHA256("github", "project", projectSelector) ||
+		deployment.FirstUseContractSHA256 != domain.NamespacedIdentitySHA256("agx", "first-use-contract", firstUseSelector) {
+		return false
+	}
+	if len(receipt.Providers) > 0 {
+		providers := make([]string, 0, len(receipt.Providers))
+		for _, item := range receipt.Providers {
+			providers = append(providers, string(item.Name))
+		}
+		if !sameStrings(deployment.SelectedProviders, providers) {
+			return false
+		}
+	}
+	expectedGitHub := domain.GitHubSubjectSelectorsV1{
+		ControlRepositorySHA256: expectedControl.IdentitySHA256, ContractsRepositorySHA256: expectedContracts.IdentitySHA256,
+		ProjectSelectorSHA256:     deployment.ProjectIdentitySHA256,
+		IssueSelectorSHA256:       domain.NamespacedIdentitySHA256("github", "issue", contractTitle+"\x00"+contractMarker),
+		PullRequestSelectorSHA256: domain.NamespacedIdentitySHA256("github", "pull_request", contractTitle+"\x00"+contractMarker),
+		BranchSelectorSHA256:      domain.NamespacedIdentitySHA256("github", "branch", "agx/bootstrap-verification-"+receipt.InstallationID),
+		WorkflowSHA256:            domain.NamespacedIdentitySHA256("github", "workflow", bootstrap.AgentControlValidationWorkflowSHA256),
+		CheckSelectorSHA256:       domain.NamespacedIdentitySHA256("github", "check", "validate"),
+	}
+	if subject.InstallationMarkerSHA256 != domain.NamespacedIdentitySHA256("agx", "installation", receipt.InstallationID) ||
+		subject.GitHubSelectors != expectedGitHub {
+		return false
+	}
+	if receipt.EvidenceProfile == domain.EvidenceProfileMulticaExecutionV1 {
+		return subject.MulticaSelectors != nil && subject.MulticaSelectors.ExecutionMarkerSHA256 == domain.NamespacedIdentitySHA256("multica", "execution", receipt.InstallationID)
+	}
+	return subject.MulticaSelectors == nil
+}
+
 func validateReceipt(receipt Receipt) error {
 	deployment := receipt.GitHubOwner != "" || receipt.ControlRepository != "" || receipt.ContractsRepository != "" || receipt.Project != nil ||
 		receipt.Visibility != "" || receipt.TemplateVersion != "" || receipt.TemplateContentSHA256 != "" || len(receipt.Repositories) > 0
@@ -1629,10 +1756,11 @@ func validateReceipt(receipt Receipt) error {
 			rendered, renderErr := bootstrap.Render(kind, bootstrap.Params{
 				Owner: receipt.GitHubOwner, Repository: repositoryName, PluginSource: bootstrap.AgentPluginsReferenceRepository,
 			})
+			pathsInvalid := (receipt.SchemaVersion == receiptSchemaV4 && len(item.RequiredPaths) == 0) ||
+				(len(item.RequiredPaths) > 0 && !sameTemplatePaths(item.RequiredPaths, rendered.Files))
 			if !expected[key] || seen[key] || item.Visibility != receipt.Visibility || item.InitialCommit == "" ||
 				item.URL != "https://github.com/"+item.NameWithOwner || renderErr != nil ||
-				item.TemplateVersion != rendered.Version || item.TemplateDigest != rendered.Digest ||
-				!sameTemplatePaths(item.RequiredPaths, rendered.Files) ||
+				item.TemplateVersion != rendered.Version || item.TemplateDigest != rendered.Digest || pathsInvalid ||
 				(item.Verification != repository.VerificationReadback && item.Verification != repository.VerificationUncertain) {
 				return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: repository ownership evidence is inconsistent")
 			}
@@ -1655,7 +1783,8 @@ func validateReceipt(receipt Receipt) error {
 	if receipt.SchemaVersion == receiptSchemaV4 {
 		if receipt.EvidenceProfile == "" || receipt.DeploymentBinding == nil || receipt.DeploymentDigest == "" || receipt.SubjectBinding == nil || receipt.SubjectDigest == "" ||
 			receipt.DeploymentBinding.InstallationID != domain.InstallationID(receipt.InstallationID) ||
-			receipt.SubjectBinding.Profile != receipt.EvidenceProfile || receipt.SubjectBinding.DeploymentDigest != receipt.DeploymentDigest {
+			receipt.SubjectBinding.Profile != receipt.EvidenceProfile || receipt.SubjectBinding.DeploymentDigest != receipt.DeploymentDigest ||
+			!evidenceBindingsMatchReceipt(receipt) {
 			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: evidence binding is missing or inconsistent")
 		}
 		deploymentDigest, err := domain.ComputeDeploymentDigest(*receipt.DeploymentBinding)
