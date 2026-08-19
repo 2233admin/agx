@@ -26,4 +26,4 @@ History and branch mutation policy:
 - branch deletion is disabled;
 - the branch is not locked, so protected merges remain possible.
 
-This rule supports the lightweight project process: Issue -> branch -> PR -> local validation -> push -> required CI -> maintainer merge. It does not authorize bypassing checks or claiming live installation success without matching GitHub and Multica evidence. If additional maintainers join, approval requirements can be restored without changing the product delivery contract.
+This rule supports the lightweight project process: Issue -> branch -> PR -> local validation -> push -> required CI -> maintainer merge. It does not authorize bypassing checks or claiming live installation success without every external observation required by the explicitly selected, versioned Evidence Profile. `github-delivery/v1` is GitHub-only; `multica-execution/v1` additionally requires matching Multica evidence. If additional maintainers join, approval requirements can be restored without changing the product delivery contract.
