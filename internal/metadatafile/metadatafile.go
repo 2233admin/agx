@@ -12,7 +12,6 @@ import (
 )
 
 // RequireRealEntry validates that info describes a real, non-reparse,
-// RequireRealEntry validates that info describes a real, non-reparse,
 // non-symlink entry of the expected type (directory or regular file) at
 // path. label is used only to compose the error message; errorCode is the
 // caller's own stable error code, prefixed onto any returned error so each
