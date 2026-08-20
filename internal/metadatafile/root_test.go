@@ -6,41 +6,35 @@ import (
 	"testing"
 )
 
-func TestOpenValidatedRootRejectsReplacement(t *testing.T) {
+func TestOpenValidatedRootRejectsIdentityPreservingLink(t *testing.T) {
 	base := t.TempDir()
 	rootPath := filepath.Join(base, "root")
-	sibling := filepath.Join(base, "sibling")
+	moved := filepath.Join(base, "root-moved")
 	if err := os.Mkdir(rootPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(sibling, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Lstat(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(rootPath); err != nil {
+	if err := os.Rename(rootPath, moved); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(sibling, rootPath); err != nil {
+	if err := os.Symlink(moved, rootPath); err != nil {
 		t.Skipf("symlink replacement unavailable: %v", err)
 	}
 	if opened, err := OpenValidatedRoot(rootPath, info, "root", "TEST"); err == nil {
 		_ = opened.Close()
-		t.Fatal("OpenValidatedRoot accepted a replaced root")
+		t.Fatal("OpenValidatedRoot accepted an identity-preserving link")
 	}
 }
 
-func TestOpenChildRootRejectsReplacement(t *testing.T) {
+func TestOpenChildRootRejectsIdentityPreservingLink(t *testing.T) {
 	base := t.TempDir()
 	rootPath := filepath.Join(base, "root")
 	childPath := filepath.Join(rootPath, ".agx")
-	sibling := filepath.Join(base, "sibling")
+	moved := filepath.Join(rootPath, ".agx-moved")
 	if err := os.MkdirAll(childPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(sibling, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	parent, err := os.OpenRoot(rootPath)
@@ -52,30 +46,27 @@ func TestOpenChildRootRejectsReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(childPath); err != nil {
+	if err := os.Rename(childPath, moved); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(sibling, childPath); err != nil {
+	if err := os.Symlink(moved, childPath); err != nil {
 		t.Skipf("symlink replacement unavailable: %v", err)
 	}
 	if opened, err := OpenChildRoot(parent, ".agx", info, "metadata directory", "TEST"); err == nil {
 		_ = opened.Close()
-		t.Fatal("OpenChildRoot accepted a replaced metadata directory")
+		t.Fatal("OpenChildRoot accepted an identity-preserving link")
 	}
 }
 
-func TestOpenedFileIdentityRejectsReplacement(t *testing.T) {
+func TestOpenedFileRejectsIdentityPreservingLink(t *testing.T) {
 	base := t.TempDir()
 	rootPath := filepath.Join(base, "root")
-	if err := os.MkdirAll(filepath.Join(rootPath, ".agx"), 0o700); err != nil {
+	metadataPath := filepath.Join(rootPath, ".agx", "metadata.json")
+	moved := filepath.Join(rootPath, ".agx", "metadata-moved.json")
+	if err := os.MkdirAll(filepath.Dir(metadataPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	original := filepath.Join(rootPath, ".agx", "metadata.json")
-	sibling := filepath.Join(rootPath, "sibling.json")
-	if err := os.WriteFile(original, []byte("original"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(sibling, []byte("sibling"), 0o600); err != nil {
+	if err := os.WriteFile(metadataPath, []byte("metadata"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	root, err := os.OpenRoot(rootPath)
@@ -92,14 +83,14 @@ func TestOpenedFileIdentityRejectsReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(original, original+".old"); err != nil {
+	if err := os.Rename(metadataPath, moved); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(sibling, original); err != nil {
-		t.Fatal(err)
+	if err := os.Symlink(moved, metadataPath); err != nil {
+		t.Skipf("symlink replacement unavailable: %v", err)
 	}
 	if file, err := OpenCheckedFile(directory, "metadata.json", info, "metadata file", "TEST"); err == nil {
 		_ = file.Close()
-		t.Fatal("OpenCheckedFile accepted a replaced metadata file")
+		t.Fatal("OpenCheckedFile accepted an identity-preserving link")
 	}
 }
