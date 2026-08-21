@@ -24,10 +24,15 @@ func TestWriteFileAtomicDetectsSwapDuringWrite(t *testing.T) {
 	original := beforeFinalCheck
 	t.Cleanup(func() { beforeFinalCheck = original })
 	beforeFinalCheck = func(directory *Dir, name string) {
-		if err := directory.Remove(name); err != nil {
-			t.Fatalf("swap setup: remove: %v", err)
-		}
-		replacement, err := directory.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		// Build the replacement under its own name and Rename it into place,
+		// rather than Remove-then-create at name directly: a fresh inode
+		// allocated before the swap can never collide with the removed
+		// target's freed inode number, whereas remove-then-recreate at the
+		// same name races the filesystem's own inode-reuse policy (observed
+		// flaky on Linux tmpfs, where a same-process delete+recreate at one
+		// name routinely lands on the same inode, defeating the os.SameFile
+		// check this test means to exercise).
+		replacement, err := directory.OpenFile("attacker.tmp", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			t.Fatalf("swap setup: create replacement: %v", err)
 		}
@@ -36,6 +41,9 @@ func TestWriteFileAtomicDetectsSwapDuringWrite(t *testing.T) {
 		}
 		if err := replacement.Close(); err != nil {
 			t.Fatalf("swap setup: close replacement: %v", err)
+		}
+		if err := directory.Rename("attacker.tmp", name); err != nil {
+			t.Fatalf("swap setup: rename replacement into place: %v", err)
 		}
 	}
 
