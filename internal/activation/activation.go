@@ -8,10 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/2233admin/agx/internal/bootstrap"
@@ -38,8 +38,6 @@ const (
 	StatusAbsent       = "absent"
 	StatusDrifted      = "drifted"
 )
-
-var metadataTempSequence atomic.Uint64
 
 type Profile string
 
@@ -1304,15 +1302,14 @@ func Uninitialize(ctx context.Context, root string, runner provider.Runner) (boo
 		return false, fmt.Errorf("AGX-UNINSTALL-PROVIDER-OWNERSHIP: %s Marketplace predates AGX initialization and still references this Installation", strings.Join(retainedMarketplaces, ", "))
 	}
 
-	safeReceiptPath, present, _, err := inspectReceiptPath(root)
-	if err != nil {
+	if err := metadatafile.RemoveFile(root, ".agx", initializationFile, "AGX-INIT-RECEIPT-REMOVE"); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("AGX-INIT-RECEIPT-READ: initialization receipt disappeared before removal")
+		}
+		if errors.Is(err, metadatafile.ErrUnsafeEntry) {
+			return false, fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %w", err)
+		}
 		return false, err
-	}
-	if !present {
-		return false, fmt.Errorf("AGX-INIT-RECEIPT-READ: initialization receipt disappeared before removal")
-	}
-	if err := os.Remove(safeReceiptPath); err != nil {
-		return false, fmt.Errorf("AGX-INIT-RECEIPT-REMOVE: %w", err)
 	}
 	return true, nil
 }
@@ -1484,39 +1481,13 @@ func sameProviders(receipts []ProviderReceipt, providers []provider.Name) bool {
 	return true
 }
 
-func receiptPath(root string) string {
-	return filepath.Join(root, ".agx", initializationFile)
-}
-
 func readReceipt(root string) (Receipt, bool, error) {
-	snapshot, err := inspectReceiptSnapshot(root)
+	data, present, err := metadatafile.ReadFile(root, ".agx", initializationFile, "AGX-INIT-RECEIPT-INVALID")
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	if !snapshot.present {
+	if !present {
 		return Receipt{}, false, nil
-	}
-	installation, err := metadatafile.OpenValidatedRoot(filepath.Dir(filepath.Dir(snapshot.path)), snapshot.rootInfo, "Installation root", "AGX-INIT-RECEIPT-INVALID")
-	if err != nil {
-		return Receipt{}, false, err
-	}
-	defer installation.Close()
-	directory, err := metadatafile.OpenChildRoot(installation, ".agx", snapshot.directoryInfo, "metadata directory", "AGX-INIT-RECEIPT-INVALID")
-	if err != nil {
-		return Receipt{}, false, err
-	}
-	defer directory.Close()
-	file, err := metadatafile.OpenCheckedFile(directory, filepath.Base(snapshot.path), snapshot.targetInfo, "initialization receipt", "AGX-INIT-RECEIPT-INVALID")
-	if err != nil {
-		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot open initialization receipt: %w", err)
-	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot read initialization receipt: %w", readErr)
-	}
-	if closeErr != nil {
-		return Receipt{}, false, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot close initialization receipt: %w", closeErr)
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
@@ -1575,66 +1546,6 @@ func migrateReceiptV2(receipt *Receipt) error {
 	}
 	receipt.SchemaVersion = receiptSchemaV3
 	return nil
-}
-
-type receiptPathSnapshot struct {
-	path          string
-	present       bool
-	rootInfo      os.FileInfo
-	directoryInfo os.FileInfo
-	targetInfo    os.FileInfo
-}
-
-func inspectReceiptSnapshot(root string) (*receiptPathSnapshot, error) {
-	absoluteRoot, err := filepath.Abs(root)
-	if err != nil {
-		return nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: invalid Installation root: %w", err)
-	}
-	snapshot := &receiptPathSnapshot{path: filepath.Join(absoluteRoot, ".agx", initializationFile)}
-	rootInfo, err := os.Lstat(absoluteRoot)
-	if os.IsNotExist(err) {
-		return snapshot, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect Installation root: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(absoluteRoot, rootInfo, true, "Installation root", "AGX-INIT-RECEIPT-INVALID"); err != nil {
-		return nil, err
-	}
-	snapshot.rootInfo = rootInfo
-	directory := filepath.Join(absoluteRoot, ".agx")
-	directoryInfo, err := os.Lstat(directory)
-	if os.IsNotExist(err) {
-		return snapshot, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect metadata directory: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-INIT-RECEIPT-INVALID"); err != nil {
-		return nil, err
-	}
-	snapshot.directoryInfo = directoryInfo
-	info, err := os.Lstat(snapshot.path)
-	if os.IsNotExist(err) {
-		return snapshot, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("AGX-INIT-RECEIPT-READ: cannot inspect initialization receipt: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(snapshot.path, info, false, "initialization receipt", "AGX-INIT-RECEIPT-INVALID"); err != nil {
-		return nil, err
-	}
-	snapshot.present = true
-	snapshot.targetInfo = info
-	return snapshot, nil
-}
-
-func inspectReceiptPath(root string) (string, bool, os.FileInfo, error) {
-	snapshot, err := inspectReceiptSnapshot(root)
-	if err != nil {
-		return "", false, nil, err
-	}
-	return snapshot.path, snapshot.present, snapshot.targetInfo, nil
 }
 
 func evidenceBindingsMatchReceipt(receipt Receipt) bool {
@@ -1810,75 +1721,11 @@ func writeReceipt(root string, receipt Receipt) error {
 		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
 	}
 	data = append(data, '\n')
-	absoluteRoot, err := filepath.Abs(root)
-	if err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: invalid Installation root: %w", err)
-	}
-	rootInfo, err := os.Lstat(absoluteRoot)
-	if err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect Installation root: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(absoluteRoot, rootInfo, true, "Installation root", "AGX-INIT-RECEIPT-INVALID"); err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe Installation root: %w", err)
-	}
-	installation, err := metadatafile.OpenValidatedRoot(absoluteRoot, rootInfo, "Installation root", "AGX-INIT-RECEIPT-INVALID")
-	if err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe Installation root: %w", err)
-	}
-	defer installation.Close()
-	if err := installation.MkdirAll(".agx", 0o700); err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
-	}
-	directory := filepath.Join(absoluteRoot, ".agx")
-	directoryInfo, err := os.Lstat(directory)
-	if err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect metadata directory: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-INIT-RECEIPT-INVALID"); err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe metadata directory: %w", err)
-	}
-	metadataRoot, err := metadatafile.OpenChildRoot(installation, ".agx", directoryInfo, "metadata directory", "AGX-INIT-RECEIPT-INVALID")
-	if err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe metadata directory: %w", err)
-	}
-	defer metadataRoot.Close()
-	target := filepath.Join(directory, initializationFile)
-	initialTarget, targetErr := os.Lstat(target)
-	initialTargetPresent := targetErr == nil
-	if targetErr == nil {
-		if err := metadatafile.RequireRealEntry(target, initialTarget, false, "initialization receipt", "AGX-INIT-RECEIPT-INVALID"); err != nil {
-			return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: unsafe initialization receipt: %w", err)
+	if err := metadatafile.WriteFileAtomic(root, ".agx", initializationFile, data, false, "AGX-INIT-RECEIPT-WRITE"); err != nil {
+		if errors.Is(err, metadatafile.ErrTargetChanged) {
+			return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: %w", err)
 		}
-	} else if !os.IsNotExist(targetErr) {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect initialization receipt: %w", targetErr)
-	}
-	temporaryName := fmt.Sprintf(".initialization-%d-%d.tmp", time.Now().UnixNano(), metadataTempSequence.Add(1))
-	temporary, err := metadatafile.OpenFile(metadataRoot, temporaryName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
-	}
-	defer metadataRoot.Remove(temporaryName)
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
-	}
-	current, statErr := metadataRoot.Lstat(initializationFile)
-	currentPresent := statErr == nil
-	if statErr != nil && !os.IsNotExist(statErr) {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: cannot inspect initialization receipt: %w", statErr)
-	}
-	if currentPresent != initialTargetPresent || (currentPresent && !os.SameFile(initialTarget, current)) {
-		return fmt.Errorf("AGX-INIT-RECEIPT-INVALID: initialization receipt changed during write")
-	}
-	if err := metadataRoot.Rename(temporaryName, initializationFile); err != nil {
-		return fmt.Errorf("AGX-INIT-RECEIPT-WRITE: %w", err)
+		return err
 	}
 	return nil
 }
