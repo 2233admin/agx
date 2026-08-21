@@ -4,18 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"os"
-	"path/filepath"
-	"sync/atomic"
-	"time"
 
 	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/metadatafile"
 )
-
-var profileTempSequence atomic.Uint64
 
 const fleetProfileFile = "fleet-profile.json"
 
@@ -217,64 +210,7 @@ func readProfile(root string) (Profile, bool, error) {
 // reported present with no error, letting callers (Status) distinguish a
 // genuine I/O failure from a corrupted/hand-edited file.
 func readProfileBytes(root string) ([]byte, bool, error) {
-	absoluteRoot, err := filepath.Abs(root)
-	if err != nil {
-		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: invalid Installation root: %w", err)
-	}
-	rootInfo, err := os.Lstat(absoluteRoot)
-	if os.IsNotExist(err) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot inspect Installation root: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(absoluteRoot, rootInfo, true, "Installation root", "AGX-FLEET-PROFILE-INVALID"); err != nil {
-		return nil, false, err
-	}
-	installation, err := metadatafile.OpenValidatedRoot(absoluteRoot, rootInfo, "Installation root", "AGX-FLEET-PROFILE-INVALID")
-	if err != nil {
-		return nil, false, err
-	}
-	defer installation.Close()
-	directory := filepath.Join(absoluteRoot, ".agx")
-	directoryInfo, err := os.Lstat(directory)
-	if os.IsNotExist(err) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot inspect metadata directory: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-FLEET-PROFILE-INVALID"); err != nil {
-		return nil, false, err
-	}
-	metadataRoot, err := metadatafile.OpenChildRoot(installation, ".agx", directoryInfo, "metadata directory", "AGX-FLEET-PROFILE-INVALID")
-	if err != nil {
-		return nil, false, err
-	}
-	defer metadataRoot.Close()
-	info, err := metadataRoot.Lstat(fleetProfileFile)
-	if os.IsNotExist(err) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot inspect Deployment Profile: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(filepath.Join(directory, fleetProfileFile), info, false, "Deployment Profile", "AGX-FLEET-PROFILE-INVALID"); err != nil {
-		return nil, false, err
-	}
-	file, err := metadatafile.OpenCheckedFile(metadataRoot, fleetProfileFile, info, "Deployment Profile", "AGX-FLEET-PROFILE-INVALID")
-	if err != nil {
-		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot open Deployment Profile: %w", err)
-	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot read Deployment Profile: %w", readErr)
-	}
-	if closeErr != nil {
-		return nil, false, fmt.Errorf("AGX-FLEET-PROFILE-READ: cannot close Deployment Profile: %w", closeErr)
-	}
-	return data, true, nil
+	return metadatafile.ReadFile(root, ".agx", fleetProfileFile, "AGX-FLEET-PROFILE-INVALID")
 }
 
 // errProfileAlreadyExists signals that publishProfile lost a create-only
@@ -296,79 +232,11 @@ func publishProfile(root string, profile Profile) error {
 		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
 	}
 	data = append(data, '\n')
-	absoluteRoot, err := filepath.Abs(root)
-	if err != nil {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: invalid Installation root: %w", err)
-	}
-	rootInfo, err := os.Lstat(absoluteRoot)
-	if err != nil {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: cannot inspect Installation root: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(absoluteRoot, rootInfo, true, "Installation root", "AGX-FLEET-PROFILE-INVALID"); err != nil {
-		return err
-	}
-	installation, err := metadatafile.OpenValidatedRoot(absoluteRoot, rootInfo, "Installation root", "AGX-FLEET-PROFILE-INVALID")
-	if err != nil {
-		return err
-	}
-	defer installation.Close()
-	if err := installation.MkdirAll(".agx", 0o700); err != nil {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
-	}
-	directory := filepath.Join(absoluteRoot, ".agx")
-	directoryInfo, err := os.Lstat(directory)
-	if err != nil {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: cannot inspect metadata directory: %w", err)
-	}
-	if err := metadatafile.RequireRealEntry(directory, directoryInfo, true, "metadata directory", "AGX-FLEET-PROFILE-WRITE"); err != nil {
-		return err
-	}
-	metadataRoot, err := metadatafile.OpenChildRoot(installation, ".agx", directoryInfo, "metadata directory", "AGX-FLEET-PROFILE-WRITE")
-	if err != nil {
-		return err
-	}
-	defer metadataRoot.Close()
-	initialTarget, targetErr := metadataRoot.Lstat(fleetProfileFile)
-	initialTargetPresent := targetErr == nil
-	if targetErr != nil && !os.IsNotExist(targetErr) {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: cannot inspect Deployment Profile: %w", targetErr)
-	}
-	if initialTargetPresent {
-		if err := metadatafile.RequireRealEntry(filepath.Join(directory, fleetProfileFile), initialTarget, false, "Deployment Profile", "AGX-FLEET-PROFILE-WRITE"); err != nil {
-			return err
-		}
-		return errProfileAlreadyExists
-	}
-	temporaryName := fmt.Sprintf(".fleet-profile-%d-%d.tmp", time.Now().UnixNano(), profileTempSequence.Add(1))
-	temporary, err := metadatafile.OpenFile(metadataRoot, temporaryName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
-	}
-	defer metadataRoot.Remove(temporaryName)
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
-	}
-	current, statErr := metadataRoot.Lstat(fleetProfileFile)
-	currentPresent := statErr == nil
-	if statErr != nil && !os.IsNotExist(statErr) {
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: cannot inspect Deployment Profile: %w", statErr)
-	}
-	if currentPresent != initialTargetPresent || (currentPresent && !os.SameFile(initialTarget, current)) {
-		return errProfileAlreadyExists
-	}
-	if err := metadataRoot.Link(temporaryName, fleetProfileFile); err != nil {
-		if errors.Is(err, fs.ErrExist) {
+	if err := metadatafile.WriteFileAtomic(root, ".agx", fleetProfileFile, data, true, "AGX-FLEET-PROFILE-WRITE"); err != nil {
+		if errors.Is(err, fs.ErrExist) || errors.Is(err, metadatafile.ErrTargetChanged) {
 			return errProfileAlreadyExists
 		}
-		return fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
+		return err
 	}
 	return nil
 }
