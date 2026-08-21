@@ -41,7 +41,7 @@ func TestOpenChildRootRejectsIdentityPreservingLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	info, err := os.Lstat(childPath)
 	if err != nil {
 		t.Fatal(err)
@@ -73,12 +73,12 @@ func TestOpenedFileRejectsIdentityPreservingLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	directory, err := root.OpenChild(".agx")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	info, err := directory.Lstat("metadata.json")
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestDirOpenFileRejectsSymlinkAtName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	if file, err := dir.OpenFile("receipt.tmp", os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
 		_ = file.Close()
 		t.Fatal("OpenFile followed a symlink at name")
@@ -129,9 +129,11 @@ func TestDirLinkFailsWhenTargetExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
-	if _, err := dir.OpenFile("source.tmp", os.O_WRONLY|os.O_CREATE, 0o600); err != nil {
+	defer func() { _ = dir.Close() }()
+	if f, err := dir.OpenFile("source.tmp", os.O_WRONLY|os.O_CREATE, 0o600); err != nil {
 		t.Fatal(err)
+	} else {
+		_ = f.Close()
 	}
 	if f, err := dir.OpenFile("existing.tmp", os.O_WRONLY|os.O_CREATE, 0o600); err != nil {
 		t.Fatal(err)

@@ -85,12 +85,12 @@ func (d *Dir) Lstat(name string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, _, err := openNoFollow(target, windows.FILE_READ_ATTRIBUTES, windows.OPEN_EXISTING)
+	h, _, err := openNoFollowRaw(target, windows.FILE_READ_ATTRIBUTES, windows.OPEN_EXISTING, true)
 	if err != nil {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(h), target)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return file.Stat()
 }
 
@@ -226,6 +226,15 @@ func getFinalPath(h windows.Handle) (string, error) {
 // reparse point (or a wrong entry type) after the fact rather than being
 // silently redirected during the open itself.
 func openNoFollow(path string, access, createDisposition uint32) (windows.Handle, windows.ByHandleFileInformation, error) {
+	return openNoFollowRaw(path, access, createDisposition, false)
+}
+
+// openNoFollowRaw is openNoFollow with control over whether a reparse point
+// at path is rejected. Lstat passes allowReparsePoint=true: like the
+// standard library's os.Lstat, describing an entry must not fail just
+// because it is a symlink/reparse point — only opening it for real use
+// (openNoFollow's normal callers) should refuse that.
+func openNoFollowRaw(path string, access, createDisposition uint32, allowReparsePoint bool) (windows.Handle, windows.ByHandleFileInformation, error) {
 	var info windows.ByHandleFileInformation
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -240,7 +249,7 @@ func openNoFollow(path string, access, createDisposition uint32) (windows.Handle
 		windows.CloseHandle(h)
 		return 0, info, &os.PathError{Op: "GetFileInformationByHandle", Path: path, Err: err}
 	}
-	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+	if !allowReparsePoint && info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		windows.CloseHandle(h)
 		return 0, info, &os.PathError{Op: "CreateFile", Path: path, Err: fmt.Errorf("refusing to follow reparse point: %w", ErrUnsafeEntry)}
 	}

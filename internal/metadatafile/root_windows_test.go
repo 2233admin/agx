@@ -38,7 +38,7 @@ func TestOpenChildRootRejectsJunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	info, err := os.Lstat(childPath)
 	if err != nil {
 		t.Fatal(err)

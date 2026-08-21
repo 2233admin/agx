@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux
 
 package metadatafile
 
@@ -16,6 +16,12 @@ import (
 // performed relative to the held file descriptor (openat/mkdirat/renameat/
 // unlinkat), so no operation re-resolves a path string from scratch: a
 // concurrent replacement of an entry cannot redirect it once opened.
+//
+// Linux-only: this implementation uses O_PATH (for Lstat), which
+// golang.org/x/sys does not define on Darwin/BSD. AGX's supported
+// non-Windows platform is Ubuntu 24.04 x64 only (see docs/spec/PRD.md);
+// this package intentionally does not build on other Unix platforms rather
+// than silently degrading their safety guarantees.
 type Dir struct {
 	f *os.File
 }
@@ -37,7 +43,7 @@ func OpenDir(path string) (*Dir, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer parentFile.Close()
+	defer func() { _ = parentFile.Close() }()
 	return openChildAt(parentFile, base, path)
 }
 
@@ -92,7 +98,7 @@ func (d *Dir) Lstat(name string) (os.FileInfo, error) {
 		return nil, &os.PathError{Op: "openat", Path: filepath.Join(d.f.Name(), name), Err: err}
 	}
 	file := os.NewFile(uintptr(fd), filepath.Join(d.f.Name(), name))
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return file.Stat()
 }
 

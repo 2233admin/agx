@@ -49,7 +49,7 @@ func ReadFile(root, subdir, name, errorCode string) ([]byte, bool, error) {
 		}
 		return nil, false, fmt.Errorf("%s: cannot open installation root: %w", errorCode, err)
 	}
-	defer installation.Close()
+	defer func() { _ = installation.Close() }()
 	directory, err := installation.OpenChild(subdir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -57,7 +57,7 @@ func ReadFile(root, subdir, name, errorCode string) ([]byte, bool, error) {
 		}
 		return nil, false, fmt.Errorf("%s: cannot open metadata directory: %w", errorCode, err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	file, err := directory.OpenFile(name, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -98,7 +98,7 @@ func WriteFileAtomic(root, subdir, name string, data []byte, requireAbsent bool,
 	if err != nil {
 		return fmt.Errorf("%s: cannot open installation root: %w", errorCode, err)
 	}
-	defer installation.Close()
+	defer func() { _ = installation.Close() }()
 	if err := installation.MkdirAll(subdir, 0o700); err != nil {
 		return fmt.Errorf("%s: %w", errorCode, err)
 	}
@@ -106,7 +106,7 @@ func WriteFileAtomic(root, subdir, name string, data []byte, requireAbsent bool,
 	if err != nil {
 		return fmt.Errorf("%s: cannot open metadata directory: %w", errorCode, err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 
 	initialTarget, initialTargetPresent, err := lstatPresent(directory, name)
 	if err != nil {
@@ -121,7 +121,7 @@ func WriteFileAtomic(root, subdir, name string, data []byte, requireAbsent bool,
 	if err != nil {
 		return fmt.Errorf("%s: %w", errorCode, err)
 	}
-	defer directory.Remove(temporaryName)
+	defer func() { _ = directory.Remove(temporaryName) }()
 	if _, err := temporary.Write(data); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("%s: %w", errorCode, err)
@@ -170,12 +170,12 @@ func RemoveFile(root, subdir, name, errorCode string) error {
 	if err != nil {
 		return fmt.Errorf("%s: cannot open installation root: %w", errorCode, err)
 	}
-	defer installation.Close()
+	defer func() { _ = installation.Close() }()
 	directory, err := installation.OpenChild(subdir)
 	if err != nil {
 		return fmt.Errorf("%s: cannot open metadata directory: %w", errorCode, err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	if err := directory.Remove(name); err != nil {
 		return fmt.Errorf("%s: %w", errorCode, err)
 	}
