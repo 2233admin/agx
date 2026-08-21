@@ -65,11 +65,17 @@ func (d *Dir) OpenFile(name string, flag int, perm os.FileMode) (*os.File, error
 	return os.NewFile(uintptr(fd), filepath.Join(d.f.Name(), name)), nil
 }
 
-// wrapUnsafe joins ErrUnsafeEntry onto err when err is exactly the errno
-// O_NOFOLLOW produces on a symlink (ELOOP), so callers can distinguish a
-// deliberate safety rejection from an unrelated I/O failure via errors.Is.
+// wrapUnsafe joins ErrUnsafeEntry onto err when err is one of the errnos
+// O_NOFOLLOW (optionally combined with O_DIRECTORY) produces on a symlink,
+// so callers can distinguish a deliberate safety rejection from an
+// unrelated I/O failure via errors.Is. O_NOFOLLOW alone on a symlink
+// yields ELOOP; combined with O_DIRECTORY, Linux instead yields ENOTDIR
+// for the same symlink (the kernel reports "not a directory" for the
+// unresolved symlink object rather than following it far enough to
+// discover the loop) — both are the same rejection, just different
+// errnos depending on which flags were set.
 func wrapUnsafe(err error) error {
-	if errors.Is(err, unix.ELOOP) {
+	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
 		return errors.Join(err, ErrUnsafeEntry)
 	}
 	return err
