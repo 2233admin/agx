@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -23,6 +24,36 @@ var ErrTargetChanged = errors.New("metadata target changed during write")
 var ErrUnsafeEntry = errors.New("metadata entry is a symlink or reparse point")
 
 var tempSequence atomic.Uint64
+
+// openMetadataDir opens, refusing to follow a symlink/reparse point at any
+// segment, the directory named by subdir within installation. subdir may be
+// empty (in which case installation itself is returned — the caller must
+// not close it in that case, since it does not own it), a single path
+// component, or a "/"-joined chain of components — every segment must
+// already exist as a real directory; none are created. Only intermediate
+// handles opened by this call are closed on the way past them; the
+// returned *Dir, when it is not installation itself, is left open for the
+// caller to close.
+func openMetadataDir(installation *Dir, subdir string) (*Dir, error) {
+	if subdir == "" {
+		return installation, nil
+	}
+	directory := installation
+	for index, segment := range strings.Split(filepath.ToSlash(subdir), "/") {
+		if segment == "" {
+			return nil, fmt.Errorf("metadatafile: %q has an empty path segment", subdir)
+		}
+		next, err := directory.OpenChild(segment)
+		if index > 0 {
+			_ = directory.Close()
+		}
+		if err != nil {
+			return nil, err
+		}
+		directory = next
+	}
+	return directory, nil
+}
 
 // beforeFinalCheck runs immediately after the temporary file is closed and
 // immediately before WriteFileAtomic re-inspects name to detect a mid-write
@@ -50,14 +81,16 @@ func ReadFile(root, subdir, name, errorCode string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("%s: cannot open installation root: %w", errorCode, err)
 	}
 	defer func() { _ = installation.Close() }()
-	directory, err := installation.OpenChild(subdir)
+	directory, err := openMetadataDir(installation, subdir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("%s: cannot open metadata directory: %w", errorCode, err)
 	}
-	defer func() { _ = directory.Close() }()
+	if directory != installation {
+		defer func() { _ = directory.Close() }()
+	}
 	file, err := directory.OpenFile(name, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -171,15 +204,64 @@ func RemoveFile(root, subdir, name, errorCode string) error {
 		return fmt.Errorf("%s: cannot open installation root: %w", errorCode, err)
 	}
 	defer func() { _ = installation.Close() }()
-	directory, err := installation.OpenChild(subdir)
+	directory, err := openMetadataDir(installation, subdir)
 	if err != nil {
 		return fmt.Errorf("%s: cannot open metadata directory: %w", errorCode, err)
 	}
-	defer func() { _ = directory.Close() }()
+	if directory != installation {
+		defer func() { _ = directory.Close() }()
+	}
 	if err := directory.Remove(name); err != nil {
 		return fmt.Errorf("%s: %w", errorCode, err)
 	}
 	return nil
+}
+
+// StatFile safely inspects name (a single path component) inside subdir
+// (empty, a single path component, or a "/"-joined chain of components)
+// inside root, refusing to follow a symlink/reparse point at any segment.
+// It reports (nil, false, nil) — not an error — if any segment does not
+// exist. A wrongly-typed intermediate segment or a non-regular final entry
+// (including a symlink at name) is reported as an error wrapping
+// ErrUnsafeEntry rather than treated as absent, so callers can distinguish
+// "nothing there" from "something's there and it's not a plain file."
+func StatFile(root, subdir, name, errorCode string) (os.FileInfo, bool, error) {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s: invalid root: %w", errorCode, err)
+	}
+	installation, err := OpenDir(absoluteRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("%s: cannot open installation root: %w", errorCode, err)
+	}
+	defer func() { _ = installation.Close() }()
+	directory, err := openMetadataDir(installation, subdir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		if errors.Is(err, ErrUnsafeEntry) {
+			return nil, false, fmt.Errorf("%s: %w", errorCode, err)
+		}
+		return nil, false, fmt.Errorf("%s: cannot open metadata directory: %w", errorCode, err)
+	}
+	if directory != installation {
+		defer func() { _ = directory.Close() }()
+	}
+	info, err := directory.Lstat(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("%s: cannot inspect %s: %w", errorCode, name, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s: %s: %w", errorCode, name, ErrUnsafeEntry)
+	}
+	return info, true, nil
 }
 
 func lstatPresent(directory *Dir, name string) (os.FileInfo, bool, error) {

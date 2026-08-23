@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/2233admin/agx/internal/bootstrap"
 	"github.com/2233admin/agx/internal/bundle"
+	"github.com/2233admin/agx/internal/metadatafile"
 )
 
 const receiptSchema = "agx.receipt/v2"
@@ -218,16 +221,8 @@ func Uninstall(rootPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	type removal struct {
-		relative string
-		absolute string
-	}
-	removals := make([]removal, 0, len(receipt.OwnedFiles))
+	removals := make([]string, 0, len(receipt.OwnedFiles))
 	for _, relative := range receipt.OwnedFiles {
-		absolute, err := ownedPath(root, relative)
-		if err != nil {
-			return nil, err
-		}
 		fileState, err := inspectOwnedFile(root, relative)
 		if err != nil {
 			return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: %s: %w", relative, err)
@@ -245,29 +240,33 @@ func Uninstall(rootPath string) ([]string, error) {
 			if digest != receipt.OwnedFileSHA256[relative] {
 				return nil, fmt.Errorf("AGX-UNINSTALL-DRIFT: owned path %q content changed", relative)
 			}
-			removals = append(removals, removal{relative: relative, absolute: absolute})
+			removals = append(removals, relative)
 		}
 	}
-	for _, item := range removals {
-		fileState, err := inspectOwnedFile(root, item.relative)
+	for _, relative := range removals {
+		fileState, err := inspectOwnedFile(root, relative)
 		if err != nil {
-			return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: %s: %w", item.relative, err)
+			return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: %s: %w", relative, err)
 		}
 		if fileState == ownedFileMissing {
 			continue
 		}
 		if fileState != ownedFileRegular {
-			return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: owned path %q changed before removal", item.relative)
+			return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: owned path %q changed before removal", relative)
 		}
-		digest, err := digestOwnedFile(root, item.relative)
+		digest, err := digestOwnedFile(root, relative)
 		if err != nil {
-			return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: %s: %w", item.relative, err)
+			return nil, fmt.Errorf("AGX-UNINSTALL-INSPECT: %s: %w", relative, err)
 		}
-		if digest != receipt.OwnedFileSHA256[item.relative] {
-			return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: owned path %q content changed before removal", item.relative)
+		if digest != receipt.OwnedFileSHA256[relative] {
+			return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: owned path %q content changed before removal", relative)
 		}
-		if err := os.Remove(item.absolute); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: %s: %w", item.relative, err)
+		dir, name, err := splitOwnedRelative(root, relative)
+		if err != nil {
+			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: %s: %w", relative, err)
+		}
+		if err := metadatafile.RemoveFile(root, dir, name, "AGX-UNINSTALL-REMOVE"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: %s: %w", relative, err)
 		}
 	}
 	metadataState, err := inspectOwnedFile(root, ".agx/receipt.json")
@@ -278,7 +277,7 @@ func Uninstall(rootPath string) ([]string, error) {
 		return nil, fmt.Errorf("AGX-UNINSTALL-UNSAFE: receipt metadata path changed before removal")
 	}
 	if metadataState == ownedFileRegular {
-		if err := os.Remove(filepath.Join(root, ".agx", "receipt.json")); err != nil && !os.IsNotExist(err) {
+		if err := metadatafile.RemoveFile(root, ".agx", "receipt.json", "AGX-UNINSTALL-REMOVE"); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("AGX-UNINSTALL-REMOVE: receipt metadata: %w", err)
 		}
 	}
@@ -477,88 +476,64 @@ func ownedRealDirectory(root, relative string) (bool, error) {
 	return true, nil
 }
 
-// inspectOwnedFile checks every path segment without following links. An
-// intermediate segment must be a real directory, and an existing target must
-// be a regular file. On Windows, junctions and other name-surrogate reparse
-// points are reported by Lstat as symlinks or irregular files, so neither can
-// satisfy the directory requirement.
+// splitOwnedRelative validates relative the same way ownedPath does, then
+// splits it into the "/"-joined subdir chain and final path component name
+// that internal/metadatafile's directory-handle-relative primitives need.
+// dir is "" when relative names an entry directly under root.
+func splitOwnedRelative(root, relative string) (dir, name string, err error) {
+	if _, pathErr := ownedPath(root, relative); pathErr != nil {
+		return "", "", pathErr
+	}
+	slashed := filepath.ToSlash(relative)
+	name = path.Base(slashed)
+	if name == "" || name == "." || name == "/" {
+		return "", "", fmt.Errorf("AGX-RECEIPT-PATH: unsafe owned path %q", relative)
+	}
+	dir = path.Dir(slashed)
+	if dir == "." {
+		dir = ""
+	}
+	return dir, name, nil
+}
+
+// inspectOwnedFile checks every path segment without following links, via
+// internal/metadatafile's directory-handle-relative primitives: an
+// intermediate segment must be a real directory, and an existing target
+// must be a regular file. On Windows, junctions and other name-surrogate
+// reparse points are reported as unsafe entries, so neither can satisfy the
+// directory requirement.
 func inspectOwnedFile(root, relative string) (ownedFileState, error) {
-	absolute, err := ownedPath(root, relative)
+	dir, name, err := splitOwnedRelative(root, relative)
 	if err != nil {
 		return ownedFileUnsafe, err
 	}
-	back, err := filepath.Rel(root, absolute)
-	if err != nil || back == "." {
-		return ownedFileUnsafe, fmt.Errorf("AGX-RECEIPT-PATH: unsafe owned path %q", relative)
-	}
-
-	info, err := os.Lstat(root)
+	_, present, err := metadatafile.StatFile(root, dir, name, "AGX-RECEIPT-PATH")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return ownedFileMissing, nil
+		if errors.Is(err, metadatafile.ErrUnsafeEntry) {
+			return ownedFileUnsafe, nil
 		}
 		return ownedFileUnsafe, err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return ownedFileUnsafe, nil
+	if !present {
+		return ownedFileMissing, nil
 	}
-
-	current := root
-	parts := strings.Split(back, string(filepath.Separator))
-	for index, part := range parts {
-		current = filepath.Join(current, part)
-		info, err = os.Lstat(current)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return ownedFileMissing, nil
-			}
-			return ownedFileUnsafe, err
-		}
-		if index == len(parts)-1 {
-			if info.Mode().IsRegular() {
-				return ownedFileRegular, nil
-			}
-			return ownedFileUnsafe, nil
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return ownedFileUnsafe, nil
-		}
-	}
-	return ownedFileUnsafe, nil
+	return ownedFileRegular, nil
 }
 
 func digestOwnedFile(root, relative string) (string, error) {
-	fileState, err := inspectOwnedFile(root, relative)
+	dir, name, err := splitOwnedRelative(root, relative)
 	if err != nil {
 		return "", err
 	}
-	if fileState != ownedFileRegular {
+	data, present, err := metadatafile.ReadFile(root, dir, name, "AGX-RECEIPT-PATH")
+	if err != nil {
+		return "", err
+	}
+	if !present {
 		return "", fmt.Errorf("owned path is not a regular file under real directories")
 	}
-	absolute, err := ownedPath(root, relative)
-	if err != nil {
-		return "", err
-	}
-	file, err := os.Open(absolute)
-	if err != nil {
-		return "", err
-	}
-	info, statErr := file.Stat()
-	if statErr != nil || !info.Mode().IsRegular() {
-		_ = file.Close()
-		return "", fmt.Errorf("owned path changed before content read")
-	}
-	hash := sha256.New()
-	_, copyErr := io.Copy(hash, file)
-	closeErr := file.Close()
-	if copyErr != nil || closeErr != nil {
-		return "", fmt.Errorf("owned file content read failed")
-	}
-	fileState, err = inspectOwnedFile(root, relative)
-	if err != nil || fileState != ownedFileRegular {
-		return "", fmt.Errorf("owned path changed during content read")
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 func ownedDirectoryCandidates(receipt Receipt) []string {
@@ -586,24 +561,13 @@ func ownedDirectoryCandidates(receipt Receipt) []string {
 }
 
 func writeReceipt(root string, receipt Receipt) error {
-	directory := filepath.Join(root, ".agx")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("AGX-RECEIPT-WRITE: %w", err)
-	}
-	real, err := ownedRealDirectory(root, ".agx")
-	if err != nil {
-		return fmt.Errorf("AGX-RECEIPT-WRITE: %w", err)
-	}
-	if !real {
-		return fmt.Errorf("AGX-RECEIPT-WRITE: metadata directory is not a real directory")
-	}
 	data, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return fmt.Errorf("AGX-RECEIPT-WRITE: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(filepath.Join(directory, "receipt.json"), data, 0o600); err != nil {
-		return fmt.Errorf("AGX-RECEIPT-WRITE: %w", err)
+	if err := metadatafile.WriteFileAtomic(root, ".agx", "receipt.json", data, false, "AGX-RECEIPT-WRITE"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -619,9 +583,12 @@ func readReceipt(root string) (Receipt, error) {
 	if metadataState != ownedFileRegular {
 		return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: receipt metadata path is unsafe")
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".agx", "receipt.json"))
+	data, present, err := metadatafile.ReadFile(root, ".agx", "receipt.json", "AGX-RECEIPT-READ")
 	if err != nil {
-		return Receipt{}, fmt.Errorf("AGX-RECEIPT-READ: %w", err)
+		return Receipt{}, err
+	}
+	if !present {
+		return Receipt{}, fmt.Errorf("AGX-RECEIPT-READ: receipt metadata is missing")
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
