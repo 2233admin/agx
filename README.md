@@ -1,5 +1,15 @@
 # AGXCLI
 
+## TL;DR
+
+**agx** 是一个命令行工具：给 Codex / Claude 这类 AI coding agent 批量、可重复地搭起一套"部署环境"——装好固定版本的插件，按内置模板建出两个专属 GitHub 仓库，接一个 GitHub Project，激活 agent，并留下本地凭证以便之后核查状态、诊断问题、安全卸载。典型用户：需要反复给团队或客户拉起同一套 agent 工作环境的人，不想每次手动建仓、手动跑初始化脚本。
+
+先认三个词，后面全文都会用到：
+
+- **回执 (receipt)** — `.agx/receipt.json`，AGX 自己写的"这次部署到底装了什么"的记录。`status`、`diagnose`、`uninstall` 全靠读它来判断该管什么、不该碰什么；不是给人手动编辑的配置文件。
+- **Evidence Profile** — 一套"怎样才算部署成功"的验收标准，比如 `github-delivery/v1` 只要求 GitHub 侧证据凑齐。选哪个 Profile 决定了 `init` 要收集哪些信息、`status` 要核对哪些东西。
+- **`verified`** — 只有当前 Evidence Profile 要求的全部证据都核验通过，才会打上这个状态。`configured` 只代表 AGX 自己该写的本地文件写完了，跟"外部已经验收通过"是两回事——**不要把两者混着说**。
+
 <img src="assets/oc/agx-oc-github-banner-16x9.png" width="100%" alt="AGXCLI 黑白 Macintosh CRT 猫娘协调员，置于部署与验收诊断界面中。">
 
 AGX 的猫娘协调员对应安装、计划、验收和回执；她是项目身份，不代表目标环境已通过 `verified`。其余画幅与 GitHub 文档落点见 [OC kit](assets/oc/README.md)。
@@ -8,22 +18,9 @@ AGXCLI (`agx`) 是小型部署与生命周期 CLI：它安装固定版本的 `ag
 
 > 当前状态：本地 Bundle 部署闭环和 Codex/Claude 初始化阶段已实现。Multica 编排不属于当前发布阻塞项。
 
-## 目标体验
-
-用户下载一个独立可执行文件，先安装插件发行包，再预演初始化：
-
-```text
-agx apply --root D:\agx\installations\default
-agx init --guided --root D:\agx\installations\default
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1
-agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1 --apply
-```
-
-`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、能力 profile、Evidence Profile、visibility 与两个部署仓名；选择 Multica Profile 时还会校验三个 selector UUID。确认后执行的只读 plan preflight 才检查 Projects `project` scope，并打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
-
 ## 部署仓关系速查
 
-AGX 交付时用户会看到几类仓库，但它们不是同一层东西：
+先看这张表再看下面的命令示例——AGX 交付时用户会看到几类仓库，但它们不是同一层东西：
 
 | 仓库 | 谁拥有 | 部署时怎么用 |
 | --- | --- | --- |
@@ -44,6 +41,19 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 第二条命令必须先看计划：它会列出目标 owner、两个仓库、Project title/link、visibility、模板版本与 digest、Provider Marketplace/Plugin 动作和同名资源冲突行为，并根据无冲突 provider 给出推荐。第三条命令才创建远端仓库与 Project、完成结构化回读并激活 Codex/Claude。初始化后用户已经能直接打开 Project；再开启新的 Agent 会话，执行输出中的 `agx.first-use/v1` 合同，创建 Bootstrap Verification Issue、Project item 和未合并 PR。`agx status` / `agx diagnose` 会回读这些 evidence，并报告 `awaiting` 或 `effective`。如果远端回读期间达到 deadline 或被取消，命令返回 `AGX-STATUS-INCONCLUSIVE`，不会把未完成的观察误报为 drift；远端状态可能已变化，应重新运行 `agx status` 或 `agx diagnose`，该失败路径不会执行任何写入。
 
 卸载边界也要直接理解：`agx uninstall` 只撤销回执证明由 AGX 新增的本地文件和 provider 激活；不会删除 `<owner>/agent-control`、`<owner>/agent-contracts` 或关联的 GitHub Project。远端资源要由 operator 自己决定是否归档、迁移或删除。
+
+## 目标体验
+
+用户下载一个独立可执行文件，先安装插件发行包，再预演初始化：
+
+```text
+agx apply --root D:\agx\installations\default
+agx init --guided --root D:\agx\installations\default
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1
+agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1 --apply
+```
+
+`--guided` 先只读发现当前 `gh` 身份、Codex/Claude CLI 和 Marketplace source，再让用户确认 owner、provider、能力 profile、Evidence Profile、visibility 与两个部署仓名（就是上面表格里的 `agent-control`/`agent-contracts`）；选择 Multica Profile 时还会校验三个 selector UUID。确认后执行的只读 plan preflight 才检查 Projects `project` scope，并打印确定性 plan 和可复制的显式 `agx init ... --apply` 命令；只有执行带 `--apply` 的显式命令才会产生写入。AGX 默认创建私有的 `octo-lab/agent-control`、`octo-lab/agent-contracts` 和一个 receipt-bound GitHub Project；仓库、Project visibility、Project link 每次 mutation 后都持久化恢复回执，然后才激活选定能力。初始化完成仍不等于外部验收完成；`verified` 是保留状态。
 
 ## 产品边界
 
