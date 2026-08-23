@@ -77,6 +77,30 @@ func TestApplyFirstExecutionThenStatusReportsConfigured(t *testing.T) {
 	}
 }
 
+// Apply must be usable standalone: v1's local Worker with manual
+// Transport/Runtime/Runtime Bridge has no Bundle dependency, so a root that
+// does not exist yet (no prior `agx apply`) must be created rather than
+// rejected with an "installation root" error.
+func TestApplyOnNonExistentRootCreatesIt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "does-not-exist-yet", "nested")
+	profile := validProfile()
+
+	receipt, err := fleet.Apply(root, profile)
+	if err != nil {
+		t.Fatalf("Apply() on a non-existent root error = %v", err)
+	}
+	if receipt.ProfileDigest == "" {
+		t.Fatal("Apply() left ProfileDigest empty")
+	}
+	state, err := fleet.Status(root)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if state.Status != fleet.StatusConfigured {
+		t.Fatalf("Status() = %+v, want configured", state)
+	}
+}
+
 // 2. Repeat no-op: applying the exact same Profile a second time succeeds
 // and returns byte-identical Receipt content, without erroring on the
 // already-present file.

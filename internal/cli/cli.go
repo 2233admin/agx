@@ -34,6 +34,7 @@ var lifecycleCommands = []command{
 	{name: "status", description: "Show the observed Installation state"},
 	{name: "diagnose", description: "Explain deployment evidence and next recovery steps"},
 	{name: "uninstall", description: "Remove AGX-owned Installation resources"},
+	{name: "fleet", description: "Plan, apply, or show status for a Deployment Profile"},
 }
 
 type runtimeDependencies struct {
@@ -99,6 +100,8 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 		return exitcode.Unsupported
 	case "diagnose":
 		return runDiagnose(args[1:], stdout, stderr, dependencies)
+	case "fleet":
+		return runFleet(args[1:], stdout, stderr)
 	}
 
 	if knownLifecycleCommand(commandName) {
@@ -1123,6 +1126,16 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Usage: agx uninstall --root <directory> [--output human|json]")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Reverse AGX-owned provider activation, then remove AGX-owned files while retaining remote repositories, the GitHub Project, and unknown files.")
+		return exitcode.Success
+	case "fleet":
+		fmt.Fprintln(stdout, "Usage: agx fleet plan --profile <deployment-profile.json> [--output human|json]")
+		fmt.Fprintln(stdout, "   or: agx fleet apply --profile <deployment-profile.json> --root <directory> [--output human|json]")
+		fmt.Fprintln(stdout, "   or: agx fleet status --root <directory> [--output human|json]")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Parse, validate, plan, apply, and read back a versioned Deployment Profile: one Worker, Transport, Runtime, Work Hub, and Runtime Bridge, each declared independently (see issue #53). v1 supports exactly one local Worker with manual Transport/Runtime/Runtime Bridge and no Work Hub.")
+		fmt.Fprintln(stdout, "A Deployment Profile is separate from the Bundle/init installation receipt; fleet apply persists .agx/fleet-profile.json and never touches .agx/receipt.json.")
+		fmt.Fprintln(stdout, "plan performs no external write. apply is idempotent for an unchanged profile and rejects a different profile at the same root as drift; use a new deployment_id for a distinct deployment.")
+		fmt.Fprintln(stdout, "configured is a local claim only; it is never equivalent to external verification.")
 		return exitcode.Success
 	}
 	if command, ok := lookupLifecycleCommand(commandName); ok {

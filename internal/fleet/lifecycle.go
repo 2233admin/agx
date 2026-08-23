@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 
 	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/metadatafile"
@@ -111,6 +112,14 @@ func Apply(root string, profile Profile) (Receipt, error) {
 	diagnostics := ValidateProfile(profile)
 	if len(diagnostics) > 0 {
 		return Receipt{}, fmt.Errorf("AGX-FLEET-PROFILE-INVALID: profile has %d diagnostic(s), first: %s", len(diagnostics), diagnostics[0].Message)
+	}
+	// A Deployment Profile can be applied standalone (v1's local Worker with
+	// manual Transport/Runtime/Runtime Bridge has no Bundle dependency), so
+	// root is created here rather than requiring a prior `agx apply` to have
+	// created it first. This mirrors install.Apply's own root creation and
+	// is a no-op when root already exists (e.g. a Bundle install root).
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return Receipt{}, fmt.Errorf("AGX-FLEET-PROFILE-WRITE: %w", err)
 	}
 	digest, err := ComputeProfileDigest(profile)
 	if err != nil {
