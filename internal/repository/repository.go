@@ -74,6 +74,7 @@ type Inspection struct {
 	NameWithOwner   string     `json:"name_with_owner"`
 	URL             string     `json:"url"`
 	Visibility      Visibility `json:"visibility"`
+	HasIssues       bool       `json:"has_issues"`
 	DefaultBranch   string     `json:"default_branch"`
 	HeadCommit      string     `json:"head_commit"`
 	ReachableCommit string     `json:"reachable_commit,omitempty"`
@@ -228,9 +229,22 @@ func createPrepared(ctx context.Context, target Target, runner Runner) (Receipt,
 	}
 	args = append(args, "--source", repositoryDir, "--remote", "origin", "--push")
 	_, createErr := runner.Run(ctx, "", "gh", args...)
+	if createErr != nil {
+		priorInspection, present, readbackErr := queryRepository(ctx, target.Owner, target.Name, commit, readbackQuery, runner)
+		if readbackErr != nil {
+			return recoveryReceipt, fmt.Errorf("AGX-REPOSITORY-READBACK-UNCERTAIN: create failed and readback was inconclusive: %v; readback: %w", createErr, readbackErr)
+		}
+		if !present {
+			return Receipt{}, fmt.Errorf("AGX-REPOSITORY-CREATE: create failed and the repository is absent: %w", createErr)
+		}
+		if err := validateInitialReadback(target, commit, priorInspection); err != nil {
+			return recoveryReceipt, fmt.Errorf("AGX-REPOSITORY-READBACK-UNCERTAIN: create failed and repository readback did not match the local seed: %v; readback: %w", createErr, err)
+		}
+	}
+	_, enableIssuesErr := runner.Run(ctx, "", "gh", "repo", "edit", target.Owner+"/"+target.Name, "--enable-issues")
 
-	// Exactly one readback follows the remote mutation attempt, including when
-	// gh reports an error after the create or push has actually completed.
+	// The final readback follows the last remote mutation and verifies the
+	// repository, locally-created initial commit, and required Issues feature.
 	inspection, present, readbackErr := queryRepository(ctx, target.Owner, target.Name, commit, readbackQuery, runner)
 	if readbackErr != nil {
 		if createErr != nil {
@@ -244,6 +258,12 @@ func createPrepared(ctx context.Context, target Target, runner Runner) (Receipt,
 		}
 		return Receipt{}, fmt.Errorf("AGX-REPOSITORY-READBACK: repository is absent after create")
 	}
+	if !inspection.HasIssues {
+		if enableIssuesErr != nil {
+			return recoveryReceipt, fmt.Errorf("AGX-REPOSITORY-ISSUES: cannot enable or verify GitHub Issues for %s: %w", target.Owner+"/"+target.Name, enableIssuesErr)
+		}
+		return recoveryReceipt, fmt.Errorf("AGX-REPOSITORY-ISSUES: GitHub Issues remain disabled for %s", target.Owner+"/"+target.Name)
+	}
 	receipt, evidenceErr := receiptFromInspection(target, commit, inspection)
 	if evidenceErr != nil {
 		if createErr != nil {
@@ -253,6 +273,9 @@ func createPrepared(ctx context.Context, target Target, runner Runner) (Receipt,
 	}
 	if createErr != nil {
 		return receipt, fmt.Errorf("AGX-REPOSITORY-CREATE-PARTIAL: gh reported an error, but repository and initial commit were created: %w", createErr)
+	}
+	if enableIssuesErr != nil {
+		return receipt, fmt.Errorf("AGX-REPOSITORY-ISSUES-PARTIAL: gh reported an error enabling Issues, but readback confirms they are enabled: %w", enableIssuesErr)
 	}
 	if err := verifyTemplateReadback(ctx, receipt, runner); err != nil {
 		return receipt, err
@@ -301,6 +324,9 @@ func Verify(ctx context.Context, receipt Receipt, runner Runner) error {
 	if !present {
 		return fmt.Errorf("AGX-REPOSITORY-DRIFT: repository %s is absent", receipt.NameWithOwner)
 	}
+	if !inspection.HasIssues {
+		return fmt.Errorf("AGX-REPOSITORY-DRIFT: Issues are disabled for %s", receipt.NameWithOwner)
+	}
 	if !strings.EqualFold(inspection.NameWithOwner, receipt.NameWithOwner) || inspection.Visibility != receipt.Visibility ||
 		!strings.EqualFold(inspection.URL, receipt.URL) || !strings.EqualFold(inspection.ReachableCommit, receipt.InitialCommit) {
 		return fmt.Errorf("AGX-REPOSITORY-DRIFT: repository or initial commit no longer matches receipt")
@@ -326,14 +352,25 @@ func uncertainReceipt(target Target, commit string) Receipt {
 	}
 }
 
-func receiptFromInspection(target Target, commit string, inspection Inspection) (Receipt, error) {
+func validateInitialReadback(target Target, commit string, inspection Inspection) error {
 	nameWithOwner := target.Owner + "/" + target.Name
 	if !strings.EqualFold(inspection.NameWithOwner, nameWithOwner) || inspection.Visibility != target.Visibility {
-		return Receipt{}, fmt.Errorf("AGX-REPOSITORY-READBACK: repository identity or visibility does not match target")
+		return fmt.Errorf("AGX-REPOSITORY-READBACK: repository identity or visibility does not match target")
 	}
 	if inspection.DefaultBranch != "main" || !strings.EqualFold(inspection.HeadCommit, commit) ||
 		!strings.EqualFold(inspection.ReachableCommit, commit) {
-		return Receipt{}, fmt.Errorf("AGX-REPOSITORY-READBACK: default branch or initial commit does not match local seed")
+		return fmt.Errorf("AGX-REPOSITORY-READBACK: default branch or initial commit does not match local seed")
+	}
+	return nil
+}
+
+func receiptFromInspection(target Target, commit string, inspection Inspection) (Receipt, error) {
+	nameWithOwner := target.Owner + "/" + target.Name
+	if err := validateInitialReadback(target, commit, inspection); err != nil {
+		return Receipt{}, err
+	}
+	if !inspection.HasIssues {
+		return Receipt{}, fmt.Errorf("AGX-REPOSITORY-READBACK: Issues are disabled for %s", nameWithOwner)
 	}
 	return Receipt{
 		NameWithOwner:   inspection.NameWithOwner,
@@ -605,7 +642,7 @@ func defaultRunner(runner Runner) Runner {
 
 const preflightQuery = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}`
 
-const readbackQuery = `query($owner:String!,$name:String!,$commit:String!){repository(owner:$owner,name:$name){nameWithOwner url visibility defaultBranchRef{name target{... on Commit{oid}}} object(expression:$commit){... on Commit{oid}}}}`
+const readbackQuery = `query($owner:String!,$name:String!,$commit:String!){repository(owner:$owner,name:$name){nameWithOwner url visibility hasIssuesEnabled defaultBranchRef{name target{... on Commit{oid}}} object(expression:$commit){... on Commit{oid}}}}`
 
 type graphQLError struct {
 	Type string   `json:"type"`
@@ -650,10 +687,11 @@ func queryRepository(ctx context.Context, owner, name, commit, query string, run
 		return Inspection{}, false, fmt.Errorf("GraphQL response contains errors")
 	}
 	var repository struct {
-		NameWithOwner string `json:"nameWithOwner"`
-		URL           string `json:"url"`
-		Visibility    string `json:"visibility"`
-		DefaultBranch *struct {
+		NameWithOwner    string `json:"nameWithOwner"`
+		URL              string `json:"url"`
+		Visibility       string `json:"visibility"`
+		HasIssuesEnabled bool   `json:"hasIssuesEnabled"`
+		DefaultBranch    *struct {
 			Name   string `json:"name"`
 			Target *struct {
 				OID string `json:"oid"`
@@ -678,6 +716,7 @@ func queryRepository(ctx context.Context, owner, name, commit, query string, run
 		NameWithOwner: repository.NameWithOwner,
 		URL:           repository.URL,
 		Visibility:    visibility,
+		HasIssues:     repository.HasIssuesEnabled,
 		DefaultBranch: repository.DefaultBranch.Name,
 		HeadCommit:    repository.DefaultBranch.Target.OID,
 	}

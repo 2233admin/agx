@@ -34,20 +34,23 @@ type fakeRepository struct {
 }
 
 type fakeRunner struct {
-	missing          map[string]bool
-	calls            []recordedCall
-	authOutput       []byte
-	authErr          error
-	inventoryErrName string
-	malformedName    string
-	readbackErrName  string
-	readbackBadName  string
-	repositories     map[string]fakeRepository
-	landOnCreate     bool
-	createErr        error
-	gitErrCommand    string
-	absentOutput     []byte
-	absentReturnsErr bool
+	missing                  map[string]bool
+	calls                    []recordedCall
+	authOutput               []byte
+	authErr                  error
+	inventoryErrName         string
+	malformedName            string
+	readbackErrName          string
+	readbackBadName          string
+	repositories             map[string]fakeRepository
+	landOnCreate             bool
+	createWithIssuesDisabled bool
+	enableIssuesNoEffect     bool
+	createdRepository        *fakeRepository
+	createErr                error
+	gitErrCommand            string
+	absentOutput             []byte
+	absentReturnsErr         bool
 }
 
 func newFakeRunner() *fakeRunner {
@@ -114,9 +117,10 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 			object = map[string]any{"oid": reachableCommit}
 		}
 		return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{
-			"nameWithOwner": repository.nameWithOwner,
-			"url":           "https://github.com/" + repository.nameWithOwner,
-			"visibility":    strings.ToUpper(string(repository.visibility)),
+			"nameWithOwner":    repository.nameWithOwner,
+			"url":              "https://github.com/" + repository.nameWithOwner,
+			"visibility":       strings.ToUpper(string(repository.visibility)),
+			"hasIssuesEnabled": repository.issues,
 			"defaultBranchRef": map[string]any{
 				"name":   repository.defaultBranch,
 				"target": map[string]any{"oid": repository.head},
@@ -139,6 +143,18 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 	if name == "gh" && len(args) >= 2 && args[0] == "repo" && args[1] == "view" {
 		repository := runner.repositories[strings.ToLower(args[2])]
 		return json.Marshal(map[string]any{"hasIssuesEnabled": repository.issues})
+	}
+	if name == "gh" && len(args) == 4 && args[0] == "repo" && args[1] == "edit" && args[3] == "--enable-issues" {
+		key := strings.ToLower(args[2])
+		repository, present := runner.repositories[key]
+		if !present {
+			return nil, errors.New("repository not found")
+		}
+		if !runner.enableIssuesNoEffect {
+			repository.issues = true
+			runner.repositories[key] = repository
+		}
+		return nil, nil
 	}
 	if name == "git" {
 		command := gitCommand(args)
@@ -169,15 +185,19 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 				}
 				return relativeErr
 			})
-			runner.repositories[strings.ToLower(nameWithOwner)] = fakeRepository{
+			created := fakeRepository{
 				nameWithOwner: nameWithOwner,
 				visibility:    visibility,
 				defaultBranch: "main",
 				head:          testCommit,
 				reachable:     map[string]bool{testCommit: true},
-				issues:        true,
+				issues:        !runner.createWithIssuesDisabled,
 				files:         files,
 			}
+			if runner.createdRepository != nil {
+				created = *runner.createdRepository
+			}
+			runner.repositories[strings.ToLower(nameWithOwner)] = created
 		}
 		return nil, runner.createErr
 	}
@@ -320,6 +340,48 @@ func TestPreflightCollisionAndFailuresPerformNoWrites(t *testing.T) {
 	}
 }
 
+func TestCreateEnablesAndVerifiesIssues(t *testing.T) {
+	runner := newFakeRunner()
+	runner.createWithIssuesDisabled = true
+
+	receipt, err := Create(context.Background(), testTarget("agent-control"), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.Created || receipt.Verification != VerificationReadback {
+		t.Fatalf("receipt = %+v, want readback-verified creation", receipt)
+	}
+	if !runner.repositories["zaurakworks/agent-control"].issues {
+		t.Fatal("repository Issues remained disabled")
+	}
+	createIndex := callIndex(runner.calls, func(call recordedCall) bool {
+		return call.name == "gh" && len(call.args) > 1 && call.args[0] == "repo" && call.args[1] == "create"
+	})
+	enableIndex := callIndex(runner.calls, func(call recordedCall) bool {
+		return call.name == "gh" && reflect.DeepEqual(call.args, []string{"repo", "edit", "zaurakworks/agent-control", "--enable-issues"})
+	})
+	readbackIndex := callIndex(runner.calls, func(call recordedCall) bool {
+		return call.name == "gh" && argumentValue(call.args, "commit") == testCommit
+	})
+	if createIndex < 0 || enableIndex < createIndex || readbackIndex < enableIndex {
+		t.Fatalf("command order did not enable and verify Issues: %+v", runner.calls)
+	}
+}
+
+func TestCreateFailsClosedWhenIssuesRemainDisabled(t *testing.T) {
+	runner := newFakeRunner()
+	runner.createWithIssuesDisabled = true
+	runner.enableIssuesNoEffect = true
+
+	receipt, err := Create(context.Background(), testTarget("agent-control"), runner)
+	if err == nil || !strings.Contains(err.Error(), "AGX-REPOSITORY-ISSUES") {
+		t.Fatalf("Create() err = %v, want Issues verification failure", err)
+	}
+	if receipt.Created || receipt.Verification != VerificationUncertain {
+		t.Fatalf("receipt = %+v, want uncertain recovery evidence", receipt)
+	}
+}
+
 func TestCreateCommandOrderAndLocalGitConfiguration(t *testing.T) {
 	runner := newFakeRunner()
 	_, err := Create(context.Background(), testTarget("agent-control"), runner)
@@ -355,7 +417,7 @@ func TestCreateCommandOrderAndLocalGitConfiguration(t *testing.T) {
 			got = append(got, "tree readback")
 		}
 	}
-	want := []string{"auth", "preflight", "git init", "git add", "git commit", "git rev-parse", "create", "readback", "view", "tree readback"}
+	want := []string{"auth", "preflight", "git init", "git add", "git commit", "git rev-parse", "create", "edit", "readback", "view", "tree readback"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command order = %#v, want %#v", got, want)
 	}
@@ -411,14 +473,17 @@ func TestCreateReturnsReceiptAndErrorWhenCommandFailsAfterLanding(t *testing.T) 
 	createIndex := callIndex(runner.calls, func(call recordedCall) bool {
 		return call.name == "gh" && len(call.args) > 1 && call.args[0] == "repo"
 	})
-	readbacks := 0
-	for _, call := range runner.calls[createIndex+1:] {
+	readbackIndexes := []int{}
+	for index, call := range runner.calls[createIndex+1:] {
 		if call.name == "gh" && argumentValue(call.args, "commit") == testCommit {
-			readbacks++
+			readbackIndexes = append(readbackIndexes, createIndex+1+index)
 		}
 	}
-	if readbacks != 1 {
-		t.Fatalf("post-error readbacks = %d, want 1", readbacks)
+	enableIndex := callIndex(runner.calls, func(call recordedCall) bool {
+		return call.name == "gh" && len(call.args) > 1 && call.args[0] == "repo" && call.args[1] == "edit"
+	})
+	if len(readbackIndexes) != 2 || enableIndex < 0 || readbackIndexes[0] >= enableIndex || enableIndex >= readbackIndexes[1] {
+		t.Fatalf("partial-create command order = %+v", runner.calls)
 	}
 }
 
@@ -466,6 +531,60 @@ func TestProvisionRetainsUncertainReceipt(t *testing.T) {
 	receipts, err := Provision(context.Background(), []Target{testTarget("agent-control")}, runner)
 	if err == nil || len(receipts) != 1 || receipts[0].Verification != VerificationUncertain {
 		t.Fatalf("Provision() receipts=%+v err=%v, want one uncertain receipt", receipts, err)
+	}
+}
+
+func TestCreateDoesNotEnableIssuesWhenCreateFailsAndRepositoryIsAbsent(t *testing.T) {
+	runner := newFakeRunner()
+	runner.landOnCreate = false
+	runner.createErr = errors.New("permission denied")
+
+	_, err := Create(context.Background(), testTarget("agent-control"), runner)
+	if err == nil || !strings.Contains(err.Error(), "AGX-REPOSITORY-CREATE") {
+		t.Fatalf("Create() err = %v, want failed create", err)
+	}
+	if callIndex(runner.calls, func(call recordedCall) bool {
+		return call.name == "gh" && len(call.args) > 1 && call.args[0] == "repo" && call.args[1] == "edit"
+	}) >= 0 {
+		t.Fatalf("Create() enabled Issues after failed create: %+v", runner.calls)
+	}
+}
+
+func TestCreateDoesNotEnableIssuesForUnmatchedRepositoryAfterCreateError(t *testing.T) {
+	tests := map[string]func(*fakeRepository){
+		"identity":         func(repository *fakeRepository) { repository.nameWithOwner = "zaurakworks/other" },
+		"visibility":       func(repository *fakeRepository) { repository.visibility = VisibilityPublic },
+		"default branch":   func(repository *fakeRepository) { repository.defaultBranch = "trunk" },
+		"head commit":      func(repository *fakeRepository) { repository.head = "cccccccccccccccccccccccccccccccccccccccc" },
+		"reachable commit": func(repository *fakeRepository) { repository.reachable = map[string]bool{} },
+	}
+	for name, configure := range tests {
+		t.Run(name, func(t *testing.T) {
+			runner := newFakeRunner()
+			runner.createErr = errors.New("connection closed")
+			created := fakeRepository{
+				nameWithOwner: "zaurakworks/agent-control",
+				visibility:    VisibilityPrivate,
+				defaultBranch: "main",
+				head:          testCommit,
+				reachable:     map[string]bool{testCommit: true},
+			}
+			configure(&created)
+			runner.createdRepository = &created
+
+			receipt, err := Create(context.Background(), testTarget("agent-control"), runner)
+			if err == nil || !strings.Contains(err.Error(), "AGX-REPOSITORY-READBACK-UNCERTAIN") {
+				t.Fatalf("Create() err = %v, want ownership readback failure", err)
+			}
+			if receipt.Created || receipt.Verification != VerificationUncertain {
+				t.Fatalf("receipt = %+v, want uncertain recovery evidence", receipt)
+			}
+			if callIndex(runner.calls, func(call recordedCall) bool {
+				return call.name == "gh" && len(call.args) > 1 && call.args[0] == "repo" && call.args[1] == "edit"
+			}) >= 0 {
+				t.Fatalf("Create() enabled Issues for unmatched repository: %+v", runner.calls)
+			}
+		})
 	}
 }
 
@@ -605,6 +724,7 @@ func TestInspectAndVerifyReachableInitializationCommit(t *testing.T) {
 	runner.repositories["zaurakworks/agent-control"] = fakeRepository{
 		nameWithOwner: "zaurakworks/agent-control",
 		visibility:    VisibilityPrivate,
+		issues:        true,
 		defaultBranch: "main",
 		head:          newHead,
 		reachable:     map[string]bool{testCommit: true, newHead: true},

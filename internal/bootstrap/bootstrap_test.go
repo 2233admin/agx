@@ -100,7 +100,7 @@ func TestRenderGoldenTreesAndDigests(t *testing.T) {
 	params := Params{Owner: "octo-lab", PluginSource: "zaurakworks/agent-plugins"}
 	wantDigests := map[Kind]string{
 		KindAgentControl:   "8d3b4220cfb75787ad1897b1881d402505ab5e9fe255b35d5e33a4c9f1652638",
-		KindAgentContracts: "73bedf20db31b166995776ecb2d6b32de5d49202fb781ab0de3bff2788a8b680",
+		KindAgentContracts: "f4c0eb7375ecd35a690102d288b42724bce103e2572259a1b563f705eed2d47a",
 	}
 
 	for _, kind := range []Kind{KindAgentControl, KindAgentContracts} {

@@ -21,7 +21,7 @@
   },
   "templates": {
     "version": "bootstrap-20260819.1",
-    "content_sha256": "6e5eee0139001ed29fdf7c3689881fd5af544d86e1a99ed67e88274921555d65",
+    "content_sha256": "8e647cd52a781e32e7adaf9af2b5c0b22e4129a3c8c2bc5d240006e804696f48",
     "references": {
       "agent_plugins": {
         "repository": "zaurakworks/agent-plugins",

@@ -26,6 +26,7 @@ const deploymentCommit = "abababababababababababababababababababab"
 type deploymentRepository struct {
 	nameWithOwner string
 	visibility    repository.Visibility
+	issues        bool
 	commit        string
 	files         map[string]bool
 }
@@ -280,12 +281,23 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 				return relativeErr
 			})
 			runner.repositories[strings.ToLower(slug)] = deploymentRepository{
-				nameWithOwner: slug, visibility: visibility, commit: deploymentCommit, files: files,
+				nameWithOwner: slug, visibility: visibility, issues: true, commit: deploymentCommit, files: files,
 			}
 		}
 		if runner.failCreate[slug] {
 			return nil, errors.New("injected create failure")
 		}
+		return nil, nil
+	}
+	if name == "gh" && len(args) == 4 && args[0] == "repo" && args[1] == "edit" && args[3] == "--enable-issues" {
+		key := strings.ToLower(args[2])
+		repositoryState, present := runner.repositories[key]
+		if !present {
+			return nil, errors.New("repository not found")
+		}
+		repositoryState.issues = true
+		runner.repositories[key] = repositoryState
+		runner.mutationCalls++
 		return nil, nil
 	}
 	if name == "gh" && len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "/contents/work/current.md") {
@@ -325,9 +337,10 @@ func (runner *deploymentRepositoryRunner) Run(_ context.Context, _ string, name 
 			return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"nameWithOwner": item.nameWithOwner}}})
 		}
 		return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{
-			"nameWithOwner": item.nameWithOwner,
-			"url":           "https://github.com/" + item.nameWithOwner,
-			"visibility":    strings.ToUpper(string(item.visibility)),
+			"nameWithOwner":    item.nameWithOwner,
+			"url":              "https://github.com/" + item.nameWithOwner,
+			"visibility":       strings.ToUpper(string(item.visibility)),
+			"hasIssuesEnabled": item.issues,
 			"defaultBranchRef": map[string]any{
 				"name": "main", "target": map[string]any{"oid": item.commit},
 			},
