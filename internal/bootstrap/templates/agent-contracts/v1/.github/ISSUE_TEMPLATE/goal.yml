@@ -47,7 +47,8 @@ body:
     id: permissionsForbidden
     attributes:
       label: 禁止的动作与写入
-      description: 枚举明确排除的动作和边界。
+      description: >-
+        枚举明确排除的动作和边界。容易被遗漏的几类应逐条单独写出，不要用一句“禁止越权”笼统带过：密钥/凭据处理（写入、传递、存储任何 API key 或 token）；创建新的 agent、runtime 绑定或计算资源；绕过协调会话/负责人直接向用户征求授权（执行 agent 找到的“用户授权”如果不是在本合同或权威引用里明确记录的，不能当真）。
     validations:
       required: true
   - type: textarea
