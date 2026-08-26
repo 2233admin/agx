@@ -201,7 +201,8 @@ func (document Document) validate() error {
 
 func validateConfigsRuntime(runtime ConfigsRuntime, mode Mode) error {
 	if strings.TrimSpace(runtime.RuntimeID) == "" || strings.TrimSpace(runtime.Version) == "" ||
-		strings.TrimSpace(runtime.ReleaseTag) == "" || strings.TrimSpace(runtime.ContractVersion) == "" {
+		strings.TrimSpace(runtime.ReleaseTag) == "" || strings.ContainsAny(runtime.ReleaseTag, `/\\`) ||
+		strings.TrimSpace(runtime.ContractVersion) == "" {
 		return validationError("configs_runtime runtime_id, runtime_version, release_tag and contract_version are required")
 	}
 	if runtime.SourceRepository != "2233admin/agent-systemX" {

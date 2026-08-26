@@ -12,6 +12,7 @@ import (
 
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/bundle"
+	"github.com/2233admin/agx/internal/configs"
 	"github.com/2233admin/agx/internal/contracts"
 	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/exitcode"
@@ -30,6 +31,7 @@ type command struct {
 var lifecycleCommands = []command{
 	{name: "plan", description: "Show a side-effect-free Installation Plan"},
 	{name: "apply", description: "Install pinned Bundle assets"},
+	{name: "config", description: "Run the bound configs runtime"},
 	{name: "init", description: "Plan or apply repositories, Project, and provider activation"},
 	{name: "status", description: "Show the observed Installation state"},
 	{name: "diagnose", description: "Explain deployment evidence and next recovery steps"},
@@ -44,6 +46,7 @@ type runtimeDependencies struct {
 	initApply          func(context.Context, activation.Options) (activation.Receipt, bool, error)
 	status             func(context.Context, string, provider.Runner, ...repository.Runner) (activation.State, error)
 	statusWithEvidence func(context.Context, string, provider.Runner, activation.StatusOptions, ...repository.Runner) (activation.State, error)
+	configRun          func(context.Context, string, installer.Receipt, []string, io.Reader, io.Writer, io.Writer) int
 	goos               string
 }
 
@@ -85,6 +88,8 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 		return runPlan(args[1:], stdout, stderr)
 	case "apply":
 		return runApply(args[1:], stdout, stderr)
+	case "config":
+		return runConfig(args[1:], stdout, stderr, dependencies)
 	case "init":
 		return runInit(args[1:], stdout, stderr, dependencies)
 	case "status":
@@ -537,6 +542,60 @@ func providerDisplayName(name provider.Name) string {
 	default:
 		return string(name)
 	}
+
+}
+
+func runConfig(args []string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
+	root, forwarded, err := parseConfigInvocation(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-USAGE-CONFIG: %v\n", err)
+		return exitcode.Usage
+	}
+	state, err := installer.Status(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-CONFIG-RUNTIME: cannot read installation receipt: %v\n", err)
+		return exitcode.Software
+	}
+	if state.Phase != "configured" || state.Receipt == nil || state.Receipt.ConfigsRuntime == nil {
+		fmt.Fprintln(stderr, "AGX-CONFIG-RUNTIME: installation has no intact configs runtime binding")
+		return exitcode.Software
+	}
+	run := dependencies.configRun
+	if run == nil {
+		run = configs.Run
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return run(ctx, root, *state.Receipt, forwarded, dependencies.stdin, stdout, stderr)
+}
+
+func parseConfigInvocation(args []string) (string, []string, error) {
+	var root string
+	var forwarded []string
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--root":
+			if root != "" || index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+				return "", nil, fmt.Errorf("--root <directory> is required exactly once")
+			}
+			index++
+			root = args[index]
+		case "--runtime", "--runtime-path", "--db-path", "--database-path", "--control-plane-db-path":
+			return "", nil, fmt.Errorf("%s is managed by AGX and cannot be overridden", args[index])
+		default:
+			if strings.HasPrefix(args[index], "--root=") {
+				return "", nil, fmt.Errorf("--root must be provided as a separate option")
+			}
+			forwarded = append(forwarded, args[index])
+		}
+	}
+	if strings.TrimSpace(root) == "" {
+		return "", nil, fmt.Errorf("--root <directory> is required")
+	}
+	if len(forwarded) == 0 {
+		return "", nil, fmt.Errorf("one configs subcommand is required")
+	}
+	return root, forwarded, nil
 }
 
 func runApply(args []string, stdout, stderr io.Writer) int {
@@ -1077,6 +1136,11 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Usage: agx apply --root <directory> [--bundle <bundle.json>]")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Download, verify, and atomically install the built-in production Bundle. Use --bundle only to explicitly override it with a local Bundle file.")
+		return exitcode.Success
+	case "config":
+		fmt.Fprintln(stdout, "Usage: agx config --root <directory> <list|show|compare|use|status|switch|establish|revise|supply> ...")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Validate and run the receipt-bound configs runtime with direct argv and controlled state under the installation root.")
 		return exitcode.Success
 	case "init":
 		fmt.Fprintln(stdout, "Usage: agx init --guided --root <directory>")

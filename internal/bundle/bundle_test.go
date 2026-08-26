@@ -357,6 +357,13 @@ func TestDecodeRejectsInvalidConfigsRuntime(t *testing.T) {
 			},
 			want: "AGX-BUNDLE-VALIDATION",
 		},
+		{
+			name: "release tag path traversal",
+			mutate: func(document map[string]any) {
+				syntheticConfigsRuntimeMap(document)["release_tag"] = "configs-v0/evil"
+			},
+			want: "AGX-BUNDLE-VALIDATION",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
