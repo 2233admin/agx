@@ -6,6 +6,8 @@ on:
       - ".goreleaser.yaml"
       - ".github/workflows/preview-package.yml"
       - "cmd/**"
+      - "internal/**"
+      - "assets/**"
       - "go.mod"
       - "go.sum"
   workflow_dispatch:
