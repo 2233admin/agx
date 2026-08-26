@@ -6,6 +6,7 @@ import { Database } from 'bun:sqlite';
 // where `import.meta.url` resolves into Bun's embedded virtual filesystem
 // and no `migrations/*.sql` file exists on disk next to the binary at all.
 import INIT_SQL from '../../../migrations/0001_init.sql' with { type: 'text' };
+import DEPLOYMENT_OPERATION_SQL from '../../../migrations/0004_deployment_operation.sql' with { type: 'text' };
 import SUPPLY_SQL from '../../../migrations/0003_supply.sql' with { type: 'text' };
 
 import { type Fact, unknown } from '../../domain/facts';
@@ -332,6 +333,7 @@ function isConcurrentMigrationRace(error: unknown): boolean {
 export function runConfigRevisionMigrations(db: Database): void {
   db.transaction(() => {
     db.exec(INIT_SQL);
+    db.exec(DEPLOYMENT_OPERATION_SQL);
   })();
 
   for (const statement of splitSqlStatements(SUPPLY_SQL)) {
