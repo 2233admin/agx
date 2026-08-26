@@ -705,14 +705,16 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 		return exitcode.Data
 	}
 	if values["--output"] == "json" {
+		configsRuntime := newConfigsRuntimeStatus(state)
 		result := struct {
-			Phase          string           `json:"phase"`
-			InstallationID string           `json:"installation_id,omitempty"`
-			BundleID       string           `json:"bundle_id,omitempty"`
-			Missing        []string         `json:"missing,omitempty"`
-			Modified       []string         `json:"modified,omitempty"`
-			Initialization activation.State `json:"initialization"`
-		}{Phase: state.Phase, Missing: state.Missing, Modified: state.Modified, Initialization: initialization}
+			Phase          string               `json:"phase"`
+			InstallationID string               `json:"installation_id,omitempty"`
+			BundleID       string               `json:"bundle_id,omitempty"`
+			Missing        []string             `json:"missing,omitempty"`
+			Modified       []string             `json:"modified,omitempty"`
+			ConfigsRuntime configsRuntimeStatus `json:"configs_runtime"`
+			Initialization activation.State     `json:"initialization"`
+		}{Phase: state.Phase, Missing: state.Missing, Modified: state.Modified, ConfigsRuntime: configsRuntime, Initialization: initialization}
 		if state.Receipt != nil {
 			result.InstallationID = state.Receipt.InstallationID
 			result.BundleID = state.Receipt.BundleID
@@ -724,6 +726,14 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 	fmt.Fprintf(stdout, "AGX installation phase: %s\n", state.Phase)
 	if state.Receipt != nil {
 		fmt.Fprintf(stdout, "Installation: %s\nBundle: %s\n", state.Receipt.InstallationID, state.Receipt.BundleID)
+	}
+	runtimeStatus := newConfigsRuntimeStatus(state)
+	fmt.Fprintf(stdout, "Configs runtime: %s\n", runtimeStatus.HumanState)
+	if runtimeStatus.Installed {
+		fmt.Fprintf(stdout, "Configs runtime version: %s\nSource: %s @ %s (commit %s)\nPlatform: %s/%s\nIntegrity: %s\nAsset SHA-256: %s\nContent SHA-256: %s\nPath: %s\n",
+			runtimeStatus.Version, runtimeStatus.SourceRepository, runtimeStatus.ReleaseTag, runtimeStatus.CommitSHA,
+			runtimeStatus.Platform, runtimeStatus.Architecture, runtimeStatus.Integrity,
+			runtimeStatus.AssetSHA256, runtimeStatus.ContentSHA256, runtimeStatus.Path)
 	}
 	for _, missing := range state.Missing {
 		fmt.Fprintf(stdout, "Missing owned file: %s\n", missing)
@@ -741,6 +751,62 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 	}
 	printStatusNext(stdout, values["--root"], state.Phase, state.Missing, state.Modified, initialization)
 	return exitcode.Success
+}
+
+type configsRuntimeStatus struct {
+	Installed        bool   `json:"installed"`
+	HumanState       string `json:"-"`
+	RuntimeID        string `json:"runtime_id,omitempty"`
+	Version          string `json:"runtime_version,omitempty"`
+	SourceRepository string `json:"source_repository,omitempty"`
+	ReleaseTag       string `json:"release_tag,omitempty"`
+	CommitSHA        string `json:"commit_sha,omitempty"`
+	ContractVersion  string `json:"contract_version,omitempty"`
+	Platform         string `json:"platform,omitempty"`
+	Architecture     string `json:"architecture,omitempty"`
+	AssetSHA256      string `json:"asset_sha256,omitempty"`
+	ContentSHA256    string `json:"content_sha256,omitempty"`
+	Path             string `json:"path,omitempty"`
+	Integrity        string `json:"integrity"`
+	NextAction       string `json:"next_action"`
+}
+
+func newConfigsRuntimeStatus(state installer.State) configsRuntimeStatus {
+	result := configsRuntimeStatus{HumanState: "unbound", Integrity: "unbound", NextAction: "apply a Bundle with configs_runtime"}
+	if state.Receipt == nil || state.Receipt.ConfigsRuntime == nil {
+		return result
+	}
+	binding := state.Receipt.ConfigsRuntime
+	result.Installed = true
+	result.HumanState = "installed"
+	result.RuntimeID = binding.RuntimeID
+	result.Version = binding.Version
+	result.SourceRepository = binding.SourceRepository
+	result.ReleaseTag = binding.ReleaseTag
+	result.CommitSHA = binding.CommitSHA
+	result.ContractVersion = binding.ContractVersion
+	result.Platform = binding.Platform
+	result.Architecture = binding.Architecture
+	result.AssetSHA256 = binding.AssetSHA256
+	result.ContentSHA256 = binding.ContentSHA256
+	result.Path = binding.Path
+	result.Integrity = "matched"
+	result.NextAction = "none"
+	for _, missing := range state.Missing {
+		if missing == binding.Path {
+			result.Integrity = "missing"
+			result.HumanState = "drifted"
+			result.NextAction = "re-apply the same Bundle"
+		}
+	}
+	for _, modified := range state.Modified {
+		if modified == binding.Path {
+			result.Integrity = "modified"
+			result.HumanState = "drifted"
+			result.NextAction = "restore the receipt-bound runtime"
+		}
+	}
+	return result
 }
 
 func printDeploymentVisibility(output io.Writer, state activation.State) {

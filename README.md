@@ -1,12 +1,12 @@
-# AGXCLI
+# Agent System X Project — AGXCLI
 
 <img src="assets/oc/agx-oc-github-banner-16x9.png" width="100%" alt="AGXCLI 黑白 Macintosh CRT 猫娘协调员，置于部署与验收诊断界面中。">
 
 AGX 的猫娘协调员对应安装、计划、验收和回执；她是项目身份，不代表目标环境已通过 `verified`。其余画幅与 GitHub 文档落点见 [OC kit](assets/oc/README.md)。
 
-AGXCLI (`agx`) 是小型部署与生命周期 CLI：它安装固定版本的 `agent-plugins`，再从内置的版本化模板创建部署专属的 `agent-control`、`agent-contracts` GitHub 仓库及关联 Project，激活 Codex/Claude，并用本地回执管理恢复、状态、诊断和安全卸载。
+Agent System X Project 的 `agx` 是小型部署与生命周期 CLI：它安装固定版本的 `agent-plugins`，再从内置的版本化模板创建部署专属的 `agent-control`、`agent-contracts` GitHub 仓库及关联 Project，激活 Codex/Claude，并用本地回执管理恢复、状态、诊断和安全卸载。可选的 `configs` runtime 由同一 Bundle 绑定，并通过 `agx config` 直接转发。
 
-> 当前状态：本地 Bundle 部署闭环和 Codex/Claude 初始化阶段已实现。Multica 编排不属于当前发布阻塞项。
+> 当前状态：本地 Bundle 部署闭环、Codex/Claude 初始化阶段和受管 `configs` 生命周期已实现。上游 `agent-systemX` 尚未发布可验证的 `configs-v*` Release，因此生产 manifest 暂不包含该 runtime；synthetic fixture 仅用于测试。Multica 编排不属于当前发布阻塞项。
 
 ## 目标体验
 
@@ -14,6 +14,7 @@ AGXCLI (`agx`) 是小型部署与生命周期 CLI：它安装固定版本的 `ag
 
 ```text
 agx apply --root D:\agx\installations\default
+agx config --root D:\agx\installations\default list
 agx init --guided --root D:\agx\installations\default
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1
 agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile full --evidence-profile github-delivery/v1 --apply
@@ -76,12 +77,15 @@ go run ./cmd/agx init --help
 
 ## 本地 Bundle 部署
 
-正式二进制内置经过 Schema 校验、版本固定的 production Bundle manifest。普通用户不需要另外下载或寻找 `bundle.json`；`apply` 会按内置 manifest 下载唯一的 `agent-plugins` GitHub Release 资产、分别校验压缩资产和解压内容的 SHA-256、安全解包并写入非敏感回执。
+正式二进制内置经过 Schema 校验、版本固定的 production Bundle manifest。普通用户不需要另外下载或寻找 `bundle.json`；`apply` 会按内置 manifest 下载唯一的 `agent-plugins` GitHub Release 资产、分别校验压缩资产和解压内容的 SHA-256、安全解包并写入非敏感回执。Bundle 也支持可选的 `configs_runtime` 直接可执行文件描述，安装后可用 `agx config --root <directory> list` 调用，并由 `status` 显示绑定与完整性。
+
+当前没有可验证的 `agent-systemX` `configs-v*` Release，生产 manifest 保持不变且不伪造 runtime tag、URL、commit 或 digest。要测试 runtime 安装和 `agx config`，使用明确指定的 synthetic development Bundle。
 
 首次 `apply` 的 `--root` 必须尚不存在；AGX 会原子创建它。不要预先创建空目录，因为无法证明归属的既有目录会被当作冲突而保留。
 
 ```powershell
 go run ./cmd/agx apply --root D:\agx\installations\default
+go run ./cmd/agx config --root D:\agx\installations\default list
 go run ./cmd/agx init --guided --root D:\agx\installations\default
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --evidence-profile github-delivery/v1
 go run ./cmd/agx init --root D:\agx\installations\default --github-owner octo-lab --provider codex --profile core --evidence-profile github-delivery/v1 --apply
