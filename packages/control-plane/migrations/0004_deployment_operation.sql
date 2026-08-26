@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS deployment_status (
     'inconclusive', 'failed', 'verified'
   )),
   last_operation_id TEXT,
+  last_operation_reason TEXT,
+  last_operation_observed_at TEXT,
   reason TEXT,
   next_action TEXT NOT NULL,
   created_at TEXT NOT NULL,

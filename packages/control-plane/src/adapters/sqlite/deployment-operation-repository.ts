@@ -10,6 +10,8 @@ import { runConfigRevisionMigrations } from './repository';
 interface DeploymentStatusRow {
   deployment_id: string;
   phase: string;
+  last_operation_reason: string | null;
+  last_operation_observed_at: string | null;
   last_operation_id: string | null;
   reason: string | null;
   next_action: string;
@@ -29,9 +31,9 @@ interface OperationStatusRow {
 
 const DEPLOYMENT_PHASES: readonly DeploymentPhase[] = ['planned', 'applying', 'configured', 'awaiting', 'drifted', 'inconclusive', 'failed', 'verified'];
 const OPERATION_PHASES: readonly OperationPhase[] = ['prepared', 'applying', 'observing', 'succeeded', 'degraded', 'failed', 'cancelled', 'inconclusive', 'needs-resume', 'needs-manual-cleanup', 'verified'];
+const DEPLOYMENT_COLUMNS = 'deployment_id, phase, last_operation_id, last_operation_reason, last_operation_observed_at, reason, next_action, created_at, updated_at';
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_SUMMARY = /^[^\u0000-\u001f\u007f]{0,256}$/;
-const DEPLOYMENT_COLUMNS = 'deployment_id, phase, last_operation_id, reason, next_action, created_at, updated_at';
 const OPERATION_COLUMNS = 'operation_id, deployment_id, phase, reason, next_action, created_at, updated_at';
 
 type Clock = () => string;
@@ -62,16 +64,21 @@ function validateOperationStatus(status: OperationStatus): void {
     throw new Error('invalid operation status');
   }
 }
-
 function mapDeployment(row: DeploymentStatusRow): DeploymentStatus {
-  if (!validIdentifier(row.deployment_id) || !validPhase(row.phase, DEPLOYMENT_PHASES) || !validSummary(row.reason) || !SAFE_SUMMARY.test(row.next_action) || !row.created_at || !row.updated_at) {
+  if (!validIdentifier(row.deployment_id) || !validPhase(row.phase, DEPLOYMENT_PHASES) ||
+      !validSummary(row.reason) || !SAFE_SUMMARY.test(row.next_action) || row.next_action.trim() === '' ||
+      !row.created_at || !row.updated_at) {
     throw new Error('invalid deployment status row');
   }
   if (row.last_operation_id !== null && !validIdentifier(row.last_operation_id)) throw new Error('invalid deployment status row');
+  if (row.last_operation_id !== null && (row.last_operation_reason !== null || row.last_operation_observed_at !== null)) throw new Error('invalid deployment status row');
+  if (!validSummary(row.last_operation_reason) || (row.last_operation_observed_at !== null && row.last_operation_observed_at.trim() === '')) throw new Error('invalid deployment status row');
   return {
     deploymentId: row.deployment_id,
     phase: row.phase,
-    lastOperationId: row.last_operation_id === null ? unknown('not-recorded', row.updated_at) : known(row.last_operation_id),
+    lastOperationId: row.last_operation_id === null
+      ? unknown(row.last_operation_reason ?? 'not-recorded', row.last_operation_observed_at ?? row.updated_at)
+      : known(row.last_operation_id),
     reason: row.reason,
     nextAction: row.next_action,
   };
@@ -97,23 +104,28 @@ export class SqliteDeploymentOperationRepository {
   constructor(dbPath: string, now: Clock = () => new Date().toISOString()) {
     this.db = openSqliteDatabase(dbPath);
     runConfigRevisionMigrations(this.db);
-    this.db.transaction(() => this.db.exec(STATUS_SQL))();
+    this.db.transaction(() => {
+      this.db.exec(STATUS_SQL);
+    })();
     this.now = now;
   }
-
   async saveDeployment(status: DeploymentStatus): Promise<void> {
     validateDeploymentStatus(status);
     const lastOperationId = status.lastOperationId.kind === 'known' ? status.lastOperationId.value : null;
+    const lastOperationReason = status.lastOperationId.kind === 'unknown' ? status.lastOperationId.reason : null;
+    const lastOperationObservedAt = status.lastOperationId.kind === 'unknown' ? status.lastOperationId.observedAt : null;
     const timestamp = this.now();
-    this.db.query<unknown, [string, string, string | null, string | null, string, string, string]>(
-      `INSERT INTO deployment_status (${DEPLOYMENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+    this.db.query<unknown, [string, string, string | null, string | null, string | null, string | null, string, string, string]>(
+      `INSERT INTO deployment_status (${DEPLOYMENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(deployment_id) DO UPDATE SET
          phase = excluded.phase,
          last_operation_id = excluded.last_operation_id,
+         last_operation_reason = excluded.last_operation_reason,
+         last_operation_observed_at = excluded.last_operation_observed_at,
          reason = excluded.reason,
          next_action = excluded.next_action,
          updated_at = excluded.updated_at`,
-    ).run(status.deploymentId, status.phase, lastOperationId, status.reason, status.nextAction, timestamp, timestamp);
+    ).run(status.deploymentId, status.phase, lastOperationId, lastOperationReason, lastOperationObservedAt, status.reason, status.nextAction, timestamp, timestamp);
   }
 
   async findDeployment(deploymentId: string): Promise<DeploymentStatus | null> {

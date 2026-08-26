@@ -48,6 +48,16 @@ describe('SqliteDeploymentOperationRepository', () => {
     repository.close();
   });
 
+  test('preserves unknown last-operation Fact metadata on round-trip', async () => {
+    const repository = new SqliteDeploymentOperationRepository(':memory:');
+    const status: DeploymentStatus = {
+      ...deployment('dep-unknown'),
+      lastOperationId: unknown('operation-not-recorded', '2026-08-27T01:02:03.000Z'),
+    };
+    await repository.saveDeployment(status);
+    expect(await repository.findDeployment('dep-unknown')).toEqual(status);
+    repository.close();
+  });
   test('rejects empty ids, unknown phases, and unknown last-operation facts', async () => {
     const repository = new SqliteDeploymentOperationRepository(':memory:');
     await expect(repository.saveDeployment({ ...deployment(''), deploymentId: '' })).rejects.toThrow('invalid deployment status');
