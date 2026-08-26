@@ -1,5 +1,6 @@
 import { type Database } from 'bun:sqlite';
 import STATUS_SQL from '../../../migrations/0004_deployment_operation.sql' with { type: 'text' };
+import FACT_SQL from '../../../migrations/0005_deployment_operation_facts.sql' with { type: 'text' };
 
 import { unknown, known } from '../../domain/facts';
 import type { DeploymentPhase, DeploymentStatus } from '../../domain/deployment';
@@ -97,6 +98,16 @@ function mapOperation(row: OperationStatusRow): OperationStatus {
   };
 }
 
+function runFactMigration(db: Database): void {
+  for (const statement of FACT_SQL.split(';').map((value) => value.trim()).filter((value) => value.length > 0)) {
+    const match = /ALTER TABLE\s+deployment_status\s+ADD COLUMN\s+(\w+)/i.exec(statement);
+    const column = match?.[1];
+    if (column === undefined) continue;
+    const present = db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM pragma_table_info('deployment_status') WHERE name = ?`).get(column)?.count ?? 0;
+    if (present === 0) db.exec(statement);
+  }
+}
+
 export class SqliteDeploymentOperationRepository {
   private readonly db: Database;
   private readonly now: Clock;
@@ -106,6 +117,7 @@ export class SqliteDeploymentOperationRepository {
     runConfigRevisionMigrations(this.db);
     this.db.transaction(() => {
       this.db.exec(STATUS_SQL);
+      runFactMigration(this.db);
     })();
     this.now = now;
   }

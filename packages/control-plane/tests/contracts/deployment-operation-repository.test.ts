@@ -1,8 +1,12 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { known, unknown } from '../../src/domain/facts';
 import type { DeploymentStatus } from '../../src/domain/deployment';
 import type { OperationStatus } from '../../src/domain/operation';
 import { SqliteDeploymentOperationRepository } from '../../src/adapters/sqlite/deployment-operation-repository';
+import { openSqliteDatabase } from '../../src/adapters/sqlite/connection';
 
 const deployment = (deploymentId: string): DeploymentStatus => ({
   deploymentId,
@@ -57,6 +61,49 @@ describe('SqliteDeploymentOperationRepository', () => {
     await repository.saveDeployment(status);
     expect(await repository.findDeployment('dep-unknown')).toEqual(status);
     repository.close();
+  });
+  test('upgrades an existing 0004 database before preserving Fact metadata', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'configs-status-'));
+    const dbPath = join(directory, 'state.sqlite3');
+    const db = openSqliteDatabase(dbPath);
+    db.exec(`CREATE TABLE deployment_status (
+      deployment_id TEXT PRIMARY KEY,
+      phase TEXT NOT NULL CHECK (phase IN ('planned','applying','configured','awaiting','drifted','inconclusive','failed','verified')),
+      last_operation_id TEXT,
+      reason TEXT,
+      next_action TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE operation_status (
+      operation_id TEXT PRIMARY KEY,
+      deployment_id TEXT NOT NULL REFERENCES deployment_status (deployment_id),
+      phase TEXT NOT NULL CHECK (phase IN ('prepared','applying','observing','succeeded','degraded','failed','cancelled','inconclusive','needs-resume','needs-manual-cleanup','verified')),
+      reason TEXT,
+      next_action TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;`);
+    db.close();
+
+    const repository = new SqliteDeploymentOperationRepository(dbPath);
+    const status: DeploymentStatus = { ...deployment('dep-upgrade'), lastOperationId: unknown('legacy-row', '2026-08-27T03:04:05.000Z') };
+    await repository.saveDeployment(status);
+    expect(await repository.findDeployment(status.deploymentId)).toEqual(status);
+    repository.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  test('reopening a migrated database is idempotent', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'configs-status-'));
+    const dbPath = join(directory, 'state.sqlite3');
+    const first = new SqliteDeploymentOperationRepository(dbPath);
+    await first.saveDeployment(deployment('dep-reopen'));
+    first.close();
+    const second = new SqliteDeploymentOperationRepository(dbPath);
+    expect(await second.findDeployment('dep-reopen')).toEqual(deployment('dep-reopen'));
+    second.close();
+    rmSync(directory, { recursive: true, force: true });
   });
   test('rejects empty ids, unknown phases, and unknown last-operation facts', async () => {
     const repository = new SqliteDeploymentOperationRepository(':memory:');
