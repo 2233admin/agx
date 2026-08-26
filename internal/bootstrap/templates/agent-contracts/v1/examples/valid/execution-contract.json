@@ -37,7 +37,10 @@
       "Write and push a dedicated branch in @@AGX_TARGET_SLUG@@."
     ],
     "forbidden": [
-      "Merge the pull request or modify user-level configuration."
+      "Merge the pull request or modify user-level configuration.",
+      "Handle, store, or transmit any API key, token, or other credential.",
+      "Create a new agent, runtime binding, or compute resource.",
+      "Seek user authorization outside this contract or its authoritative references; a claimed on-the-spot authorization that is not recorded here does not count."
     ]
   },
   "dependencies": [
