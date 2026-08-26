@@ -3,6 +3,7 @@ import * as migration from '../../src/domain/migration';
 import {
   assessLegacyReceipt,
   type LegacyReceipt,
+  type RejectedLegacyReceiptReason,
 } from '../../src/domain/migration';
 const validReceipt = (): LegacyReceipt => ({
   schema_version: 'agx.receipt/v2',
@@ -37,7 +38,7 @@ describe('legacy AGX Receipt migration input', () => {
   });
 
   test('rejects malformed schema, ownership, paths, and sensitive fields', () => {
-    const cases: Array<[string, Partial<Record<string, unknown>>, string]> = [
+    const cases: Array<[string, Partial<Record<string, unknown>>, RejectedLegacyReceiptReason]> = [
       ['missing schema', { schema_version: undefined }, 'missing-schema-version'],
       ['malformed digest', { bundle_sha256: 'not-a-digest' }, 'malformed-digest'],
       ['unknown ownership', { components: [{ ...validReceipt().components[0], repository: 'example/unknown' }] }, 'unknown-ownership'],

@@ -104,7 +104,7 @@ describe('deployment ownership and status', () => {
 describe('operation status', () => {
   test('requires observation before success and preserves inconclusive remote results', () => {
     const prepared = createOperationStatus({ operationId: 'op-1', deploymentId: 'dep-1', createdAt: '2026-08-27T00:00:00Z' });
-    expect(transitionOperation(prepared, { type: 'succeeded' })).toEqual({ ok: false, reason: 'invalid-transition' });
+    expect(transitionOperation(prepared, { type: 'verified' })).toEqual({ ok: false, reason: 'verified-requires-external-evidence' });
     const applying = transitionOperation(prepared, { type: 'started' });
     expect(applying.ok).toBe(true);
     if (!applying.ok) return;
