@@ -120,6 +120,7 @@ export interface DeploymentStatus {
   readonly deploymentId: string;
   readonly phase: DeploymentPhase;
   readonly lastOperationId: Fact<string>;
+  readonly reason: string | null;
   readonly nextAction: string;
 }
 
@@ -133,6 +134,7 @@ export function createDeploymentStatus(params: CreateDeploymentStatusParams): De
     deploymentId: params.deploymentId,
     phase: 'planned',
     lastOperationId: unknown('no-operation-recorded', params.createdAt),
+    reason: null,
     nextAction: 'prepare-plan',
   };
 }
@@ -153,7 +155,7 @@ export function transitionDeployment(
     return { ok: true, status: { ...status, phase: event.outcome, nextAction } };
   }
   if (event.type === 'remote-uncertain' && status.phase === 'applying') {
-    return { ok: true, status: { ...status, phase: 'inconclusive', nextAction: 'observe-remote-state' } };
+    return { ok: true, status: { ...status, phase: 'inconclusive', reason: event.reason, nextAction: 'observe-remote-state' } };
   }
   if (event.type === 'resume-requested' && status.phase === 'inconclusive') {
     return { ok: true, status: { ...status, phase: 'applying', nextAction: 'observe-resources' } };
