@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { known, unknown } from '../../src/domain/facts';
 import type { DeploymentStatus } from '../../src/domain/deployment';
 import type { OperationStatus } from '../../src/domain/operation';
-import { SqliteDeploymentOperationRepository } from '../../src/adapters/sqlite/deployment-operation-repository';
+import { SqliteDeploymentOperationRepository, runFactMigration } from '../../src/adapters/sqlite/deployment-operation-repository';
 import { openSqliteDatabase } from '../../src/adapters/sqlite/connection';
 
 const deployment = (deploymentId: string): DeploymentStatus => ({
@@ -111,5 +111,17 @@ describe('SqliteDeploymentOperationRepository', () => {
     await expect(repository.saveDeployment({ ...deployment('dep-1'), phase: 'not-a-phase' as DeploymentStatus['phase'] })).rejects.toThrow('invalid deployment status');
     await expect(repository.saveDeployment({ ...deployment('dep-1'), lastOperationId: unknown('not-recorded', 'now') })).resolves.toBeUndefined();
     repository.close();
+  });
+  test('tolerates a raced duplicate-column migration after rechecking schema', () => {
+    let checks = 0;
+    const fakeDatabase = {
+      exec: (statement: string) => {
+        if (statement.includes('last_operation_reason')) throw new Error('duplicate column name: last_operation_reason');
+      },
+      query: () => ({
+        get: () => ({ count: ++checks > 1 ? 1 : 0 }),
+      }),
+    };
+    expect(() => runFactMigration(fakeDatabase as never)).not.toThrow();
   });
 });

@@ -98,13 +98,27 @@ function mapOperation(row: OperationStatusRow): OperationStatus {
   };
 }
 
-function runFactMigration(db: Database): void {
+function columnExists(db: Database, column: string): boolean {
+  return (db.query<{ count: number }, [string]>(
+    `SELECT COUNT(*) AS count FROM pragma_table_info('deployment_status') WHERE name = ?`,
+  ).get(column)?.count ?? 0) > 0;
+}
+
+function isConcurrentMigrationRace(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return code === 'SQLITE_BUSY' || message.includes('database is locked') || message.includes('duplicate column name');
+}
+
+export function runFactMigration(db: Database): void {
   for (const statement of FACT_SQL.split(';').map((value) => value.trim()).filter((value) => value.length > 0)) {
-    const match = /ALTER TABLE\s+deployment_status\s+ADD COLUMN\s+(\w+)/i.exec(statement);
-    const column = match?.[1];
-    if (column === undefined) continue;
-    const present = db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM pragma_table_info('deployment_status') WHERE name = ?`).get(column)?.count ?? 0;
-    if (present === 0) db.exec(statement);
+    const column = /ALTER TABLE\s+deployment_status\s+ADD COLUMN\s+(\w+)/i.exec(statement)?.[1];
+    if (column === undefined || columnExists(db, column)) continue;
+    try {
+      db.exec(statement);
+    } catch (error) {
+      if (!isConcurrentMigrationRace(error) || !columnExists(db, column)) throw error;
+    }
   }
 }
 
