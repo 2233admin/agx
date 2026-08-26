@@ -72,7 +72,28 @@ go run ./cmd/agx version
 go run ./cmd/agx help
 go run ./cmd/agx mascot
 go run ./cmd/agx init --help
+go run ./cmd/agx relay --help
 ```
+
+## CC Switch API Relay
+
+AGX can run a small LAN-facing OpenAI-compatible Relay. It forwards `/v1/models`,
+`/v1/adapters` (including model probes), `/v1/candidates`, `/v1/usage`, and
+`/v1/chat/completions` to a configured upstream such as the Windows Go bridge;
+it does not schedule Tasks, manage Multica, or store provider API keys.
+
+```text
+AGX_RELAY_LISTEN_ADDR=0.0.0.0:15724
+AGX_RELAY_UPSTREAM_URL=http://<windows-bridge>:15724
+AGX_RELAY_TOKEN=<set outside AGX state>
+agx relay run
+agx relay status --url http://127.0.0.1:15724/health
+```
+
+The release archive includes `assets/relay/agx-api-relay.service` and
+`assets/relay/agx-api-relay.env.example` for a headless systemd installation.
+The relay publishes Linux `arm64` artifacts for AGX-class devices; build output
+does not by itself constitute live hardware verification.
 
 ## 本地 Bundle 部署
 
@@ -161,9 +182,9 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath .\agx-preview
 输出的是该 preview 构建的版本；它只证明二进制可下载、校验与运行，**不**证明部署或
 `verified` 状态。
 
-正式版本由 `v*` 标签触发，发布 Windows amd64 ZIP、Linux amd64 tar.gz 与 `checksums.txt` 到 GitHub Releases；二进制版本来自标签。
+正式版本由 `v*` 标签触发，发布 Windows amd64 ZIP、Linux amd64 与 Linux arm64 tar.gz，以及 `checksums.txt` 到 GitHub Releases；二进制版本来自标签。
 
-认证发布平台暂定为 Windows 11 x64 与 Ubuntu 24.04 x64。其他平台在取得端到端证据前只能标记为 preview。
+认证发布平台暂定为 Windows 11 x64 与 Ubuntu 24.04 x64。Linux arm64 现在有构建产物，但在取得 AGX 端到端证据前只能标记为 preview。
 
 ## 上游关系
 

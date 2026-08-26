@@ -19,10 +19,36 @@ func TestRunShowsStableGlobalHelp(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("Run(help) stderr = %q, want empty", stderr.String())
 	}
-	for _, command := range []string{"plan", "apply", "init", "status", "diagnose", "uninstall", "version"} {
+	for _, command := range []string{"plan", "apply", "init", "status", "diagnose", "uninstall", "relay", "version"} {
 		if !strings.Contains(stdout.String(), command) {
 			t.Errorf("global help does not contain %q", command)
 		}
+	}
+}
+
+func TestRunShowsRelayHelp(t *testing.T) {
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+
+	code := cli.Run([]string{"relay", "--help"}, "0.0.0-test", stdout, stderr)
+	if code != exitcode.Success || stderr.Len() != 0 {
+		t.Fatalf("Run(relay --help) code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, text := range []string{"agx relay <run|status>", "does not schedule Tasks", "store API keys"} {
+		if !strings.Contains(stdout.String(), text) {
+			t.Fatalf("relay help does not contain %q: %q", text, stdout.String())
+		}
+	}
+}
+
+func TestRunShowsRelayRunHelpWithoutExposingTokenFlags(t *testing.T) {
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+
+	code := cli.Run([]string{"relay", "run", "--help"}, "0.0.0-test", stdout, stderr)
+	if code != exitcode.Success || stderr.Len() != 0 {
+		t.Fatalf("Run(relay run --help) code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "--token") || !strings.Contains(stdout.String(), "AGX_RELAY_TOKEN") {
+		t.Fatalf("relay run help has unsafe token interface: %q", stdout.String())
 	}
 }
 

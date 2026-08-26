@@ -1,0 +1,19 @@
+[Unit]
+Description=AGX API Relay for CC Switch upstream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=-/etc/agx-api-relay.env
+ExecStart=/usr/local/bin/agx relay run
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

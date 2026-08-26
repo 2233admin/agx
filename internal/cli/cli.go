@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/2233admin/agx/internal/activation"
@@ -18,6 +22,7 @@ import (
 	installer "github.com/2233admin/agx/internal/install"
 	"github.com/2233admin/agx/internal/project"
 	"github.com/2233admin/agx/internal/provider"
+	"github.com/2233admin/agx/internal/relay"
 	"github.com/2233admin/agx/internal/repository"
 	"github.com/2233admin/agx/internal/smoke"
 )
@@ -91,6 +96,8 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 		return runStatus(args[1:], stdout, stderr, dependencies)
 	case "uninstall":
 		return runUninstall(args[1:], stdout, stderr)
+	case "relay":
+		return runRelay(args[1:], stdout, stderr)
 	case "task", "tasks":
 		fmt.Fprintln(stderr, "AGX-UNSUPPORTED-TASK: AGX does not create, assign, or schedule daily Tasks")
 		return exitcode.Unsupported
@@ -108,6 +115,120 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 
 	fmt.Fprintf(stderr, "AGX-INVALID-INVOCATION: unknown command %q\n", commandName)
 	return exitcode.Software
+}
+
+func runRelay(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || isHelp(args[0]) {
+		printRelayUsage(stdout)
+		return exitcode.Success
+	}
+
+	switch args[0] {
+	case "run":
+		if len(args) > 1 && isHelp(args[1]) {
+			printRelayRunUsage(stdout)
+			return exitcode.Success
+		}
+		values, err := parseNamedOptions(args[1:], map[string]bool{"--listen": true, "--upstream": true})
+		if err != nil {
+			fmt.Fprintf(stderr, "AGX-USAGE-RELAY: %v\n", err)
+			printRelayRunUsage(stderr)
+			return exitcode.Usage
+		}
+		config := relay.ConfigFromEnv()
+		if values["--listen"] != "" {
+			config.ListenAddr = values["--listen"]
+		}
+		if values["--upstream"] != "" {
+			config.UpstreamURL = values["--upstream"]
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := relay.Run(ctx, config, log.New(stderr, "agx relay: ", log.LstdFlags)); err != nil {
+			fmt.Fprintf(stderr, "AGX-RELAY-RUN: %v\n", err)
+			return exitcode.Software
+		}
+		return exitcode.Success
+	case "status":
+		if len(args) > 1 && isHelp(args[1]) {
+			printRelayStatusUsage(stdout)
+			return exitcode.Success
+		}
+		values, err := parseNamedOptions(args[1:], map[string]bool{"--url": true, "--output": true})
+		if err != nil || (values["--output"] != "" && values["--output"] != "human" && values["--output"] != "json") {
+			if err != nil {
+				fmt.Fprintf(stderr, "AGX-USAGE-RELAY-STATUS: %v\n", err)
+			}
+			printRelayStatusUsage(stderr)
+			return exitcode.Usage
+		}
+		statusURL := strings.TrimSpace(values["--url"])
+		if statusURL == "" {
+			statusURL = strings.TrimSpace(os.Getenv("AGX_RELAY_STATUS_URL"))
+		}
+		if statusURL == "" {
+			statusURL = relay.DefaultHealthURL
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		if requestErr != nil {
+			fmt.Fprintf(stderr, "AGX-RELAY-STATUS: invalid URL: %v\n", requestErr)
+			return exitcode.Usage
+		}
+		response, requestErr := http.DefaultClient.Do(request)
+		if requestErr != nil {
+			fmt.Fprintf(stderr, "AGX-RELAY-STATUS: %v\n", requestErr)
+			return exitcode.Data
+		}
+		defer response.Body.Close()
+		var payload map[string]any
+		if decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); decodeErr != nil {
+			fmt.Fprintf(stderr, "AGX-RELAY-STATUS: invalid health response: %v\n", decodeErr)
+			return exitcode.Data
+		}
+		if response.StatusCode/100 != 2 {
+			fmt.Fprintf(stderr, "AGX-RELAY-STATUS: upstream returned HTTP %d\n", response.StatusCode)
+			return exitcode.Data
+		}
+		if values["--output"] == "json" {
+			data, marshalErr := json.Marshal(payload)
+			if marshalErr != nil {
+				fmt.Fprintf(stderr, "AGX-RELAY-STATUS: cannot encode response: %v\n", marshalErr)
+				return exitcode.Software
+			}
+			fmt.Fprintln(stdout, string(data))
+			return exitcode.Success
+		}
+		fmt.Fprintf(stdout, "AGX API Relay: %v\n", payload["status"])
+		fmt.Fprintf(stdout, "Authentication required: %v\n", payload["auth_required"])
+		return exitcode.Success
+	default:
+		fmt.Fprintf(stderr, "AGX-USAGE-RELAY: unknown subcommand %q\n", args[0])
+		printRelayUsage(stderr)
+		return exitcode.Usage
+	}
+}
+
+func printRelayUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: agx relay <run|status>")
+	fmt.Fprintln(output, "")
+	fmt.Fprintln(output, "Run or inspect the LAN-facing CC Switch API Relay.")
+	fmt.Fprintln(output, "The Relay does not schedule Tasks, manage Multica, or store API keys.")
+}
+
+func printRelayRunUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: agx relay run [--listen <address>] [--upstream <http(s) URL>]")
+	fmt.Fprintln(output, "")
+	fmt.Fprintln(output, "Start the OpenAI-compatible API Relay.")
+	fmt.Fprintln(output, "Environment: AGX_RELAY_TOKEN, AGX_RELAY_UPSTREAM_TOKEN, AGX_RELAY_LISTEN_ADDR, AGX_RELAY_UPSTREAM_URL")
+	fmt.Fprintln(output, "Tokens are accepted only from the environment, never command-line arguments.")
+}
+
+func printRelayStatusUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: agx relay status [--url <health URL>] [--output human|json]")
+	fmt.Fprintln(output, "")
+	fmt.Fprintln(output, "Read the Relay health endpoint without changing state.")
 }
 
 func runInit(args []string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
@@ -1055,6 +1176,8 @@ func printGlobalHelp(stdout io.Writer) {
 	for _, command := range lifecycleCommands {
 		fmt.Fprintf(stdout, "  %-15s %s\n", command.name, command.description)
 	}
+	fmt.Fprintln(stdout, "Service commands:")
+	fmt.Fprintln(stdout, "  relay            Run or inspect the LAN-facing CC Switch API Relay")
 	fmt.Fprintln(stdout, "")
 	fmt.Fprintln(stdout, "AGX does not create, assign, or schedule daily Tasks.")
 }
@@ -1123,6 +1246,9 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Usage: agx uninstall --root <directory> [--output human|json]")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Reverse AGX-owned provider activation, then remove AGX-owned files while retaining remote repositories, the GitHub Project, and unknown files.")
+		return exitcode.Success
+	case "relay":
+		printRelayUsage(stdout)
 		return exitcode.Success
 	}
 	if command, ok := lookupLifecycleCommand(commandName); ok {
