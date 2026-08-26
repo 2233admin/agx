@@ -29,7 +29,7 @@ const (
 	TemplateSetVersion = "bootstrap-20260819.1"
 	// TemplateSetContentSHA256 is the canonical digest of the embedded,
 	// unrendered template files, including their deployment placeholders.
-	TemplateSetContentSHA256 = "8e647cd52a781e32e7adaf9af2b5c0b22e4129a3c8c2bc5d240006e804696f48"
+	TemplateSetContentSHA256 = "66b4db310377e9dfb173b3e39f4bc54665313ad2c4f6ee80602e941ea453e005"
 	// AgentControlValidationWorkflowSHA256 binds first-use validation evidence
 	// to the exact workflow shipped in the agent-control template.
 	AgentControlValidationWorkflowSHA256 = "ee7c4c2f5c54f1d3670ed9016659463bf885d75a88a64a6549e3226e4e016870"

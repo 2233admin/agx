@@ -46,6 +46,7 @@ type fakeRunner struct {
 	landOnCreate             bool
 	createWithIssuesDisabled bool
 	enableIssuesNoEffect     bool
+	enableIssuesErr          error
 	createdRepository        *fakeRepository
 	createErr                error
 	gitErrCommand            string
@@ -154,7 +155,7 @@ func (runner *fakeRunner) Run(_ context.Context, dir, name string, args ...strin
 			repository.issues = true
 			runner.repositories[key] = repository
 		}
-		return nil, nil
+		return nil, runner.enableIssuesErr
 	}
 	if name == "git" {
 		command := gitCommand(args)
@@ -379,6 +380,23 @@ func TestCreateFailsClosedWhenIssuesRemainDisabled(t *testing.T) {
 	}
 	if receipt.Created || receipt.Verification != VerificationUncertain {
 		t.Fatalf("receipt = %+v, want uncertain recovery evidence", receipt)
+	}
+}
+
+func TestCreateReturnsReceiptAndErrorWhenEnableIssuesReportsErrorButPersists(t *testing.T) {
+	runner := newFakeRunner()
+	runner.createWithIssuesDisabled = true
+	runner.enableIssuesErr = errors.New("connection reset")
+
+	receipt, err := Create(context.Background(), testTarget("agent-control"), runner)
+	if err == nil || !strings.Contains(err.Error(), "AGX-REPOSITORY-ISSUES-PARTIAL") {
+		t.Fatalf("Create() err = %v, want Issues partial-success failure", err)
+	}
+	if !receipt.Created || receipt.Verification != VerificationReadback {
+		t.Fatalf("receipt = %+v, want readback-verified creation despite the edit error", receipt)
+	}
+	if !runner.repositories["zaurakworks/agent-control"].issues {
+		t.Fatal("repository Issues remained disabled")
 	}
 }
 

@@ -24,7 +24,7 @@
 - `zaurakworks/agent-system` @ `b0e6e0e8244ef518f671e2326745cd67c6d2307a`（改名后仍可寻址的历史蒸馏快照，不是 untagged main）；
 - `zaurakworks/agent-contracts` @ `5bb8ea0b54f063b0758c294b73ea270ba69322d2`。
 
-这些 reference 只解释模板来源与取舍，不把部署仓 `agent-control` / `agent-contracts` 或 Source 整树变成安装组件。模板集版本是 `bootstrap-20260819.1`，未渲染 embedded source manifest 的固定 SHA-256 是 `8e647cd52a781e32e7adaf9af2b5c0b22e4129a3c8c2bc5d240006e804696f48`；部署参数产生的 rendered tree digest 由初始化回执另行记录。
+这些 reference 只解释模板来源与取舍，不把部署仓 `agent-control` / `agent-contracts` 或 Source 整树变成安装组件。模板集版本是 `bootstrap-20260819.1`，未渲染 embedded source manifest 的固定 SHA-256 是 `66b4db310377e9dfb173b3e39f4bc54665313ad2c4f6ee80602e941ea453e005`；部署参数产生的 rendered tree digest 由初始化回执另行记录。
 
 ## 安装回执
 

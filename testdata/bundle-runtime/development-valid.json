@@ -19,7 +19,7 @@
   },
   "templates": {
     "version": "bootstrap-20260819.1",
-    "content_sha256": "8e647cd52a781e32e7adaf9af2b5c0b22e4129a3c8c2bc5d240006e804696f48",
+    "content_sha256": "66b4db310377e9dfb173b3e39f4bc54665313ad2c4f6ee80602e941ea453e005",
     "references": {
       "agent_plugins": {"repository": "zaurakworks/agent-plugins", "commit_sha": "ad07742ade0f0039ed1df1a9262e8f087117fca0"},
       "agent_control": {"repository": "zaurakworks/agent-system", "commit_sha": "b0e6e0e8244ef518f671e2326745cd67c6d2307a"},
