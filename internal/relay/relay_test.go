@@ -41,6 +41,14 @@ func TestHandlerAuthAndModelsProxy(t *testing.T) {
 	if authorized.Code != http.StatusOK {
 		t.Fatalf("authorized status = %d", authorized.Code)
 	}
+
+	usage := httptest.NewRecorder()
+	usageRequest := httptest.NewRequest(http.MethodGet, "/v1/usage", nil)
+	usageRequest.Header.Set("Authorization", "Bearer relay-token")
+	handler.ServeHTTP(usage, usageRequest)
+	if usage.Code != http.StatusOK {
+		t.Fatalf("usage status = %d", usage.Code)
+	}
 }
 
 func TestHandlerProxiesStreamingChat(t *testing.T) {
@@ -80,6 +88,49 @@ func TestHandlerProxiesStreamingChat(t *testing.T) {
 	}
 	if string(body) != "data: first\n\ndata: [DONE]\n\n" {
 		t.Fatalf("streaming chat body = %q", string(body))
+	}
+}
+
+func TestHandlerProxiesAdapterCatalogAndProbe(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/adapters" && request.Method == http.MethodGet {
+			fmt.Fprint(writer, `{"object":"list","data":[{"id":"claude:test"}]}`)
+			return
+		}
+		if request.URL.Path == "/v1/adapters/claude:test/models" && request.Method == http.MethodGet {
+			fmt.Fprint(writer, `{"object":"list","data":[{"id":"test"}]}`)
+			return
+		}
+		if request.URL.Path == "/v1/adapters/claude:test/probe" && request.Method == http.MethodPost {
+			fmt.Fprint(writer, `{"usable":true,"model":"test"}`)
+			return
+		}
+		if request.URL.Path == "/v1/candidates" && request.Method == http.MethodGet {
+			fmt.Fprint(writer, `{"object":"list","data":[]}`)
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer upstream.Close()
+
+	target, _ := url.Parse(upstream.URL)
+	handler, err := relay.NewHandler(relay.Config{UpstreamURL: target.String(), ClientToken: "relay-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/v1/adapters", "/v1/adapters/claude:test/models", "/v1/adapters/claude:test/probe", "/v1/candidates"} {
+		method := http.MethodGet
+		if strings.HasSuffix(path, "/probe") {
+			method = http.MethodPost
+		}
+		request := httptest.NewRequest(method, path, strings.NewReader(`{"model":"test"}`))
+		request.Header.Set("Authorization", "Bearer relay-token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("adapter path %s status = %d", path, response.Code)
+		}
 	}
 }
 

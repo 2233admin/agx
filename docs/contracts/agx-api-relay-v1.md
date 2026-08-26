@@ -16,6 +16,13 @@ or credential management.
 
 - `GET /health` — unauthenticated liveness response `{status, auth_required}`.
 - `GET /v1/models` — authenticated proxy to the upstream model catalog.
+- `GET /v1/adapters` — authenticated proxy to the upstream Adapter catalog.
+- `GET /v1/adapters/{ref}/models` — authenticated proxy to the Adapter's live
+  model catalog.
+- `POST /v1/adapters/{ref}/probe` — authenticated proxy for a model usability probe.
+- `GET /v1/candidates` — authenticated proxy for the upstream bridge's current
+  probe-backed usable candidate pool.
+- `GET /v1/usage` — authenticated proxy to the upstream usage aggregate.
 - `POST /v1/chat/completions` — authenticated streaming/non-streaming proxy.
 - Unsupported paths return `404`; unsupported methods return `405` and `Allow`.
 - Authentication is `Authorization: Bearer <AGX_RELAY_TOKEN>` when a token is
@@ -28,8 +35,9 @@ or credential management.
 ## Acceptance criteria
 
 1. `agx relay run` starts a Go HTTP service using environment configuration.
-2. `GET /v1/models` and `POST /v1/chat/completions` proxy to the configured
-   upstream without exposing the client bearer token upstream.
+2. `GET /v1/models`, Adapter catalog/probe requests, and
+   `POST /v1/chat/completions` proxy to the configured upstream without
+   exposing the client bearer token upstream.
 3. Missing or invalid bearer tokens receive `401`; bad methods receive `405`;
    unknown paths receive `404`.
 4. Streaming chat responses pass through without a response write timeout.
@@ -44,5 +52,6 @@ or credential management.
 
 - No API-key CRUD or secret vault in AGX v1.
 - No automatic device enrollment or fleet-wide rollout.
-- No model routing logic inside AGX; upstream CC Switch remains responsible for
-  provider selection and failover.
+- No model routing logic inside AGX; the upstream bridge remains responsible
+  for Adapter selection, model probing, provider selection, candidate-pool
+  construction, and failover.

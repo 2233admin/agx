@@ -77,9 +77,10 @@ go run ./cmd/agx relay --help
 
 ## CC Switch API Relay
 
-AGX can run a small LAN-facing OpenAI-compatible Relay. It forwards `/v1/models`
-and `/v1/chat/completions` to a configured upstream such as the Windows Go
-bridge; it does not schedule Tasks, manage Multica, or store provider API keys.
+AGX can run a small LAN-facing OpenAI-compatible Relay. It forwards `/v1/models`,
+`/v1/adapters` (including model probes), `/v1/candidates`, `/v1/usage`, and
+`/v1/chat/completions` to a configured upstream such as the Windows Go bridge;
+it does not schedule Tasks, manage Multica, or store provider API keys.
 
 ```text
 AGX_RELAY_LISTEN_ADDR=0.0.0.0:15724

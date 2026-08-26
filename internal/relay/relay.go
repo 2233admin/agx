@@ -63,6 +63,10 @@ func NewHandler(config Config) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", state.health)
 	mux.HandleFunc("/v1/models", state.models)
+	mux.HandleFunc("/v1/adapters", state.adapters)
+	mux.HandleFunc("/v1/adapters/", state.adapterActions)
+	mux.HandleFunc("/v1/candidates", state.candidates)
+	mux.HandleFunc("/v1/usage", state.usage)
 	mux.HandleFunc("/v1/chat/completions", state.chatCompletions)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("X-Request-ID", state.nextRequestID())
@@ -81,10 +85,10 @@ func NewHandler(config Config) (http.Handler, error) {
 
 func knownPath(path string) bool {
 	switch path {
-	case "/health", "/v1/models", "/v1/chat/completions":
+	case "/health", "/v1/models", "/v1/adapters", "/v1/candidates", "/v1/usage", "/v1/chat/completions":
 		return true
 	default:
-		return false
+		return strings.HasPrefix(path, "/v1/adapters/")
 	}
 }
 
@@ -159,6 +163,42 @@ func (h *handler) health(writer http.ResponseWriter, request *http.Request) {
 func (h *handler) models(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	h.proxy.ServeHTTP(writer, request)
+}
+
+func (h *handler) adapters(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	h.proxy.ServeHTTP(writer, request)
+}
+
+func (h *handler) usage(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	h.proxy.ServeHTTP(writer, request)
+}
+
+func (h *handler) candidates(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	h.proxy.ServeHTTP(writer, request)
+}
+
+func (h *handler) adapterActions(writer http.ResponseWriter, request *http.Request) {
+	allowed := http.MethodPost
+	if strings.HasSuffix(request.URL.Path, "/models") {
+		allowed = http.MethodGet
+	}
+	if request.Method != allowed {
+		methodNotAllowed(writer, allowed)
 		return
 	}
 	h.proxy.ServeHTTP(writer, request)
