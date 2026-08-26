@@ -16,6 +16,22 @@
 
 生产模式只接受 `github_release` provenance，且 URL 必须精确落在固定分发仓库、Release tag 与 asset 名组合出的路径。生产拒绝 sibling checkout、可变 branch/tag、本地路径、旧 `artifacts` 双组件结构和任何 `agent_control` source。Multica 不属于 Bundle v2 compatibility；出现 `multica_cli` 会按未知字段拒绝。
 
+## `configs` runtime sidecar
+
+Phase 1 may add `sources.configs_runtime` as an additive, platform-specific direct executable
+descriptor. It binds the `2233admin/agent-systemX` source, a `configs-v*` release tag, source
+commit, contract version, one or more `windows`/`linux`/`darwin` plus `amd64`/`arm64`
+artifacts, and both asset/content SHA-256 digests. The runtime is installed at
+`components/configs-runtime/configs` (or `configs.exe` on Windows). Unlike
+`agent_plugins`, it is never treated as an archive and is never extracted.
+
+The upstream release prerequisite is currently open: no published `configs-v*` release was
+available when this contract was implemented. Therefore the embedded production manifest remains
+unchanged and contains no fabricated runtime tag, URL, commit, or digest. Synthetic development
+fixtures may exercise the descriptor and installer using deterministic test bytes. A production
+manifest carrying `configs_runtime` must use exact GitHub Release asset URLs and pass all digest and
+provenance checks.
+
 ## 模板元数据
 
 `templates` 记录初始化模板集的版本、确定性内容 SHA-256，以及提炼模板时只读参考的三个仓库和精确 head：

@@ -36,7 +36,8 @@
       "additionalProperties": false,
       "required": ["agent_plugins"],
       "properties": {
-        "agent_plugins": {"$ref": "#/$defs/agentPluginsArtifact"}
+        "agent_plugins": {"$ref": "#/$defs/agentPluginsArtifact"},
+        "configs_runtime": {"$ref": "#/$defs/configsRuntime"}
       }
     },
     "templates": {
@@ -96,6 +97,20 @@
                     "pattern": "^https://github\\.com/2233admin/agent-plugins/releases/download/[^/]+/[^/]+\\.tar\\.gz$"
                   }
                 }
+              },
+              "configs_runtime": {
+                "properties": {
+                  "release_tag": {"pattern": "^configs-v[^/]+$"},
+                  "artifacts": {
+                    "items": {
+                      "properties": {
+                        "download_url": {
+                          "pattern": "^https://github\\.com/2233admin/agent-systemX/releases/download/configs-v[^/]+/[^/]+$"
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           }
@@ -131,6 +146,52 @@
         "distribution_repository": {"const": "2233admin/agent-plugins"},
         "release_tag": {"type": "string", "minLength": 1},
         "commit_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "asset_name": {"type": "string", "minLength": 1},
+        "download_url": {"type": "string", "format": "uri"},
+        "asset_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "configsRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "runtime_version",
+        "source_repository",
+        "release_tag",
+        "commit_sha",
+        "contract_version",
+        "artifacts"
+      ],
+      "properties": {
+        "runtime_id": {"type": "string", "minLength": 1},
+        "runtime_version": {"type": "string", "minLength": 1},
+        "source_repository": {"const": "2233admin/agent-systemX"},
+        "release_tag": {"type": "string", "minLength": 1},
+        "commit_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "contract_version": {"type": "string", "minLength": 1},
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/configsRuntimeArtifact"}
+        }
+      }
+    },
+    "configsRuntimeArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "architecture",
+        "asset_name",
+        "download_url",
+        "asset_sha256",
+        "content_sha256"
+      ],
+      "properties": {
+        "platform": {"enum": ["windows", "linux", "darwin"]},
+        "architecture": {"enum": ["amd64", "arm64"]},
         "asset_name": {"type": "string", "minLength": 1},
         "download_url": {"type": "string", "format": "uri"},
         "asset_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

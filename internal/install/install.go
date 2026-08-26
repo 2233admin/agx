@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -38,18 +39,32 @@ type Component struct {
 	AssetSHA256            string `json:"asset_sha256"`
 	Path                   string `json:"path"`
 }
+type ConfigsRuntimeReceipt struct {
+	RuntimeID        string `json:"runtime_id"`
+	Version          string `json:"runtime_version"`
+	SourceRepository string `json:"source_repository"`
+	ReleaseTag       string `json:"release_tag"`
+	CommitSHA        string `json:"commit_sha"`
+	ContractVersion  string `json:"contract_version"`
+	Platform         string `json:"platform"`
+	Architecture     string `json:"architecture"`
+	AssetSHA256      string `json:"asset_sha256"`
+	ContentSHA256    string `json:"content_sha256"`
+	Path             string `json:"path"`
+}
 
 type Receipt struct {
-	SchemaVersion         string            `json:"schema_version"`
-	InstallationID        string            `json:"installation_id"`
-	BundleID              string            `json:"bundle_id"`
-	BundleSHA256          string            `json:"bundle_sha256"`
-	TemplateVersion       string            `json:"template_version"`
-	TemplateContentSHA256 string            `json:"template_content_sha256"`
-	Phase                 string            `json:"phase"`
-	Components            []Component       `json:"components"`
-	OwnedFiles            []string          `json:"owned_files"`
-	OwnedFileSHA256       map[string]string `json:"owned_file_sha256"`
+	SchemaVersion         string                 `json:"schema_version"`
+	InstallationID        string                 `json:"installation_id"`
+	BundleID              string                 `json:"bundle_id"`
+	BundleSHA256          string                 `json:"bundle_sha256"`
+	TemplateVersion       string                 `json:"template_version"`
+	TemplateContentSHA256 string                 `json:"template_content_sha256"`
+	Phase                 string                 `json:"phase"`
+	Components            []Component            `json:"components"`
+	ConfigsRuntime        *ConfigsRuntimeReceipt `json:"configs_runtime,omitempty"`
+	OwnedFiles            []string               `json:"owned_files"`
+	OwnedFileSHA256       map[string]string      `json:"owned_file_sha256"`
 }
 
 type State struct {
@@ -60,10 +75,12 @@ type State struct {
 }
 
 type Options struct {
-	BundlePath string
-	BundleData []byte
-	Root       string
-	Client     *http.Client
+	BundlePath     string
+	BundleData     []byte
+	Root           string
+	Client         *http.Client
+	TargetPlatform string
+	TargetArch     string
 }
 
 type ownedFileState uint8
@@ -162,6 +179,54 @@ func Apply(ctx context.Context, options Options) (Receipt, bool, error) {
 		}
 		receipt.OwnedFileSHA256[relative] = digest
 	}
+	if document.Sources.ConfigsRuntime != nil {
+		runtimeDescriptor := document.Sources.ConfigsRuntime
+		targetPlatform := options.TargetPlatform
+		if targetPlatform == "" {
+			targetPlatform = runtime.GOOS
+		}
+		targetArch := options.TargetArch
+		if targetArch == "" {
+			targetArch = runtime.GOARCH
+		}
+		runtimeArtifact, err := selectRuntimeArtifact(*runtimeDescriptor, targetPlatform, targetArch)
+		if err != nil {
+			return Receipt{}, false, err
+		}
+		runtimeData, err := downloadRuntime(ctx, client, *runtimeArtifact)
+		if err != nil {
+			return Receipt{}, false, err
+		}
+		runtimePath := filepath.ToSlash(filepath.Join("components", "configs-runtime", runtimeExecutableName(targetPlatform)))
+		runtimeAbsolute, err := ownedPath(stage, runtimePath)
+		if err != nil {
+			return Receipt{}, false, err
+		}
+		if err := os.MkdirAll(filepath.Dir(runtimeAbsolute), 0o755); err != nil {
+			return Receipt{}, false, fmt.Errorf("AGX-APPLY-RUNTIME: %w", err)
+		}
+		mode := os.FileMode(0o644)
+		if targetPlatform != "windows" {
+			mode = 0o755
+		}
+		if err := os.WriteFile(runtimeAbsolute, runtimeData, mode); err != nil {
+			return Receipt{}, false, fmt.Errorf("AGX-APPLY-RUNTIME: %w", err)
+		}
+		runtimeDigest, err := digestOwnedFile(stage, runtimePath)
+		if err != nil {
+			return Receipt{}, false, fmt.Errorf("AGX-APPLY-RUNTIME: %w", err)
+		}
+		receipt.ConfigsRuntime = &ConfigsRuntimeReceipt{
+			RuntimeID: runtimeDescriptor.RuntimeID, Version: runtimeDescriptor.Version,
+			SourceRepository: runtimeDescriptor.SourceRepository, ReleaseTag: runtimeDescriptor.ReleaseTag,
+			CommitSHA: runtimeDescriptor.CommitSHA, ContractVersion: runtimeDescriptor.ContractVersion,
+			Platform: targetPlatform, Architecture: targetArch,
+			AssetSHA256: runtimeArtifact.AssetSHA256, ContentSHA256: runtimeArtifact.ContentSHA256,
+			Path: runtimePath,
+		}
+		receipt.OwnedFiles = append(receipt.OwnedFiles, runtimePath)
+		receipt.OwnedFileSHA256[runtimePath] = runtimeDigest
+	}
 	receipt.Components = append(receipt.Components, Component{
 		Name: componentName, Repository: artifact.UpstreamRepository,
 		DistributionRepository: artifact.DistributionRepository, CommitSHA: artifact.CommitSHA,
@@ -245,6 +310,7 @@ func Uninstall(rootPath string) ([]string, error) {
 			if digest != receipt.OwnedFileSHA256[relative] {
 				return nil, fmt.Errorf("AGX-UNINSTALL-DRIFT: owned path %q content changed", relative)
 			}
+
 			removals = append(removals, removal{relative: relative, absolute: absolute})
 		}
 	}
@@ -304,6 +370,50 @@ func Uninstall(rootPath string) ([]string, error) {
 	})
 	sort.Strings(retained)
 	return retained, nil
+}
+func selectRuntimeArtifact(runtimeDescriptor bundle.ConfigsRuntime, platform, architecture string) (*bundle.RuntimeArtifact, error) {
+	for index := range runtimeDescriptor.Artifacts {
+		artifact := &runtimeDescriptor.Artifacts[index]
+		if artifact.Platform == platform && artifact.Architecture == architecture {
+			return artifact, nil
+		}
+	}
+	return nil, fmt.Errorf("AGX-APPLY-RUNTIME: no configs runtime artifact for %s/%s", platform, architecture)
+}
+
+func runtimeExecutableName(platform string) string {
+	if platform == "windows" {
+		return "configs.exe"
+	}
+	return "configs"
+}
+
+func downloadRuntime(ctx context.Context, client *http.Client, artifact bundle.RuntimeArtifact) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, artifact.DownloadURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("AGX-APPLY-RUNTIME-DOWNLOAD: %w", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("AGX-APPLY-RUNTIME-DOWNLOAD: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("AGX-APPLY-RUNTIME-DOWNLOAD: HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxAssetBytes+1))
+	if err != nil || len(data) > maxAssetBytes {
+		return nil, fmt.Errorf("AGX-APPLY-RUNTIME-DOWNLOAD: asset read failed or exceeded limit")
+	}
+	assetDigest := sha256.Sum256(data)
+	if hex.EncodeToString(assetDigest[:]) != artifact.AssetSHA256 {
+		return nil, fmt.Errorf("AGX-APPLY-RUNTIME-DIGEST: asset digest mismatch for %s", artifact.AssetName)
+	}
+	contentDigest := sha256.Sum256(data)
+	if hex.EncodeToString(contentDigest[:]) != artifact.ContentSHA256 {
+		return nil, fmt.Errorf("AGX-APPLY-RUNTIME-DIGEST: content digest mismatch for %s", artifact.AssetName)
+	}
+	return data, nil
 }
 
 func download(ctx context.Context, client *http.Client, artifact bundle.Artifact) ([]byte, error) {
@@ -641,6 +751,7 @@ func readReceipt(root string) (Receipt, error) {
 	componentOwnedFiles := map[string]int{
 		"agent-plugins": 0,
 	}
+	runtimeOwnedFiles := 0
 	seenOwnedFiles := make(map[string]struct{}, len(receipt.OwnedFiles))
 	for _, relative := range receipt.OwnedFiles {
 		absolute, err := ownedPath(root, relative)
@@ -670,8 +781,33 @@ func readReceipt(root string) (Receipt, error) {
 				matchedComponent = true
 			}
 		}
+		if strings.HasPrefix(canonical, "components/configs-runtime/") {
+			runtimeOwnedFiles++
+			matchedComponent = true
+		}
 		if !matchedComponent {
 			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: owned path is outside known components")
+		}
+	}
+
+	if receipt.ConfigsRuntime == nil {
+		if runtimeOwnedFiles != 0 {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: runtime-owned path has no binding")
+		}
+	} else {
+		runtime := receipt.ConfigsRuntime
+		if runtime.RuntimeID == "" || runtime.Version == "" || runtime.SourceRepository != "2233admin/agent-systemX" ||
+			runtime.ReleaseTag == "" || runtime.ContractVersion == "" ||
+			!commitSHAPattern.MatchString(runtime.CommitSHA) ||
+			(runtime.Platform != "windows" && runtime.Platform != "linux" && runtime.Platform != "darwin") ||
+			(runtime.Architecture != "amd64" && runtime.Architecture != "arm64") ||
+			!sha256Pattern.MatchString(runtime.AssetSHA256) || !sha256Pattern.MatchString(runtime.ContentSHA256) ||
+			runtime.Path != filepath.ToSlash(filepath.Join("components", "configs-runtime", runtimeExecutableName(runtime.Platform))) ||
+			runtimeOwnedFiles != 1 {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: invalid configs runtime binding")
+		}
+		if receipt.OwnedFileSHA256[runtime.Path] != runtime.ContentSHA256 {
+			return Receipt{}, fmt.Errorf("AGX-RECEIPT-INVALID: runtime content digest binding mismatch")
 		}
 	}
 

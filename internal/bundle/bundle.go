@@ -47,7 +47,27 @@ type Compatibility struct {
 }
 
 type Sources struct {
-	AgentPlugins Artifact `json:"agent_plugins"`
+	AgentPlugins   Artifact        `json:"agent_plugins"`
+	ConfigsRuntime *ConfigsRuntime `json:"configs_runtime,omitempty"`
+}
+
+type ConfigsRuntime struct {
+	RuntimeID        string            `json:"runtime_id"`
+	Version          string            `json:"runtime_version"`
+	SourceRepository string            `json:"source_repository"`
+	ReleaseTag       string            `json:"release_tag"`
+	CommitSHA        string            `json:"commit_sha"`
+	ContractVersion  string            `json:"contract_version"`
+	Artifacts        []RuntimeArtifact `json:"artifacts"`
+}
+
+type RuntimeArtifact struct {
+	Platform      string `json:"platform"`
+	Architecture  string `json:"architecture"`
+	AssetName     string `json:"asset_name"`
+	DownloadURL   string `json:"download_url"`
+	AssetSHA256   string `json:"asset_sha256"`
+	ContentSHA256 string `json:"content_sha256"`
 }
 
 type Artifact struct {
@@ -168,8 +188,62 @@ func (document Document) validate() error {
 	if err := validateArtifact(document.Sources.AgentPlugins, document.Mode); err != nil {
 		return err
 	}
+	if document.Sources.ConfigsRuntime != nil {
+		if err := validateConfigsRuntime(*document.Sources.ConfigsRuntime, document.Mode); err != nil {
+			return err
+		}
+	}
 	if err := validateTemplates(document.Templates); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateConfigsRuntime(runtime ConfigsRuntime, mode Mode) error {
+	if strings.TrimSpace(runtime.RuntimeID) == "" || strings.TrimSpace(runtime.Version) == "" ||
+		strings.TrimSpace(runtime.ReleaseTag) == "" || strings.TrimSpace(runtime.ContractVersion) == "" {
+		return validationError("configs_runtime runtime_id, runtime_version, release_tag and contract_version are required")
+	}
+	if runtime.SourceRepository != "2233admin/agent-systemX" {
+		return provenanceError("configs_runtime source_repository must be %q", "2233admin/agent-systemX")
+	}
+	if !commitPattern.MatchString(runtime.CommitSHA) {
+		return validationError("configs_runtime commit_sha must be a lowercase 40-character SHA-1")
+	}
+	if len(runtime.Artifacts) == 0 {
+		return validationError("configs_runtime must contain at least one artifact")
+	}
+	seen := make(map[string]struct{}, len(runtime.Artifacts))
+	for _, artifact := range runtime.Artifacts {
+		if artifact.Platform != "windows" && artifact.Platform != "linux" && artifact.Platform != "darwin" {
+			return validationError("configs_runtime artifact platform %q is unsupported", artifact.Platform)
+		}
+		if artifact.Architecture != "amd64" && artifact.Architecture != "arm64" {
+			return validationError("configs_runtime artifact architecture %q is unsupported", artifact.Architecture)
+		}
+		key := artifact.Platform + "/" + artifact.Architecture
+		if _, duplicate := seen[key]; duplicate {
+			return validationError("configs_runtime contains duplicate target %s", key)
+		}
+		seen[key] = struct{}{}
+		if strings.TrimSpace(artifact.AssetName) == "" || strings.ContainsAny(artifact.AssetName, `/\\`) {
+			return validationError("configs_runtime artifact asset_name must be a simple filename")
+		}
+		if !sha256Pattern.MatchString(artifact.AssetSHA256) || !sha256Pattern.MatchString(artifact.ContentSHA256) {
+			return validationError("configs_runtime artifact SHA-256 digests must be lowercase 64-character values")
+		}
+		if !strings.HasPrefix(artifact.DownloadURL, "https://") {
+			return provenanceError("configs_runtime artifact download_url must use HTTPS")
+		}
+		if mode == ModeProduction {
+			if !strings.HasPrefix(runtime.ReleaseTag, "configs-v") {
+				return provenanceError("production configs_runtime release_tag must match configs-v*")
+			}
+			expected := "https://github.com/2233admin/agent-systemX/releases/download/" + runtime.ReleaseTag + "/" + artifact.AssetName
+			if artifact.DownloadURL != expected {
+				return provenanceError("production configs_runtime artifact must use its pinned GitHub Release URL")
+			}
+		}
 	}
 	return nil
 }
