@@ -1,0 +1,6 @@
+version = 3
+defaults = "general"
+
+[profiles]
+general = ".cap/profiles/general.toml"
+reviewer = ".cap/profiles/reviewer.toml"
