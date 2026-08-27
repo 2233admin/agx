@@ -52,7 +52,10 @@ function auth(): FixtureResponse {
 }
 
 function linkedRepository(overrides: Record<string, unknown> = {}): FixtureResponse {
-  return json({ hasIssuesEnabled: true, projectsV2: { nodes: [{ ...project(), ...overrides }] } });
+  return json({
+    hasIssuesEnabled: true,
+    projectsV2: { nodes: [{ id: 'PVT_kwDO123', number: 7, title: TARGET.title, url: 'https://github.com/users/octocat/projects/7', ...overrides }] },
+  });
 }
 
 describe('GithubProjectAdapter', () => {

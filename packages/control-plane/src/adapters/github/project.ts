@@ -38,6 +38,30 @@ function parseIdentity(value: unknown): GithubProjectIdentity | null {
   };
 }
 
+interface GithubProjectLinkedNode {
+  readonly nodeId: string;
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+}
+
+function parseLinkedNode(value: unknown): GithubProjectLinkedNode | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const parsedUrl = typeof record.url === 'string' ? URL.exec(record.url) : null;
+  const projectNumber = parsedUrl?.[3];
+  if (typeof record.id !== 'string' || record.id.trim() === '' || typeof record.number !== 'number' ||
+      !Number.isSafeInteger(record.number) || record.number <= 0 || typeof record.title !== 'string' ||
+      record.title.trim() !== record.title || record.title === '' || typeof record.url !== 'string' ||
+      parsedUrl === null || projectNumber !== String(record.number)) return null;
+  return { nodeId: record.id, number: record.number, title: record.title, url: record.url };
+}
+
+function linkedNodeMatchesIdentity(node: GithubProjectLinkedNode, identity: GithubProjectIdentity): boolean {
+  return node.nodeId === identity.nodeId && node.number === identity.number &&
+    node.title === identity.title && node.url === identity.url;
+}
+
 function parseInventory(value: unknown): readonly GithubProjectIdentity[] | null {
   if (value === null || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
@@ -118,8 +142,8 @@ export class GithubProjectAdapter implements GithubProjectPort {
       const nodes = projectsV2 !== null && typeof projectsV2 === 'object' ? (projectsV2 as Record<string, unknown>).nodes : null;
       if (!Array.isArray(nodes)) return { kind: 'inconclusive', reason: 'project-link-inconclusive', remoteRetention: 'retain' };
       const linked = nodes.some((node) => {
-        const linkedIdentity = parseIdentity(node);
-        return linkedIdentity !== null && sameIdentity(linkedIdentity, identity) && linkedIdentity.title === target.title;
+        const linkedNode = parseLinkedNode(node);
+        return linkedNode !== null && linkedNodeMatchesIdentity(linkedNode, identity);
       });
       return { kind: 'present', identity, hasIssues: true, linked };
     } catch {
