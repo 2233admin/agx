@@ -46,7 +46,7 @@ human/JSON 输出只显示 allowlisted binding、平台和完整性状态，不�
 - `zaurakworks/agent-system` @ `b0e6e0e8244ef518f671e2326745cd67c6d2307a`（改名后仍可寻址的历史蒸馏快照，不是 untagged main）；
 - `zaurakworks/agent-contracts` @ `5bb8ea0b54f063b0758c294b73ea270ba69322d2`.
 
-这些 reference 只解释模板来源与取舍，不把部署仓 `agent-control` / `agent-contracts` 或 Source 整树变成安装组件。模板集版本是 `bootstrap-20260819.1`，未渲染 embedded source manifest 的固定 SHA-256 是 `6e5eee0139001ed29fdf7c3689881fd5af544d86e1a99ed67e88274921555d65`；部署参数产生的 rendered tree digest 由初始化回执另行记录。
+这些 reference 只解释模板来源与取舍，不把部署仓 `agent-control` / `agent-contracts` 或 Source 整树变成安装组件。模板集版本是 `bootstrap-20260819.1`，未渲染 embedded source manifest 的固定 SHA-256 是 `66b4db310377e9dfb173b3e39f4bc54665313ad2c4f6ee80602e941ea453e005`；部署参数产生的 rendered tree digest 由初始化回执另行记录。
 
 ## 安装回执
 Apply 先分别验证压缩资产和 gzip 解压后的 tar 字节流摘要，再只解包 `components/agent-plugins`；若 Bundle 带有 `configs_runtime`，则另行下载并校验平台特定的直接可执行文件，不经过 archive extractor。`agx.receipt/v2` 必须恰好记录一个 `agent-plugins` component，并可选记录最小 `configs_runtime` binding，其 `repository` 为上游身份、`distribution_repository` 为分发身份；所有 owned file 必须位于受管组件或 runtime 路径。`owned_file_sha256` 与 owned file 一一绑定，使 Status、重复 Apply 与 Uninstall 能拒绝内容篡改。回执同时记录 `template_version` 与 `template_content_sha256`，供后续初始化计划和漂移检查使用。旧 receipt 没有 runtime binding 时仍可读取。
