@@ -10,9 +10,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { createHash } from 'node:crypto';
 import { main } from '../../src/cli/index';
-import { SqliteConfigRevisionRepository } from '../../src/adapters/sqlite/repository';
 import { SUPPLY_REF_REJECTION_MARKER } from '../../src/cli/supply-root';
+import { fingerprintDirectory } from '../../src/adapters/sources/supply-fs';
+import { SqliteConfigRevisionRepository } from '../../src/adapters/sqlite/repository';
 import { known } from '../../src/domain/facts';
 import type { Fact } from '../../src/domain/facts';
 import type { CapabilityReference, SourceCategory, StableConfigRevision } from '../../src/domain/config';
@@ -32,6 +34,7 @@ function ref(
   name: string,
   sourceRef: CapabilityReference['sourceRef'],
   sourceCategory: SourceCategory = 'project-capability',
+  contentFingerprint: string = `fingerprint/${name}`,
 ): CapabilityReference {
   return {
     kind,
@@ -39,7 +42,7 @@ function ref(
     sourceCategory: known(sourceCategory),
     summary: known(`${kind} reference: ${name}`),
     sourceRef,
-    contentFingerprint: known(`fingerprint/${name}`),
+    contentFingerprint: known(contentFingerprint),
   };
 }
 
@@ -233,10 +236,10 @@ describe('configs use --client claude-code', () => {
     const { skillRef, instructionRef } = makeRealSkillAndInstruction();
     seed([
       sampleRevision({
-        configName: 'general',
         revisionId: 'rev-1',
-        skills: [ref('skill', 'my-skill', known(skillRef))],
-        instructions: [ref('instruction', 'core', known(instructionRef), 'project-prompt')],
+        configName: 'general',
+        skills: [ref('skill', 'my-skill', known(skillRef), 'project-capability', `sha256:${await fingerprintDirectory(path.join(tmpDir, 'skills', 'my-skill'), skillRef)}`)],
+        instructions: [ref('instruction', 'core', known(instructionRef), 'project-prompt', `sha256:${createHash('sha256').update('Be a helpful agent.').digest('hex')}`)],
       }),
     ]);
 

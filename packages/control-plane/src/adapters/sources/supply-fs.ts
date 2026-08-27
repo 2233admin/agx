@@ -145,6 +145,14 @@ async function collectFilesRecursively(dir: string, prefix: string, sourceRef: s
   }
   return collected.sort(compareCodeUnits);
 }
+async function readStableFile(filePath: string): Promise<Buffer> {
+  const before = await lstat(filePath);
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error(`unsupported source entry: ${filePath}`);
+  const bytes = await readFile(filePath);
+  const after = await lstat(filePath);
+  if (!after.isFile() || after.isSymbolicLink()) throw new Error(`source entry changed during read: ${filePath}`);
+  return bytes;
+}
 
 /** 长度前缀用的 8 字节大端整数。 */
 function uint64BE(value: number): Buffer {
@@ -179,11 +187,11 @@ function uint64BE(value: number): Buffer {
  * `createHash('sha256')` 沿用 `adapters/self-update/checksum.ts` 与
  * `github-release-updater.ts` 的既有 `node:crypto` 先例，不引第二套哈希实现。
  */
-async function fingerprintDirectory(dir: string, sourceRef: string): Promise<string> {
+export async function fingerprintDirectory(dir: string, sourceRef: string): Promise<string> {
   const hash = createHash('sha256');
   for (const relativePath of await collectFilesRecursively(dir, '', sourceRef)) {
     const pathBytes = Buffer.from(relativePath, 'utf8');
-    const contentBytes = await readFile(path.join(dir, relativePath));
+    const contentBytes = await readStableFile(path.join(dir, relativePath));
     hash.update(uint64BE(pathBytes.byteLength));
     hash.update(pathBytes);
     hash.update(uint64BE(contentBytes.byteLength));

@@ -19,12 +19,14 @@
  * (`application/claude-launch.ts`) removes via `ClaudeInvocationDirPort
  * .cleanup` once the launch reaches a terminal state (AD-21).
  */
-import { cp, mkdir, readFile, rename } from 'node:fs/promises';
-import path from 'node:path';
 
+import { createHash } from 'node:crypto';
+import { cp, mkdir, readFile, realpath, rename, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { isKnown } from '../../../domain/facts';
 import type { CapabilityReference, StableConfigRevision } from '../../../domain/config';
 import { defaultSupplyRoot, describeSupplyRefRejection, validateSupplyRelativeRef } from '../../../cli/supply-root';
+import { fingerprintDirectory } from '../../sources/supply-fs';
 import { writeToSameDirTempFile } from '../../system/atomic-write';
 
 const MATERIALIZED_DIR_NAME = 'materialized';
@@ -106,6 +108,31 @@ function resolveSourcePath(
   }
   return { path: verdict.path };
 }
+async function assertStableSource(resolvedPath: string, supplyRoot: string): Promise<void> {
+  const [source, root] = await Promise.all([realpath(resolvedPath), realpath(supplyRoot)]);
+  const relative = path.relative(root, source);
+  if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('source path escapes supply root');
+  }
+  const info = await stat(source);
+  if (!info.isFile() && !info.isDirectory()) throw new Error('source path is not a regular file or directory');
+}
+
+async function fingerprintResolvedPath(resolvedPath: string, sourceRef: string): Promise<string> {
+  const info = await stat(resolvedPath);
+  if (info.isDirectory()) {
+    return `sha256:${await fingerprintDirectory(resolvedPath, sourceRef)}`;
+  }
+  const bytes = await readFile(resolvedPath);
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+async function validateFingerprint(reference: CapabilityReference, resolvedPath: string, supplyRoot: string): Promise<void> {
+  await assertStableSource(resolvedPath, supplyRoot);
+  if (!isKnown(reference.contentFingerprint)) return;
+  const actual = await fingerprintResolvedPath(resolvedPath, reference.sourceRef.kind === 'known' ? reference.sourceRef.value : reference.name);
+  if (actual !== reference.contentFingerprint.value) throw new Error('content fingerprint mismatch');
+}
 
 /** AD-9's same-directory temp-file-then-rename discipline (shares its temp-write primitive with `adapters/self-update/github-release-updater.ts`'s `replaceBinary` -- see `writeToSameDirTempFile`): no reader ever observes a half-written file. */
 async function writeFileAtomic(filePath: string, content: string): Promise<void> {
@@ -132,6 +159,7 @@ async function materializeInstructions(
       continue;
     }
     try {
+      await validateFingerprint(reference, resolved.path, supplyRoot);
       texts.push(await readFile(resolved.path, 'utf8'));
     } catch (error) {
       failures.push({ name: reference.name, reason: `无法读取指令文件：${errorMessage(error)}` });
@@ -172,6 +200,7 @@ async function materializeSkills(
     }
     const targetDir = path.join(skillsDir, sanitizePathSegment(reference.name));
     try {
+      await validateFingerprint(reference, resolved.path, supplyRoot);
       await cp(resolved.path, targetDir, { recursive: true });
       anySucceeded = true;
     } catch (error) {
@@ -224,6 +253,7 @@ async function materializeMcp(
       continue;
     }
     try {
+      await validateFingerprint(reference, resolved.path, supplyRoot);
       const text = await readFile(resolved.path, 'utf8');
       mcpServers[reference.name] = JSON.parse(text);
     } catch (error) {

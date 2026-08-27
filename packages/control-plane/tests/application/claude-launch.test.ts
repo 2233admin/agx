@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -10,6 +11,7 @@ import {
   prepareClaudeFreshLaunchPlan,
   type LaunchClaudeFreshDeps,
 } from '../../src/application/claude-launch';
+import { fingerprintDirectory } from '../../src/adapters/sources/supply-fs';
 import { FsClaudeContentMaterializer } from '../../src/adapters/clients/claude/content-materializer';
 import { InvalidTransitionError, LaunchPlanNotFoundError, confirmLaunchPlan, rejectLaunchPlan } from '../../src/application/launch';
 import { transitionLaunchPlan } from '../../src/domain/activation';
@@ -39,6 +41,9 @@ function ref(kind: CapabilityReference['kind'], name: string, sourceRef: Capabil
     sourceRef,
     contentFingerprint: known(`fingerprint/${name}`),
   };
+}
+function fileFingerprint(content: string): string {
+  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }
 
 /** Tracks tmp dirs created by individual tests below so they always get cleaned up, even on failure. */
@@ -360,8 +365,8 @@ describe('launchClaudeFresh', () => {
     const rev = revision({
       configName: 'general',
       revisionId: 'rev-1',
-      instructions: [ref('instruction', 'general.md', known('general.md'))],
-      skills: [ref('skill', 'openspec-explore', known('skills/openspec-explore'))],
+      instructions: [{ ...ref('instruction', 'general.md', known('general.md')), contentFingerprint: known(fileFingerprint('Be a helpful general-purpose assistant.')) }],
+      skills: [{ ...ref('skill', 'openspec-explore', known('skills/openspec-explore')), contentFingerprint: known(`sha256:${await fingerprintDirectory(path.join(sourceDir, 'skills', 'openspec-explore'), 'skills/openspec-explore')}`) }],
     });
     const confirmed = await preparedAndConfirmed(deps, configRepository, rev);
 
@@ -456,8 +461,8 @@ describe('launchClaudeFresh', () => {
     const rev = revision({
       configName: 'general',
       revisionId: 'rev-1',
-      instructions: [ref('instruction', 'general.md', known('general.md'))],
-      skills: [ref('skill', 'openspec-explore', known('skills/openspec-explore'))],
+      instructions: [{ ...ref('instruction', 'general.md', known('general.md')), contentFingerprint: known(fileFingerprint('Be a helpful general-purpose assistant.')) }],
+      skills: [{ ...ref('skill', 'openspec-explore', known('skills/openspec-explore')), contentFingerprint: known(`sha256:${await fingerprintDirectory(path.join(sourceDir, 'skills', 'openspec-explore'), 'skills/openspec-explore')}`) }],
     });
     const confirmed = await preparedAndConfirmed(deps, configRepository, rev);
 
@@ -492,7 +497,7 @@ describe('launchClaudeFresh', () => {
     const rev = revision({
       configName: 'general',
       revisionId: 'rev-1',
-      skills: [ref('skill', 'openspec-explore', known('skills/openspec-explore'))],
+      skills: [{ ...ref('skill', 'openspec-explore', known('skills/openspec-explore')), contentFingerprint: known(`sha256:${await fingerprintDirectory(path.join(sourceDir, 'skills', 'openspec-explore'), 'skills/openspec-explore')}`) }],
     });
     const confirmed = await preparedAndConfirmed(deps, configRepository, rev);
 

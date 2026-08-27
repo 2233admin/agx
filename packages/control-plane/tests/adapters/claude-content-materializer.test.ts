@@ -504,6 +504,14 @@ describe('[Story 3.4] 可移植性：同一条修订 + 两个不同的根', () =
       rmSync(otherInvocationDir, { recursive: true, force: true });
     }
   });
+  test('rejects a skill when its declared content fingerprint does not match current bytes', async () => {
+    writeRealSkillDir('openspec-explore', { 'SKILL.md': 'bytes' });
+    const result = await materializeClaudeContent(revisionWith({
+      skills: [{ ...ref('skill', 'openspec-explore', known('skills/openspec-explore')), contentFingerprint: known('sha256:wrong') }],
+    }), invocationDir);
+    expect(result.skills.pluginDirPath).toBeNull();
+    expect(result.skills.failures[0]?.reason).toContain('fingerprint');
+  });
 
   test('AC3 一次调用期间根被改动，本次调用的全部引用仍解析于同一个根', async () => {
     const otherRoot = mkdtempSync(path.join(os.tmpdir(), 'control-plane-claude-materializer-src3-'));

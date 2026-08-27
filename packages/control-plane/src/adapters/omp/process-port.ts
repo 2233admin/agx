@@ -21,6 +21,7 @@ import { type Fact, known, unknown } from '../../domain/facts';
 import type { StableConfigRevision } from '../../domain/config';
 import type { OmpProcessPort, OmpSpawnParams, OmpSpawnResult } from '../../application/ports';
 import { defaultDbPath } from '../../cli/db-path';
+import { buildChildEnvironment } from '../system/process-environment';
 
 /**
  * Pure argv builder -- exported so tests can assert exact argv contents
@@ -175,10 +176,7 @@ export class BunOmpProcessPort implements OmpProcessPort {
     const argv = [binaryPath, ...buildOmpArgv(params.revision, params.launchContextPath, params.extensionPath, params.forwardedArgs)];
     const proc = Bun.spawn(argv, {
       cwd: params.cwd,
-      // Only ever *adds* AGENT_SYSTEM_LAUNCH_CONTEXT on top of the
-      // caller's existing environment -- never strips or rewrites
-      // anything else (Boundaries & Constraints).
-      env: { ...process.env, AGENT_SYSTEM_LAUNCH_CONTEXT: params.launchContextPath },
+      env: buildChildEnvironment({ AGENT_SYSTEM_LAUNCH_CONTEXT: params.launchContextPath }),
       stdio: ['inherit', 'inherit', 'inherit'],
     });
 

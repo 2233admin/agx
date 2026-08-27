@@ -1,6 +1,6 @@
 import { type Fact, known, unknown } from '../../../domain/facts';
 import type { ClaudeProcessPort, ClaudeSpawnParams, ClaudeSpawnResult } from '../../../application/ports';
-
+import { buildChildEnvironment } from '../../system/process-environment';
 /**
  * `claude --version` prints e.g. `2.1.241 (Claude Code)` -- captured and
  * verified against a real install on this machine (see this Story's Design
@@ -38,7 +38,7 @@ export type ClaudeSpawnFn = (argv: readonly string[]) => ClaudeSpawnedProcess;
 export type ClaudeWhichFn = (binary: string) => string | null;
 
 function defaultSpawn(argv: readonly string[]): ClaudeSpawnedProcess {
-  const proc = Bun.spawn([...argv], { stdout: 'pipe', stderr: 'pipe' });
+  const proc = Bun.spawn([...argv], { stdout: 'pipe', stderr: 'pipe', env: buildChildEnvironment({}) });
   return proc as unknown as ClaudeSpawnedProcess;
 }
 
@@ -69,10 +69,7 @@ function defaultInteractiveSpawn(
 ): ClaudeInteractiveProcess {
   const proc = Bun.spawn([...argv], {
     cwd: options.cwd,
-    // Only ever *adds* the caller's requested keys on top of the current
-    // process's own environment -- never strips or rewrites anything else
-    // (same non-destructive convention as `BunOmpProcessPort.spawn`).
-    env: { ...process.env, ...options.env },
+    env: buildChildEnvironment(options.env),
     stdio: ['inherit', 'inherit', 'inherit'],
   });
   return proc as unknown as ClaudeInteractiveProcess;
