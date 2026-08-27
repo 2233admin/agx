@@ -125,10 +125,11 @@ import {
 } from '../application/claude-launch';
 import { applyDeploymentPlan, type DeploymentApplyPorts, type DeploymentApplyTargets } from '../application/deployment-apply';
 import { prepareDeploymentPlan, type DeploymentPreflightInput, type DeploymentPreflightPorts } from '../application/deployment-preflight';
-import type { OperationJournalPort } from '../application/ports';
+import { prepareDeploymentOperationPlan } from '../application/operation-plan';
 import { readYesNo } from './confirm-prompt';
 import { defaultDbPath } from './db-path';
 import { createOperationJournal } from '../domain/operation-journal';
+import type { OperationJournalPort } from '../application/ports';
 import { defaultSelfUpdateStatePath } from './self-update-state-path';
 import { t } from './i18n';
 import { CONFIGS_VERSION } from './version';
@@ -154,7 +155,7 @@ import { runTui } from './tui';
 // language-dependent, so this is composed via `usageLine()` rather than
 // being a static constant.
 const USAGE_SYNTAX =
-  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|diagnose|migrate-agx --root <installation-root>|init (--plan|--apply) --input <absolute-json-path>|upgrade --checkpoint <id>|rollback --checkpoint <id>|uninstall|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group ...]>';
+  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|diagnose|migrate-agx (--plan|--apply) --root <absolute-root>|init (--plan|--apply) --input <absolute-json-path>|upgrade --checkpoint <id>|rollback --checkpoint <id>|uninstall|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group ...]>';
 
 function usageLine(): string {
   return `${t('usage.prefix')} ${USAGE_SYNTAX}`;
@@ -186,10 +187,10 @@ type ParsedCommand =
   | { readonly kind: 'show'; readonly id: string }
   | { readonly kind: 'status'; readonly planId: string | null; readonly deploymentId: string | null; readonly operationId: string | null }
   | { readonly kind: 'diagnose'; readonly deploymentId: string | null; readonly operationId: string | null }
+  | { readonly kind: 'migrate-agx'; readonly mode: 'plan' | 'apply'; readonly root: string }
   | { readonly kind: 'upgrade' | 'rollback'; readonly checkpointId: string }
   | { readonly kind: 'uninstall' }
   | { readonly kind: 'init'; readonly mode: 'plan' | 'apply'; readonly inputPath?: string }
-  | { readonly kind: 'migrate-agx'; readonly root: string }
   | { readonly kind: 'compare'; readonly ids: readonly string[] }
   | { readonly kind: 'use' | 'switch'; readonly id: string; readonly client: ClientId; readonly yes: boolean; readonly forwardedArgs: readonly string[] }
   | {
@@ -556,8 +557,8 @@ ${usageLine()}` };
 }
 
 function parseMigrateAgx(rest: readonly string[]): ParsedCommand {
-  if (rest.length !== 2 || rest[0] !== '--root' || rest[1] === undefined || rest[1].trim() === '') return { kind: 'usage-error', message: `${t('parseError.missingMigrationRoot')}\n${usageLine()}` };
-  return { kind: 'migrate-agx', root: rest[1] };
+  if (rest.length !== 3 || (rest[0] !== '--plan' && rest[0] !== '--apply') || rest[1] !== '--root' || rest[2] === undefined || !path.isAbsolute(rest[2])) return { kind: 'usage-error', message: `${t('parseError.missingMigrationRoot')}\n${usageLine()}` };
+  return { kind: 'migrate-agx', mode: rest[0] === '--plan' ? 'plan' : 'apply', root: rest[2] };
 }
 function parseInit(rest: readonly string[]): ParsedCommand {
   if (rest.length !== 3 || (rest[0] !== '--plan' && rest[0] !== '--apply') || rest[1] !== '--input' || rest[2] === undefined || !path.isAbsolute(rest[2])) return { kind: 'usage-error', message: `${t('parseError.initMode')}\n${usageLine()}` };
@@ -657,6 +658,7 @@ export interface CliOverrides {
   readonly defaultDeploymentPreflightFactory?: (options: Parameters<typeof createDefaultDeploymentPreflightDependencies>[0]) => DefaultDeploymentPreflightDependencies;
   readonly defaultDeploymentFactory?: (options: Parameters<typeof createDefaultDeploymentDependencies>[0]) => DefaultDeploymentDependencies;
   readonly migrationStateStore?: LifecycleStateStore;
+  readonly migrationJournal?: OperationJournalPort;
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
   readonly lifecycleStateStore?: LifecycleStateStore;
   readonly lifecycleDecisionProviders?: LifecycleDecisionProviders;
@@ -1296,25 +1298,49 @@ async function runMigrateAgx(parsed: Extract<ParsedCommand, { kind: 'migrate-agx
     console.log(JSON.stringify({ kind: 'rejected', reason: 'io-failure', remoteRetention: 'retain' }));
     return 1;
   }
-  if (result.kind === 'imported') {
-    const ownsStore = overrides.migrationStateStore === undefined;
-    let store: LifecycleStateStore | undefined;
-    try {
-      store = overrides.migrationStateStore ?? createLifecycleStateStore(defaultLifecycleStatePath());
-      const persisted = await store.writeMigration(result.checkpoint, result.checkpoint.migrationId);
-      if (persisted.kind === 'rejected') {
-        console.log(JSON.stringify({ kind: 'rejected', reason: persisted.reason, remoteRetention: 'retain' }));
-        return 1;
-      }
-    } catch {
-      console.log(JSON.stringify({ kind: 'rejected', reason: 'io-failure', remoteRetention: 'retain' }));
-      return 1;
-    } finally {
-      if (ownsStore) store?.close();
-    }
+  if (parsed.mode === 'plan') {
+    console.log(JSON.stringify(result.kind === 'requires-manual-review' ? { ...result, remoteRetention: 'retain' } : result));
+    return result.kind === 'imported' ? 0 : 1;
   }
-  console.log(JSON.stringify(result.kind === 'requires-manual-review' ? { ...result, remoteRetention: 'retain' } : result));
-  return result.kind === 'imported' ? 0 : 1;
+  if (result.kind !== 'imported') {
+    console.log(JSON.stringify(result.kind === 'requires-manual-review' ? { ...result, remoteRetention: 'retain' } : result));
+    return 1;
+  }
+  const checkpoint = result.checkpoint;
+  const operationId = checkpoint.migrationId;
+  const deploymentId = checkpoint.migrationId;
+  let store: LifecycleStateStore | undefined;
+  let journal: (OperationJournalPort & { readonly close?: () => void }) | undefined;
+  let deploymentRepository: SqliteDeploymentOperationRepository | undefined;
+  const ownsStore = overrides.migrationStateStore === undefined;
+  const ownsJournal = overrides.migrationJournal === undefined;
+  try {
+    store = overrides.migrationStateStore ?? createLifecycleStateStore(defaultLifecycleStatePath());
+    journal = overrides.migrationJournal ?? new SqliteOperationJournal(defaultDbPath());
+    if (ownsJournal) {
+      deploymentRepository = new SqliteDeploymentOperationRepository(defaultDbPath());
+      await deploymentRepository.saveDeployment({ deploymentId, phase: 'planned', lastOperationId: known(operationId), reason: null, nextAction: 'prepare-migration' });
+    }
+    const prepared = await prepareDeploymentOperationPlan(journal, { operationId, deploymentId, revisionId: operationId, steps: [{ kind: 'migration-import', resource: checkpoint.installationId }] });
+    let applying = await journal.start(prepared.operationId);
+    const persisted = await store.writeMigration(checkpoint, operationId);
+    if (persisted.kind === 'rejected') {
+      const pending = applying.steps[0];
+      if (pending !== undefined) applying = await journal.appendStep(applying.operationId, { ...pending, phase: 'needs-manual-cleanup', reason: 'migration-state-persistence-failed' });
+      console.log(JSON.stringify({ kind: 'rejected', reason: persisted.reason, operation: applying, remoteRetention: 'retain' }));
+      return 1;
+    }
+    const pending = applying.steps[0];
+    if (pending === undefined) throw new Error('migration journal step missing');
+    const completed = await journal.appendStep(applying.operationId, { ...pending, phase: 'succeeded' });
+    const finished = await journal.finish(completed.operationId, 'succeeded');
+    console.log(JSON.stringify({ kind: 'imported', checkpoint, operation: finished, remoteRetention: 'retain' }));
+    return 0;
+  } finally {
+    deploymentRepository?.close();
+    if (ownsStore) store?.close();
+    if (ownsJournal) journal?.close?.();
+  }
 }
 function unavailableInit(mode: 'plan' | 'apply'): number {
   console.log(JSON.stringify({ kind: 'unsupported', command: `init-${mode}`, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inject-deployment-dependencies' }));

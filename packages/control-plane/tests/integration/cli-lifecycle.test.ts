@@ -58,7 +58,7 @@ describe('lifecycle rehearsal CLI', () => {
     const restore = capture();
     const calls: string[] = [];
     const overrides = { migrationImporter: async (root: string) => { calls.push(root); return { kind: 'requires-manual-review' as const, reason: 'sidecar-runtime-not-authoritative' as const }; } };
-    expect(await main(['migrate-agx', '--root', 'C:/fixture-installation'], overrides)).toBe(1);
+    expect(await main(['migrate-agx', '--apply', '--root', 'C:/fixture-installation'], overrides)).toBe(1);
     expect(await main(['migrate-agx'], overrides)).toBe(2);
     restore();
     expect(calls).toEqual(['C:/fixture-installation']);

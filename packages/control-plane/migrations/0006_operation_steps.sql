@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS operation_step (
   operation_id TEXT NOT NULL REFERENCES operation_status (operation_id),
   sequence INTEGER NOT NULL CHECK (sequence > 0),
   revision INTEGER NOT NULL CHECK (revision >= 0),
-  kind TEXT NOT NULL CHECK (kind IN ('github-repository', 'github-project', 'provider-activation')),
+  kind TEXT NOT NULL CHECK (kind IN ('github-repository', 'github-project', 'provider-activation', 'migration-import')),
   resource TEXT NOT NULL,
   phase TEXT NOT NULL CHECK (phase IN ('pending', 'succeeded', 'inconclusive', 'needs-manual-cleanup')),
   reason TEXT,

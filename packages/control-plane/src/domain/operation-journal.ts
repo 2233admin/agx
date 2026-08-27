@@ -1,4 +1,4 @@
-export type OperationStepKind = 'github-repository' | 'github-project' | 'provider-activation';
+export type OperationStepKind = 'github-repository' | 'github-project' | 'provider-activation' | 'migration-import';
 export type OperationStepPhase = 'pending' | 'succeeded' | 'inconclusive' | 'needs-manual-cleanup';
 
 export interface OperationStep {

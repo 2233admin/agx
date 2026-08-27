@@ -117,7 +117,7 @@ describe('configs-primary cutover rehearsal', () => {
       expect(await main(['rollback', '--checkpoint', 'checkpoint-1'], { lifecycleDecisionProviders: lifecycle })).toBe(0);
       expect(await main(['uninstall'], { lifecycleDecisionProviders: lifecycle })).toBe(0);
       const receiptRoot = await validReceiptRoot();
-      expect((await main(['migrate-agx', '--root', receiptRoot]))).toBe(0);
+      expect((await main(['migrate-agx', '--apply', '--root', receiptRoot]))).toBe(0);
     } finally {
       console.log = oldLog; journal.close();
       if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
