@@ -13,7 +13,7 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const HEX40 = /^[0-9a-f]{40}$/i;
 const HEX64 = /^[0-9a-f]{64}$/i;
 const URL_PROTOCOLS = new Set(['http:', 'https:']);
-
+const MULTICA_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type JsonRecord = Record<string, unknown>;
 export interface DeploymentInputDiagnostic {
   readonly code: string;
@@ -21,7 +21,7 @@ export interface DeploymentInputDiagnostic {
   readonly message: string;
 }
 export type DeploymentInputResult =
-  | { readonly kind: 'accepted'; readonly input: DeploymentPreflightInput }
+  | { readonly kind: 'accepted'; readonly input: DeploymentPreflightInput; readonly sourceValidation: 'deferred-realpath-required' }
   | { readonly kind: 'rejected'; readonly diagnostics: readonly DeploymentInputDiagnostic[] };
 
 function isRecord(value: unknown): value is JsonRecord { return value !== null && typeof value === 'object' && !Array.isArray(value); }
@@ -31,7 +31,7 @@ function isCleanString(value: unknown, max = 256): value is string { return type
 function isId(value: unknown): value is string { return typeof value === 'string' && ID.test(value); }
 function isAbsolutePath(value: unknown): value is string { return isCleanString(value, 4096) && path.isAbsolute(value); }
 function isContained(root: string, candidate: string): boolean { const relative = path.relative(root, candidate); return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); }
-function isUrl(value: unknown): value is string { if (!isCleanString(value, 2048)) return false; try { const parsed = new URL(value); return URL_PROTOCOLS.has(parsed.protocol) && parsed.hostname !== ''; } catch { return false; } }
+function isUrl(value: unknown): value is string { if (!isCleanString(value, 2048)) return false; try { const parsed = new URL(value); return URL_PROTOCOLS.has(parsed.protocol) && parsed.hostname !== '' && parsed.username === '' && parsed.password === ''; } catch { return false; } }
 function isRelativePath(value: unknown): value is string { if (!isCleanString(value, 512) || path.isAbsolute(value)) return false; const normalized = value.replace(/\\/g, '/'); return normalized.split('/').every((part) => part !== '' && part !== '.' && part !== '..'); }
 
 /** Returns true for malformed JSON, duplicate object keys, or trailing bytes. */
@@ -139,13 +139,13 @@ export function parseDeploymentInput(value: string | Uint8Array): DeploymentInpu
     if (!HEX40.test(String(initial.commit ?? ''))) reject('invalid-commit', `${fieldPath}.initialRevision.commit`, 'initial revision commit is malformed');
     if (!isCleanString(initial.templateVersion, 128)) reject('invalid-template-version', `${fieldPath}.initialRevision.templateVersion`, 'template version is invalid');
     if (!HEX64.test(String(initial.templateDigest ?? ''))) reject('invalid-template-digest', `${fieldPath}.initialRevision.templateDigest`, 'initial revision digest is malformed');
-    if (!Array.isArray(initial.requiredPaths) || !initial.requiredPaths.every(isRelativePath)) reject('invalid-required-path', `${fieldPath}.initialRevision.requiredPaths`, 'requiredPaths must contain safe relative paths');
+    if (!Array.isArray(initial.requiredPaths) || initial.requiredPaths.length === 0 || !initial.requiredPaths.every(isRelativePath)) reject('invalid-required-path', `${fieldPath}.initialRevision.requiredPaths`, 'requiredPaths must be a non-empty safe relative-path array');
     if (isId(owner) && isId(name)) {
       const identity = `${owner}/${name}`.toLowerCase();
       if (repositoryIdentities.has(identity)) reject('duplicate-repository', fieldPath, 'duplicate repository identity');
       repositoryIdentities.add(identity);
     }
-    if (isId(owner) && isId(name) && (visibility === 'private' || visibility === 'public') && isCleanString(description, 1024) && isAbsolutePath(sourcePath) && isRecord(initial) && HEX40.test(String(initial.commit ?? '')) && isCleanString(initial.templateVersion, 128) && HEX64.test(String(initial.templateDigest ?? '')) && Array.isArray(initial.requiredPaths) && initial.requiredPaths.every(isRelativePath)) repositories.push({ owner, name, visibility, description, sourcePath, initialRevision: { commit: initial.commit as string, templateVersion: initial.templateVersion, templateDigest: initial.templateDigest as string, requiredPaths: initial.requiredPaths as string[] } });
+    if (isId(owner) && isId(name) && (visibility === 'private' || visibility === 'public') && isCleanString(description, 1024) && isAbsolutePath(sourcePath) && isRecord(initial) && HEX40.test(String(initial.commit ?? '')) && isCleanString(initial.templateVersion, 128) && HEX64.test(String(initial.templateDigest ?? '')) && Array.isArray(initial.requiredPaths) && initial.requiredPaths.length > 0 && initial.requiredPaths.every(isRelativePath)) repositories.push({ owner, name, visibility, description, sourcePath, initialRevision: { commit: initial.commit as string, templateVersion: initial.templateVersion, templateDigest: initial.templateDigest as string, requiredPaths: initial.requiredPaths as string[] } });
   }
   let project: GithubProjectTarget | null = null;
   if (!isRecord(root.project)) reject('invalid-project', '$.project', 'project must be an object');
@@ -191,11 +191,11 @@ export function parseDeploymentInput(value: string | Uint8Array): DeploymentInpu
       multicaSubjects = [];
       for (const [index, candidate] of root.multicaSubjects.entries()) {
         const fieldPath = `$.multicaSubjects[${index}]`;
-        if (!isRecord(candidate) || !hasOnlyKeys(candidate, ['kind', 'id']) || !['workspace', 'runtime', 'agent'].includes(String(candidate.kind)) || !isId(candidate.id)) { reject('invalid-multica-subject', fieldPath, 'Multica subject is invalid'); continue; }
+        if (!isRecord(candidate) || !hasOnlyKeys(candidate, ['kind', 'id']) || !['workspace', 'runtime', 'agent'].includes(String(candidate.kind)) || typeof candidate.id !== 'string' || !MULTICA_UUID.test(candidate.id)) { reject('invalid-multica-subject', fieldPath, 'Multica subject must contain a valid UUID'); continue; }
         multicaSubjects.push({ kind: candidate.kind as MulticaSubjectKind, id: candidate.id });
       }
     }
   }
   if (diagnostics.length > 0 || !isAbsolutePath(sourceRoot) || !isId(deploymentId) || !isId(operationId) || !isId(revisionId) || project === null) return { kind: 'rejected', diagnostics };
-  return { kind: 'accepted', input: { deploymentId, operationId, revisionId, repositories, project, providers, ...(multicaSubjects === undefined ? {} : { multicaSubjects }) } };
+  return { kind: 'accepted', input: { deploymentId, operationId, revisionId, repositories, project, providers, ...(multicaSubjects === undefined ? {} : { multicaSubjects }) }, sourceValidation: 'deferred-realpath-required' };
 }

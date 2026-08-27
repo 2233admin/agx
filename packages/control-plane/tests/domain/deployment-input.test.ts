@@ -13,7 +13,7 @@ const VALID = {
   }],
   project: { owner: 'acme', title: 'Agent Control', visibility: 'private', linkedRepository: 'acme/agent-control', installationId: 'installation-1' },
   providers: [{ provider: 'codex', marketplaceSource: 'https://example.test/marketplace.json', plugins: [{ name: 'plugin-one', version: '1.0.0', enabled: true }] }],
-  multicaSubjects: [{ kind: 'runtime', id: 'runtime-1' }],
+  multicaSubjects: [{ kind: 'runtime', id: 'd3baaa7b-1111-4111-8111-111111111111' }],
 };
 
 function json(value: unknown): string { return JSON.stringify(value); }
@@ -22,11 +22,14 @@ function rejected(value: unknown) { const result = parseDeploymentInput(json(val
 
 describe('parseDeploymentInput', () => {
   test('accepts the versioned deployment contract and maps it to DeploymentPreflightInput', () => {
-    const input = accepted(VALID);
-    expect(input?.deploymentId).toBe('deployment-1');
-    expect(input?.repositories[0]?.initialRevision.templateDigest).toBe('b'.repeat(64));
-    expect(input?.providers[0]?.plugins[0]?.name).toBe('plugin-one');
-    expect(input?.multicaSubjects?.[0]?.kind).toBe('runtime');
+    const result = parseDeploymentInput(json(VALID));
+    expect(result.kind).toBe('accepted');
+    if (result.kind !== 'accepted') return;
+    expect(result.sourceValidation).toBe('deferred-realpath-required');
+    expect(result.input.deploymentId).toBe('deployment-1');
+    expect(result.input.repositories[0]?.initialRevision.templateDigest).toBe('b'.repeat(64));
+    expect(result.input.providers[0]?.plugins[0]?.name).toBe('plugin-one');
+    expect(result.input.multicaSubjects?.[0]?.kind).toBe('runtime');
   });
 
   test('rejects unknown, duplicate, and trailing JSON fields without exposing payloads', () => {
@@ -58,6 +61,20 @@ describe('parseDeploymentInput', () => {
     initialRevision.requiredPaths = ['../escape'];
     const codes = rejected(value).map((entry) => entry.code);
     expect(codes).toEqual(expect.arrayContaining(['invalid-deployment-id', 'invalid-operation-id', 'invalid-revision-id', 'invalid-marketplace-url', 'invalid-commit', 'invalid-template-digest', 'source-path-outside-root', 'invalid-required-path']));
+  });
+  test('rejects empty required paths, non-UUID Multica IDs, and credential-bearing marketplace URLs', () => {
+    const emptyPaths = JSON.parse(json(VALID)) as Record<string, unknown>;
+    const emptyRepository = (emptyPaths.repositories as Array<Record<string, unknown>>)[0]!;
+    (emptyRepository.initialRevision as Record<string, unknown>).requiredPaths = [];
+    expect(rejected(emptyPaths).map((entry) => entry.code)).toContain('invalid-required-path');
+
+    const unsafeUrl = JSON.parse(json(VALID)) as Record<string, unknown>;
+    (unsafeUrl.providers as Array<Record<string, unknown>>)[0]!.marketplaceSource = 'https://user:password@example.test/marketplace.json';
+    expect(rejected(unsafeUrl).map((entry) => entry.code)).toContain('invalid-marketplace-url');
+
+    const badMulticaId = JSON.parse(json(VALID)) as Record<string, unknown>;
+    (badMulticaId.multicaSubjects as Array<Record<string, unknown>>)[0]!.id = 'runtime-1';
+    expect(rejected(badMulticaId).map((entry) => entry.code)).toContain('invalid-multica-subject');
   });
 
   test('rejects duplicate repository/provider identities and null or primitive entries', () => {
