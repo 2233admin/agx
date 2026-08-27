@@ -5,7 +5,7 @@ import { prepareDeploymentOperationPlan } from '../../src/application/operation-
 import type { OperationStep } from '../../src/domain/operation-journal';
 
 const PLAN = {
-  deploymentId: 'dep-1', operationId: 'op-1',
+  deploymentId: 'dep-1', operationId: 'op-1', revisionId: 'rev-1',
   steps: [
     { kind: 'github-repository', resource: 'agent-control' },
     { kind: 'github-project', resource: 'agent-system' },

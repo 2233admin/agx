@@ -16,6 +16,7 @@ export type OperationJournalPhase =
 export interface OperationJournalRecord {
   readonly operationId: string;
   readonly deploymentId: string;
+  readonly revisionId?: string;
   readonly phase: OperationJournalPhase;
   readonly steps: readonly OperationStep[];
   readonly resolutions?: readonly OperationResolution[];
@@ -43,6 +44,7 @@ export interface OperationPlanStep {
 export interface OperationPlanInput {
   readonly operationId: string;
   readonly deploymentId: string;
+  readonly revisionId: string;
   readonly steps: readonly OperationPlanStep[];
 }
 
@@ -51,12 +53,12 @@ const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const MAX_STEP_REASON_LENGTH = 128;
 
 export function createOperationJournal(input: OperationPlanInput): OperationJournalRecord {
-  if (input.operationId.trim() === '' || input.deploymentId.trim() === '' || input.steps.length === 0) throw new Error('invalid operation plan');
+  if (input.operationId.trim() === '' || input.deploymentId.trim() === '' || input.revisionId.trim() === '' || input.steps.length === 0) throw new Error('invalid operation plan');
   const steps = input.steps.map((step, index) => {
     if (!RESOURCE_ID.test(step.resource)) throw new Error('invalid operation plan step');
     return { sequence: index + 1, kind: step.kind, resource: step.resource, phase: 'pending' as const };
   });
-  return { operationId: input.operationId, deploymentId: input.deploymentId, phase: 'prepared', steps, resolutions: [], remoteRetention: 'retain', nextAction: 'start-operation' };
+  return { operationId: input.operationId, deploymentId: input.deploymentId, revisionId: input.revisionId, phase: 'prepared', steps, resolutions: [], remoteRetention: 'retain', nextAction: 'start-operation' };
 }
 export function appendOperationStep(record: OperationJournalRecord, step: OperationStep): OperationJournalRecord {
   if (step.phase === ('verified' as OperationStepPhase)) throw new Error('verified requires evaluator-approved evidence');

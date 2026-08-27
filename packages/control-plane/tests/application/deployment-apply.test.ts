@@ -9,7 +9,7 @@ import type { OperationPlanInput } from '../../src/domain/operation-journal';
 const REPO = { owner: 'octocat', name: 'agent-control', visibility: 'private', description: '', sourcePath: 'C:/source', initialRevision: { commit: 'a'.repeat(40), templateVersion: 'v1', templateDigest: 'b'.repeat(64), requiredPaths: ['README.md'] } } as const;
 const PROJECT = { owner: 'octocat', title: 'Agent System', visibility: 'private', linkedRepository: 'octocat/agent-control', installationId: 'install-0123456789abcdef' } as const;
 const PROVIDER = { provider: 'codex', marketplaceSource: 'C:/agent-plugins', plugins: [{ name: 'grilling', version: '1.2.3', enabled: true }] } as const;
-const PLAN: OperationPlanInput = { deploymentId: 'dep-apply', operationId: 'op-apply', steps: [
+const PLAN: OperationPlanInput = { deploymentId: 'dep-apply', operationId: 'op-apply', revisionId: 'rev-apply', steps: [
   { kind: 'github-repository', resource: 'octocat/agent-control' },
   { kind: 'github-project', resource: PROJECT.installationId },
   { kind: 'provider-activation', resource: 'codex' },

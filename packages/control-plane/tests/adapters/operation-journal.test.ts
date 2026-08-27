@@ -8,7 +8,7 @@ import { SqliteOperationJournal } from '../../src/adapters/sqlite/operation-jour
 import { prepareDeploymentOperationPlan } from '../../src/application/operation-plan';
 
 const INPUT = {
-  deploymentId: 'dep-sqlite', operationId: 'op-sqlite', steps: [
+  deploymentId: 'dep-sqlite', operationId: 'op-sqlite', revisionId: 'rev-sqlite', steps: [
     { kind: 'github-repository', resource: 'agent-control' },
     { kind: 'github-project', resource: 'agent-system' },
     { kind: 'provider-activation', resource: 'codex' },

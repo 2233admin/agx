@@ -4,6 +4,7 @@ import type { StatusProjectionInput } from '../../src/domain/status';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SqliteConfigRevisionRepository } from '../../src/adapters/sqlite/repository';
 import { SqliteOperationJournal } from '../../src/adapters/sqlite/operation-journal';
 import { prepareDeploymentOperationPlan } from '../../src/application/operation-plan';
 
@@ -36,8 +37,9 @@ describe('lifecycle rehearsal CLI', () => {
   test('default selectors load durable operation state into unified status without remote or legacy launch work', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'configs-status-durable-'));
     const dbPath = path.join(root, 'state.sqlite3');
+    const configRepository = new SqliteConfigRevisionRepository(dbPath); configRepository.close();
     const journal = new SqliteOperationJournal(dbPath, () => '2026-01-01T00:00:00.000Z');
-    await prepareDeploymentOperationPlan(journal, { deploymentId: 'dep-durable', operationId: 'op-durable', steps: [{ kind: 'github-repository', resource: 'octocat/agent-control' }] });
+    await prepareDeploymentOperationPlan(journal, { deploymentId: 'dep-durable', operationId: 'op-durable', revisionId: 'rev-durable', steps: [{ kind: 'github-repository', resource: 'octocat/agent-control' }] });
     journal.close();
     const previous = process.env.CONTROL_PLANE_DB_PATH; process.env.CONTROL_PLANE_DB_PATH = dbPath;
     const restore = capture();

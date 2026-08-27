@@ -8,13 +8,14 @@ import { Database } from 'bun:sqlite';
 import INIT_SQL from '../../../migrations/0001_init.sql' with { type: 'text' };
 import DEPLOYMENT_OPERATION_SQL from '../../../migrations/0004_deployment_operation.sql' with { type: 'text' };
 import SUPPLY_SQL from '../../../migrations/0003_supply.sql' with { type: 'text' };
+import REVISION_SQL from '../../../migrations/0008_operation_revision.sql' with { type: 'text' };
 
 import { type Fact, unknown } from '../../domain/facts';
 import type { CapabilityReference, SourceCategory, StableConfigRevision } from '../../domain/config';
 import type { ConfigRevisionRepository } from '../../application/ports';
 import { ConfigUnsupportedError } from '../../application/queries';
-import { factColumns, factColumnToFact } from './fact-columns';
-import { isDatabaseLocked, openSqliteDatabase } from './connection';
+import { factColumnToFact, factColumns } from './fact-columns';
+import { isDatabaseLocked, openSqliteDatabase, openSqliteDatabaseReadOnly } from './connection';
 
 /** The only `stable_config_revision.schema_version` this Story can read. */
 const SUPPORTED_SCHEMA_VERSION = 1;
@@ -334,6 +335,7 @@ export function runConfigRevisionMigrations(db: Database): void {
   db.transaction(() => {
     db.exec(INIT_SQL);
     db.exec(DEPLOYMENT_OPERATION_SQL);
+    try { db.exec(REVISION_SQL); } catch (error) { if (!isConcurrentMigrationRace(error)) throw error; }
   })();
 
   for (const statement of splitSqlStatements(SUPPLY_SQL)) {
@@ -373,9 +375,9 @@ export function runConfigRevisionMigrations(db: Database): void {
 export class SqliteConfigRevisionRepository implements ConfigRevisionRepository {
   private readonly db: Database;
 
-  constructor(dbPath: string) {
-    this.db = openSqliteDatabase(dbPath);
-    runConfigRevisionMigrations(this.db);
+  constructor(dbPath: string, options: { readonly?: boolean } = {}) {
+    this.db = options.readonly ? openSqliteDatabaseReadOnly(dbPath) : openSqliteDatabase(dbPath);
+    if (!options.readonly) runConfigRevisionMigrations(this.db);
   }
 
   async listAll(): Promise<readonly StableConfigRevision[]> {

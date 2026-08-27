@@ -10,7 +10,7 @@ import type { OperationPlanInput } from '../../src/domain/operation-journal';
 const repo = { owner: 'octocat', name: 'agent-control', visibility: 'private', description: '', sourcePath: 'C:/template', initialRevision: { commit: 'a'.repeat(40), templateVersion: 'v1', templateDigest: 'b'.repeat(64), requiredPaths: ['README.md'] } } as const;
 const project = { owner: 'octocat', title: 'Agent System', visibility: 'private', linkedRepository: 'octocat/agent-control', installationId: 'install-0123456789abcdef' } as const;
 const provider = { provider: 'codex', marketplaceSource: 'C:/plugins', plugins: [] } as const;
-const plan: OperationPlanInput = { deploymentId: 'dep-init', operationId: 'op-init', steps: [{ kind: 'github-repository', resource: 'octocat/agent-control' }, { kind: 'github-project', resource: project.installationId }, { kind: 'provider-activation', resource: 'codex' }] };
+const plan: OperationPlanInput = { deploymentId: 'dep-init', operationId: 'op-init', revisionId: 'rev', steps: [{ kind: 'github-repository', resource: 'octocat/agent-control' }, { kind: 'github-project', resource: project.installationId }, { kind: 'provider-activation', resource: 'codex' }] };
 let output: string[] = [];
 afterEach(() => { output = []; });
 function capture() { const old = console.log; console.log = (...args: unknown[]) => output.push(args.map(String).join(' ')); return () => { console.log = old; }; }

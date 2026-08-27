@@ -2,11 +2,11 @@ import { Database } from 'bun:sqlite';
 import OPERATION_SQL from '../../../migrations/0004_deployment_operation.sql' with { type: 'text' };
 import STEPS_SQL from '../../../migrations/0006_operation_steps.sql' with { type: 'text' };
 import RESOLUTION_SQL from '../../../migrations/0007_operation_resolutions.sql' with { type: 'text' };
+import REVISION_SQL from '../../../migrations/0008_operation_revision.sql' with { type: 'text' };
 import type { OperationJournalPort } from '../../application/ports';
 import { appendOperationStep, createOperationJournal, finishOperationJournal, resolveInconclusiveOperation, startOperationJournal, type OperationJournalPhase, type OperationJournalRecord, type OperationPlanInput, type OperationResolution, type OperationStep } from '../../domain/operation-journal';
 import { openSqliteDatabase } from './connection';
-
-interface StatusRow { readonly operation_id: string; readonly deployment_id: string; readonly phase: string; readonly reason: string | null; readonly next_action: string }
+interface StatusRow { readonly operation_id: string; readonly deployment_id: string; readonly revision_id: string | null; readonly phase: string; readonly reason: string | null; readonly next_action: string }
 interface ResolutionRow { readonly operation_id: string; readonly deployment_id: string; readonly sequence: number; readonly kind: OperationResolution['kind']; readonly resource: string; readonly outcome: OperationResolution['outcome']; readonly fingerprint: string; readonly observed_at: string }
 interface StepRow { readonly sequence: number; readonly revision: number; readonly kind: OperationStep['kind']; readonly resource: string; readonly phase: OperationStep['phase']; readonly reason: string | null }
 type Clock = () => string;
@@ -30,6 +30,7 @@ export class SqliteOperationJournal implements OperationJournalPort {
       this.db.exec(OPERATION_SQL);
       this.db.exec(STEPS_SQL);
       this.db.exec(RESOLUTION_SQL);
+      try { this.db.exec(REVISION_SQL); } catch (error) { if (!String((error as Error).message).toLowerCase().includes('duplicate column name')) throw error; }
     })();
   }
 
@@ -44,12 +45,12 @@ export class SqliteOperationJournal implements OperationJournalPort {
       }
       return existing;
     }
+    const deployment = this.db.query<{ phase: string }, [string]>(`SELECT phase FROM deployment_status WHERE deployment_id = ?`).get(input.deploymentId);
+    if (deployment !== null && deployment !== undefined && deployment.phase !== 'planned') throw new Error('deployment is not plan-ready');
     const timestamp = this.now();
     this.db.transaction(() => {
-      const deployment = this.db.query<{ phase: string }, [string]>(`SELECT phase FROM deployment_status WHERE deployment_id = ?`).get(input.deploymentId);
-      if (deployment !== null && deployment !== undefined && deployment.phase !== 'planned') throw new Error('deployment is not plan-ready');
-      this.db.query(`INSERT INTO deployment_status (deployment_id, phase, last_operation_id, reason, next_action, created_at, updated_at) VALUES (?, 'planned', NULL, NULL, 'prepare-plan', ?, ?) ON CONFLICT(deployment_id) DO NOTHING`).run(input.deploymentId, timestamp, timestamp);
-      this.db.query(`INSERT INTO operation_status (operation_id, deployment_id, phase, reason, next_action, created_at, updated_at) VALUES (?, ?, 'prepared', NULL, 'start-operation', ?, ?)`).run(input.operationId, input.deploymentId, timestamp, timestamp);
+      this.db.query(`INSERT INTO deployment_status (deployment_id, revision_id, phase, last_operation_id, reason, next_action, created_at, updated_at) VALUES (?, ?, 'planned', NULL, NULL, 'prepare-plan', ?, ?) ON CONFLICT(deployment_id) DO UPDATE SET revision_id = excluded.revision_id`).run(input.deploymentId, input.revisionId, timestamp, timestamp);
+      this.db.query(`INSERT INTO operation_status (operation_id, deployment_id, revision_id, phase, reason, next_action, created_at, updated_at) VALUES (?, ?, ?, 'prepared', NULL, 'start-operation', ?, ?)`).run(input.operationId, input.deploymentId, input.revisionId, timestamp, timestamp);
       for (const step of planned.steps) {
         this.db.query(`INSERT INTO operation_step (operation_id, sequence, revision, kind, resource, phase, reason, created_at) VALUES (?, ?, 0, ?, ?, 'pending', NULL, ?)`).run(input.operationId, step.sequence, step.kind, step.resource, timestamp);
       }
@@ -119,12 +120,12 @@ export class SqliteOperationJournal implements OperationJournalPort {
   }
 
   private read(operationId: string): OperationJournalRecord | null {
-    const status = this.db.query<StatusRow, [string]>(`SELECT operation_id, deployment_id, phase, reason, next_action FROM operation_status WHERE operation_id = ?`).get(operationId);
+    const status = this.db.query<StatusRow, [string]>(`SELECT operation_id, deployment_id, revision_id, phase, reason, next_action FROM operation_status WHERE operation_id = ?`).get(operationId);
     if (status === null) return null;
     const rows = this.db.query<StepRow, [string]>(`SELECT sequence, revision, kind, resource, phase, reason FROM operation_step AS current WHERE operation_id = ? AND revision = (SELECT MAX(revision) FROM operation_step AS latest WHERE latest.operation_id = current.operation_id AND latest.sequence = current.sequence) ORDER BY sequence`).all(operationId);
     const resolutions = this.db.query<ResolutionRow, [string]>(`SELECT operation_id, deployment_id, sequence, kind, resource, outcome, fingerprint, observed_at FROM operation_resolution WHERE operation_id = ? ORDER BY sequence`).all(operationId);
     const phase = mapPhase(status.phase);
     const nextAction = status.next_action;
-    return { operationId: status.operation_id, deploymentId: status.deployment_id, phase, steps: rows.map(({ sequence, kind, resource, phase, reason }) => ({ sequence, kind, resource, phase, ...(reason === null ? {} : { reason }) })), resolutions: resolutions.map(({ operation_id, deployment_id, sequence, kind, resource, outcome, fingerprint, observed_at }) => ({ operationId: operation_id, deploymentId: deployment_id, sequence, kind, resource, outcome, fingerprint, observedAt: observed_at })), remoteRetention: 'retain', nextAction, ...(status.reason === null ? {} : { reason: status.reason }) };
+    return { operationId: status.operation_id, deploymentId: status.deployment_id, ...(status.revision_id === null ? {} : { revisionId: status.revision_id }), phase, steps: rows.map(({ sequence, kind, resource, phase, reason }) => ({ sequence, kind, resource, phase, ...(reason === null ? {} : { reason }) })), resolutions: resolutions.map(({ operation_id, deployment_id, sequence, kind, resource, outcome, fingerprint, observed_at }) => ({ operationId: operation_id, deploymentId: deployment_id, sequence, kind, resource, outcome, fingerprint, observedAt: observed_at })), remoteRetention: 'retain', nextAction, ...(status.reason === null ? {} : { reason: status.reason }) };
   }
 }

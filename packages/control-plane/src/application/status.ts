@@ -1,4 +1,4 @@
-import { unknown } from '../domain/facts';
+import { known, unknown } from '../domain/facts';
 import type { EvidenceReceipt } from '../domain/evidence';
 import type { ConfigRevisionRepository, LaunchPlanRepository, OperationJournalPort } from './ports';
 import type { DeploymentStatus } from '../domain/deployment';
@@ -21,7 +21,13 @@ export async function loadStatusProjection(deps: DurableStatusDependencies, sele
   const deployment = await deps.deploymentRepository.findDeployment(selectors.deploymentId);
   const operation = await deps.operationJournal.find(selectors.operationId);
   if (deployment === null || operation === null || operation.deploymentId !== deployment.deploymentId) return null;
-  return { activeRevision: unknown('active-revision-unbound', deployment.nextAction), deployment, operation, launchPlans: [], readbacks: [], evidence: awaitingEvidence() };
+  let activeRevision: StatusProjectionInput['activeRevision'];
+  if (operation.revisionId === undefined) activeRevision = unknown('active-revision-unbound', deployment.nextAction);
+  else {
+    const found = await deps.configRepository.findById(operation.revisionId);
+    activeRevision = found === null ? unknown('active-revision-missing', deployment.nextAction) : known(found);
+  }
+  return { activeRevision, deployment, operation, launchPlans: [], readbacks: [], evidence: awaitingEvidence() };
 }
 
 export function getUnifiedStatus(input: StatusProjectionInput): UnifiedStatus {

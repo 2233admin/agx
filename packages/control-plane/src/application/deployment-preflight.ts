@@ -135,12 +135,13 @@ function diagnosticPlan(input: OperationPlanInput): OperationJournalRecord {
   return {
     operationId: RESOURCE_ID.test(input.operationId) ? input.operationId : '[invalid-operation-id]',
     deploymentId: RESOURCE_ID.test(input.deploymentId) ? input.deploymentId : '[invalid-deployment-id]',
+    revisionId: input.revisionId,
     phase: 'prepared',
     steps: input.steps.map((step, index) => ({
       sequence: index + 1,
       kind: step.kind,
       resource: RESOURCE_ID.test(step.resource) ? step.resource : `[invalid-${step.kind}-${index + 1}]`,
-      phase: 'pending',
+      phase: 'pending' as const,
     })),
     remoteRetention: 'retain',
     nextAction: 'start-operation',
@@ -153,6 +154,7 @@ function buildPlanInput(input: DeploymentPreflightInput): OperationPlanInput {
   return {
     deploymentId: input.deploymentId,
     operationId: input.operationId,
+    revisionId: input.revisionId,
     steps: [
       ...repositories.map((target) => ({ kind: 'github-repository' as const, resource: repositoryResource(target) })),
       { kind: 'github-project' as const, resource: projectResource(input.project) },
