@@ -15,6 +15,14 @@ import type {
   GithubProjectReadbackResult,
   GithubProjectTarget,
 } from '../domain/github-project';
+import type {
+  ProviderActivationResult,
+  ProviderActivationTarget,
+  ProviderInventoryResult,
+  ProviderRevokeResult,
+  ProviderOwnershipRecord,
+  ProviderName,
+} from '../domain/provider';
 import type { ClaudeContentMaterializationResult } from '../adapters/clients/claude/content-materializer';
 import type { SupplyRefRejection } from '../cli/supply-root';
 
@@ -51,9 +59,33 @@ export interface GithubProjectPort {
 }
 
 export interface GithubRepositoryPort {
+
   preflight(target: GithubRepositoryTarget): Promise<GithubRepositoryPreflightResult>;
   readback(target: GithubRepositoryTarget): Promise<GithubRepositoryReadbackResult>;
   provision(target: GithubRepositoryTarget): Promise<GithubRepositoryProvisionResult>;
+}
+export interface ProviderCommandResult {
+  readonly stdout: string;
+  readonly exitCode: number | null;
+}
+
+export interface CodexProviderCommandPort {
+  available(): Promise<boolean>;
+  run(args: readonly string[]): Promise<ProviderCommandResult>;
+}
+
+export interface ClaudeProviderCommandPort {
+  available(): Promise<boolean>;
+  run(args: readonly string[]): Promise<ProviderCommandResult>;
+}
+
+export interface ProviderInventoryPort {
+  inspect(): Promise<ProviderInventoryResult>;
+}
+
+export interface ProviderActivationPort {
+  activate(target: ProviderActivationTarget): Promise<ProviderActivationResult>;
+  revoke(target: ProviderActivationTarget, ownership: ProviderOwnershipRecord): Promise<ProviderRevokeResult>;
 }
 
 
