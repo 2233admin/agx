@@ -32,6 +32,18 @@ describe('SqliteOperationJournal', () => {
     expect(await reopened.find('op-sqlite')).toEqual(prepared);
     reopened.close();
   });
+  test('revision migration is idempotent per column and persists both bindings', async () => {
+    const { root, value } = journal();
+    const prepared = await prepareDeploymentOperationPlan(value, INPUT);
+    expect(prepared.revisionId).toBe('rev-sqlite');
+    value.close();
+    const reopened = new SqliteOperationJournal(path.join(root, 'state.sqlite3'));
+    const db = new Database(path.join(root, 'state.sqlite3'));
+    expect(db.query(`SELECT name FROM pragma_table_info('deployment_status') WHERE name = 'revision_id'`).get()).not.toBeNull();
+    expect(db.query(`SELECT name FROM pragma_table_info('operation_status') WHERE name = 'revision_id'`).get()).not.toBeNull();
+    expect((await reopened.find('op-sqlite'))?.revisionId).toBe('rev-sqlite');
+    db.close(); reopened.close();
+  });
 
   test('appends ordered transitions without changing planned identity', async () => {
     const { value } = journal();

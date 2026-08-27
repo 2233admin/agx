@@ -331,12 +331,21 @@ function isConcurrentMigrationRace(error: unknown): boolean {
   return message.includes('duplicate column name') || isDatabaseLocked(error);
 }
 
+export function runRevisionMigration(db: Database): void {
+  for (const statement of splitSqlStatements(REVISION_SQL)) {
+    const match = /^ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(\w+)/i.exec(statement);
+    if (match === null) throw new Error('invalid revision migration statement');
+    const table = match[1]!; const column = match[2]!;
+    if (columnExists(db, table, column)) continue;
+    try { db.exec(statement); } catch (error) { if (!isConcurrentMigrationRace(error) || !columnExists(db, table, column)) throw error; }
+  }
+}
 export function runConfigRevisionMigrations(db: Database): void {
   db.transaction(() => {
     db.exec(INIT_SQL);
     db.exec(DEPLOYMENT_OPERATION_SQL);
-    try { db.exec(REVISION_SQL); } catch (error) { if (!isConcurrentMigrationRace(error)) throw error; }
   })();
+  runRevisionMigration(db);
 
   for (const statement of splitSqlStatements(SUPPLY_SQL)) {
     const addColumnMatch = SUPPLY_ADD_COLUMN_RE.exec(statement);

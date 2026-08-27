@@ -2,10 +2,10 @@ import { Database } from 'bun:sqlite';
 import OPERATION_SQL from '../../../migrations/0004_deployment_operation.sql' with { type: 'text' };
 import STEPS_SQL from '../../../migrations/0006_operation_steps.sql' with { type: 'text' };
 import RESOLUTION_SQL from '../../../migrations/0007_operation_resolutions.sql' with { type: 'text' };
-import REVISION_SQL from '../../../migrations/0008_operation_revision.sql' with { type: 'text' };
 import type { OperationJournalPort } from '../../application/ports';
 import { appendOperationStep, createOperationJournal, finishOperationJournal, resolveInconclusiveOperation, startOperationJournal, type OperationJournalPhase, type OperationJournalRecord, type OperationPlanInput, type OperationResolution, type OperationStep } from '../../domain/operation-journal';
 import { openSqliteDatabase } from './connection';
+import { runRevisionMigration } from './repository';
 interface StatusRow { readonly operation_id: string; readonly deployment_id: string; readonly revision_id: string | null; readonly phase: string; readonly reason: string | null; readonly next_action: string }
 interface ResolutionRow { readonly operation_id: string; readonly deployment_id: string; readonly sequence: number; readonly kind: OperationResolution['kind']; readonly resource: string; readonly outcome: OperationResolution['outcome']; readonly fingerprint: string; readonly observed_at: string }
 interface StepRow { readonly sequence: number; readonly revision: number; readonly kind: OperationStep['kind']; readonly resource: string; readonly phase: OperationStep['phase']; readonly reason: string | null }
@@ -30,7 +30,7 @@ export class SqliteOperationJournal implements OperationJournalPort {
       this.db.exec(OPERATION_SQL);
       this.db.exec(STEPS_SQL);
       this.db.exec(RESOLUTION_SQL);
-      try { this.db.exec(REVISION_SQL); } catch (error) { if (!String((error as Error).message).toLowerCase().includes('duplicate column name')) throw error; }
+      runRevisionMigration(this.db);
     })();
   }
 
