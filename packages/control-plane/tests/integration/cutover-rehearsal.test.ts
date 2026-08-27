@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EVIDENCE_EVALUATOR_V1, EVIDENCE_INPUT_SCHEMA_V1, evaluateEvidence, type EvidenceEvaluationInput } from '../../src/domain/evidence';
 import { SqliteOperationJournal } from '../../src/adapters/sqlite/operation-journal';
 import { importLegacyReceipt } from '../../src/adapters/migration/receipt-importer';
-import { main } from '../../src/cli/index';
+import { main, type LifecycleDecisionProviders } from '../../src/cli/index';
+import { prepareDeploymentOperationPlan } from '../../src/application/operation-plan';
 import { applyDeploymentPlan, type DeploymentApplyPorts, type DeploymentApplyTargets } from '../../src/application/deployment-apply';
 import { prepareDeploymentPlan, type DeploymentPreflightPorts } from '../../src/application/deployment-preflight';
 import { projectStatus, type StatusProjectionInput } from '../../src/domain/status';
@@ -77,5 +79,41 @@ describe('configs-primary cutover rehearsal', () => {
     const output: string[] = []; const oldLog = console.log; console.log = (...args: unknown[]) => output.push(args.map(String).join(' ')); try { expect(await main(['status'], { statusProjection: statusInput })).toBe(0); expect(await main(['diagnose'], { statusProjection: statusInput })).toBe(0); } finally { console.log = oldLog; }
     expect(output.join('\n')).toContain('verified'); expect(output.join('\n')).not.toMatch(/prompt|transcript|secret|token|private payload/i);
     const receiptRoot = await validReceiptRoot(); const imported = await importLegacyReceipt(receiptRoot, { clock: () => '2026-08-27T00:00:00Z' }); expect(imported.kind).toBe('imported'); expect(await readFile(path.join(receiptRoot, 'operator.md'), 'utf8')).toBe('preserve me\n'); journal.close();
+  });
+  test('runs the complete user-facing configs cutover path with deterministic fakes and disposable HOME', async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'configs-home-'));
+    const previousHome = process.env.HOME; const previousUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home; process.env.USERPROFILE = home;
+    const journalRoot = await mkdtemp(path.join(home, 'journal-')); roots.push(journalRoot);
+    const journal = new SqliteOperationJournal(path.join(journalRoot, 'state.sqlite3'), () => '2026-08-27T00:00:00Z');
+    const order: string[] = []; const adapters = ports(order, false);
+    const deploymentInput = { deploymentId: 'dep-user-flow', operationId: 'op-user-flow', revisionId: 'rev-1', repositories: [repo], project, providers: [provider] };
+    const output: string[] = []; const oldLog = console.log; console.log = (...args: unknown[]) => output.push(args.map(String).join(' '));
+    try {
+      expect(await main(['init', '--plan'], { deploymentPlan: { journal, input: deploymentInput, ports: adapters.preflight } })).toBe(0);
+      expect(await journal.find('op-user-flow')).toBeNull();
+      await prepareDeploymentOperationPlan(journal, { deploymentId: deploymentInput.deploymentId, operationId: deploymentInput.operationId, revisionId: deploymentInput.revisionId, steps: [{ kind: 'github-repository', resource: 'octocat/agent-control' }, { kind: 'github-project', resource: project.installationId }, { kind: 'provider-activation', resource: 'codex' }] });
+      expect(await main(['init', '--apply'], { deploymentApply: { journal, operationId: 'op-user-flow', deploymentId: 'dep-user-flow', targets: { repositories: new Map([['octocat/agent-control', repo]]), project, providers: new Map([['codex', provider]]) }, ports: adapters.apply } })).toBe(0);
+      const operation = await journal.find('op-user-flow');
+      const statusProjection: StatusProjectionInput = { activeRevision: known(revision), deployment: { deploymentId: 'dep-user-flow', phase: 'configured', lastOperationId: known('op-user-flow'), reason: null, nextAction: 'none' }, operation: operation!, launchPlans: [], readbacks: [{ kind: 'repository', resourceId: 'octocat/agent-control', digest: 'a'.repeat(64), ownership: 'created-by-configs', outcome: 'matched' }, { kind: 'project', resourceId: project.installationId, digest: 'b'.repeat(64), ownership: 'created-by-configs', outcome: 'matched' }, { kind: 'provider', resourceId: 'codex', digest: 'c'.repeat(64), ownership: 'created-by-configs', outcome: 'matched' }], evidence: completeEvidence() };
+      expect(await main(['status'], { statusProjection: statusProjection })).toBe(0);
+      expect(await main(['diagnose'], { statusProjection: statusProjection })).toBe(0);
+      const lifecycle: LifecycleDecisionProviders = {
+        upgrade: async (checkpointId) => ({ kind: 'ready', action: 'upgrade-locally-atomically', checkpoint: { schemaVersion: 'configs.lifecycle/v1', checkpointId, installationId: 'install-0123456789abcdef', deploymentId: 'dep-user-flow', revisionId: 'rev-1', fromVersion: '1.2.2', toVersion: '1.2.3', release: {} as never, preUpgradeStateDigest: 'a'.repeat(64), postUpgradeStateDigest: 'b'.repeat(64), preUpgradeState: [], remoteRetention: 'retain' } as never, remoteRetention: 'retain' }),
+        rollback: async () => ({ kind: 'ready', action: 'restore-local-atomically', restore: [], remoteRetention: 'retain' }),
+        uninstall: async () => ({ kind: 'ready', action: 'delete-owned-local-only', deletePaths: ['configs/state.json'], retainRemote: ['repositories', 'projects', 'provider-client'] }),
+      };
+      expect(await main(['upgrade', '--checkpoint', 'checkpoint-1'], { lifecycleDecisionProviders: lifecycle })).toBe(0);
+      expect(await main(['rollback', '--checkpoint', 'checkpoint-1'], { lifecycleDecisionProviders: lifecycle })).toBe(0);
+      expect(await main(['uninstall'], { lifecycleDecisionProviders: lifecycle })).toBe(0);
+      const receiptRoot = await validReceiptRoot();
+      expect((await main(['migrate-agx', '--root', receiptRoot]))).toBe(0);
+    } finally {
+      console.log = oldLog; journal.close();
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile; rmSync(home, { recursive: true, force: true });
+    }
+    expect(order).toEqual(['repo-provision', 'repo-readback', 'project-provision', 'project-readback', 'provider-activate']);
+    expect(output.join('\n')).toContain('retain'); expect(output.join('\n')).toContain('verified'); expect(output.join('\n')).not.toMatch(/prompt|transcript|token|secret|private payload|old AGX/i);
   });
 });
