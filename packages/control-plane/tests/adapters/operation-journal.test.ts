@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import { prepareDeploymentOperationPlan } from '../../src/application/operation-
 const INPUT = {
   deploymentId: 'dep-sqlite', operationId: 'op-sqlite', steps: [
     { kind: 'github-repository', resource: 'agent-control' },
-    { kind: 'github-project', resource: 'Agent System' },
+    { kind: 'github-project', resource: 'agent-system' },
     { kind: 'provider-activation', resource: 'codex' },
   ] as const,
 };
@@ -50,6 +51,28 @@ describe('SqliteOperationJournal', () => {
     const reopened = new SqliteOperationJournal(path.join(root, 'state.sqlite3'), () => '2026-08-27T00:00:02.000Z');
     await expect(prepareDeploymentOperationPlan(reopened, { ...INPUT, steps: [{ kind: 'github-repository', resource: 'other' }] })).rejects.toThrow('operation already prepared');
     expect((await reopened.find('op-sqlite'))?.steps[0]?.resource).toBe('agent-control');
+    reopened.close();
+  });
+  test('replay binds operation identity to deployment and reads every persisted operation phase', async () => {
+    const { root, value } = journal();
+    await prepareDeploymentOperationPlan(value, INPUT);
+    await expect(prepareDeploymentOperationPlan(value, { ...INPUT, deploymentId: 'dep-other' })).rejects.toThrow('operation belongs to another deployment');
+    const db = new Database(path.join(root, 'state.sqlite3'));
+    db.query('UPDATE operation_status SET phase = ?, next_action = ? WHERE operation_id = ?').run('succeeded', 'none', 'op-sqlite');
+    db.close();
+    expect((await value.find('op-sqlite'))?.phase).toBe('succeeded');
+    value.close();
+  });
+
+  test('rejects a new operation when the deployment is already applying', async () => {
+    const { root, value } = journal();
+    await prepareDeploymentOperationPlan(value, INPUT);
+    value.close();
+    const db = new Database(path.join(root, 'state.sqlite3'));
+    db.query('UPDATE deployment_status SET phase = ? WHERE deployment_id = ?').run('applying', 'dep-sqlite');
+    db.close();
+    const reopened = new SqliteOperationJournal(path.join(root, 'state.sqlite3'), () => '2026-08-27T00:00:03.000Z');
+    await expect(prepareDeploymentOperationPlan(reopened, { ...INPUT, operationId: 'op-new' })).rejects.toThrow('deployment is not plan-ready');
     reopened.close();
   });
 });

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS operation_step (
   reason TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (operation_id, sequence, revision),
-  CHECK (length(resource) > 0),
+  CHECK (length(resource) BETWEEN 1 AND 128 AND resource NOT GLOB '*[^A-Za-z0-9._:/-]*'),
   CHECK (reason IS NULL OR (length(reason) BETWEEN 1 AND 128 AND reason NOT GLOB '*[^a-z0-9-]*'))
 ) STRICT;
 

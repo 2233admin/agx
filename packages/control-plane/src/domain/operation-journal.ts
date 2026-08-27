@@ -9,13 +9,17 @@ export interface OperationStep {
   readonly reason?: string;
 }
 
+export type OperationJournalPhase =
+  | 'prepared' | 'applying' | 'observing' | 'succeeded' | 'degraded' | 'failed'
+  | 'cancelled' | 'inconclusive' | 'needs-resume' | 'needs-manual-cleanup';
+
 export interface OperationJournalRecord {
   readonly operationId: string;
   readonly deploymentId: string;
-  readonly phase: 'prepared' | 'inconclusive' | 'needs-manual-cleanup';
+  readonly phase: OperationJournalPhase;
   readonly steps: readonly OperationStep[];
   readonly remoteRetention: 'retain';
-  readonly nextAction: 'start-operation' | 'observe-remote-state' | 'manual-cleanup';
+  readonly nextAction: string;
 }
 
 export interface OperationPlanStep {
@@ -30,12 +34,13 @@ export interface OperationPlanInput {
 }
 
 const STEP_REASON = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const MAX_STEP_REASON_LENGTH = 128;
 
 export function createOperationJournal(input: OperationPlanInput): OperationJournalRecord {
   if (input.operationId.trim() === '' || input.deploymentId.trim() === '' || input.steps.length === 0) throw new Error('invalid operation plan');
   const steps = input.steps.map((step, index) => {
-    if (step.resource.trim() === '') throw new Error('invalid operation plan step');
+    if (!RESOURCE_ID.test(step.resource)) throw new Error('invalid operation plan step');
     return { sequence: index + 1, kind: step.kind, resource: step.resource, phase: 'pending' as const };
   });
   return { operationId: input.operationId, deploymentId: input.deploymentId, phase: 'prepared', steps, remoteRetention: 'retain', nextAction: 'start-operation' };
