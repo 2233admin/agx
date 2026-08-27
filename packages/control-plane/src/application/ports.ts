@@ -97,7 +97,7 @@ export interface ClaudeProviderCommandPort {
 }
 
 export interface ProviderInventoryPort {
-  inspect(): Promise<ProviderInventoryResult>;
+  inspect(provider?: ProviderName): Promise<ProviderInventoryResult>;
 }
 
 export interface ProviderActivationPort {
