@@ -49,7 +49,7 @@ export interface OperationJournalPort {
 }
 export interface MulticaCommandPort {
   available(signal: AbortSignal): Promise<boolean>;
-  run(args: readonly string[], signal: AbortSignal): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
+  run(args: readonly string[], signal: AbortSignal): Promise<{ readonly stdout: string; readonly stderr?: string; readonly exitCode: number | null }>;
 }
 
 export interface MulticaRuntimePort {
