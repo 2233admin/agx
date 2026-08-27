@@ -33,8 +33,8 @@ function code(value: string): string {
   return safe.slice(0, 128) || 'external-operation-failed';
 }
 
-function result(kind: DeploymentApplyResult['kind'], operation: OperationJournalRecord | null): DeploymentApplyResult {
-  return { kind, operation, remoteRetention: 'retain', nextAction: operation?.nextAction ?? 'inspect-diagnostics' };
+function result(kind: DeploymentApplyResult['kind'], operation: OperationJournalRecord | null, nextAction?: string): DeploymentApplyResult {
+  return { kind, operation, remoteRetention: 'retain', nextAction: nextAction ?? operation?.nextAction ?? 'inspect-diagnostics' };
 }
 
 async function appendFailure(journal: OperationJournalPort, operation: OperationJournalRecord, phase: 'inconclusive' | 'needs-manual-cleanup', reason: string): Promise<DeploymentApplyResult> {
@@ -55,7 +55,7 @@ export async function applyDeploymentPlan(
   if (operation.phase === 'succeeded') return result('succeeded', operation);
   if (operation.phase === 'inconclusive') return result('inconclusive', operation);
   if (operation.phase === 'needs-manual-cleanup' || operation.phase === 'failed' || operation.phase === 'cancelled' || operation.phase === 'degraded') return result('needs-manual-cleanup', operation);
-  if (operation.phase === 'prepared') operation = await journal.start(operation.operationId);
+  if (operation.phase === 'prepared' || operation.phase === 'needs-resume') operation = await journal.start(operation.operationId);
   if (operation.phase !== 'applying' && operation.phase !== 'observing') return result('blocked', operation);
 
   for (const planned of operation.steps) {
@@ -94,4 +94,16 @@ export async function applyDeploymentPlan(
   }
   operation = await journal.finish(operation.operationId, 'succeeded');
   return result('succeeded', operation);
+}
+export async function recoverDeploymentOperation(
+  journal: OperationJournalPort,
+  operationId: string,
+  deploymentId: string,
+  targets: DeploymentApplyTargets,
+  ports: DeploymentApplyPorts,
+): Promise<DeploymentApplyResult> {
+  const operation = await journal.find(operationId);
+  if (operation === null) return result('blocked', null, 'operation-not-found');
+  if (operation.operationId !== operationId || operation.deploymentId !== deploymentId) return result('blocked', operation, 'operation-identity-mismatch');
+  return applyDeploymentPlan(journal, operationId, targets, ports);
 }

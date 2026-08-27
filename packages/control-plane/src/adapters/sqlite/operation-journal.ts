@@ -56,7 +56,7 @@ export class SqliteOperationJournal implements OperationJournalPort {
   async start(operationId: string): Promise<OperationJournalRecord> {
     const current = this.readOrThrow(operationId);
     const updated = startOperationJournal(current);
-    const result = this.db.query(`UPDATE operation_status SET phase = 'applying', next_action = 'observe-operation', updated_at = ? WHERE operation_id = ? AND phase = 'prepared'`).run(this.now(), operationId);
+    const result = this.db.query(`UPDATE operation_status SET phase = 'applying', next_action = 'observe-operation', updated_at = ? WHERE operation_id = ? AND phase IN ('prepared', 'needs-resume')`).run(this.now(), operationId);
     if (result.changes !== 1) throw new Error('operation start rejected: stale operation state');
     return updated;
   }

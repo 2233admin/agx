@@ -59,7 +59,7 @@ export function appendOperationStep(record: OperationJournalRecord, step: Operat
 }
 
 export function startOperationJournal(record: OperationJournalRecord): OperationJournalRecord {
-  if (record.phase !== 'prepared') throw new Error('operation is not prepared');
+  if (record.phase !== 'prepared' && record.phase !== 'needs-resume') throw new Error('operation is not resumable');
   return { ...record, phase: 'applying', nextAction: 'observe-operation' };
 }
 
