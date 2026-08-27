@@ -1,5 +1,5 @@
 import type { OperationJournalPort } from '../../application/ports';
-import { appendOperationStep, createOperationJournal, finishOperationJournal, startOperationJournal, type OperationJournalRecord, type OperationPlanInput, type OperationStep } from '../../domain/operation-journal';
+import { appendOperationStep, createOperationJournal, finishOperationJournal, resolveInconclusiveOperation, startOperationJournal, type OperationJournalRecord, type OperationPlanInput, type OperationResolution, type OperationStep } from '../../domain/operation-journal';
 
 export class InMemoryOperationJournal implements OperationJournalPort {
   readonly remoteCalls = 0;
@@ -17,6 +17,13 @@ export class InMemoryOperationJournal implements OperationJournalPort {
     const current = this.records.get(operationId);
     if (current === undefined) throw new Error('operation not found');
     const updated = startOperationJournal(current);
+    this.records.set(operationId, updated);
+    return updated;
+  }
+  async resolveInconclusive(operationId: string, resolution: OperationResolution): Promise<OperationJournalRecord> {
+    const current = this.records.get(operationId);
+    if (current === undefined) throw new Error('operation not found');
+    const updated = resolveInconclusiveOperation(current, resolution);
     this.records.set(operationId, updated);
     return updated;
   }

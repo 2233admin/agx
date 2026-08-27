@@ -4,7 +4,7 @@ import type {
   OperationJournalPort,
   ProviderActivationPort,
 } from './ports';
-import type { OperationJournalRecord } from '../domain/operation-journal';
+import type { OperationJournalRecord, OperationResolution } from '../domain/operation-journal';
 import type { GithubProjectTarget } from '../domain/github-project';
 import type { GithubRepositoryTarget } from '../domain/github-repository';
 import type { ProviderActivationTarget } from '../domain/provider';
@@ -104,6 +104,16 @@ export async function recoverDeploymentOperation(
 ): Promise<DeploymentApplyResult> {
   const operation = await journal.find(operationId);
   if (operation === null) return result('blocked', null, 'operation-not-found');
-  if (operation.operationId !== operationId || operation.deploymentId !== deploymentId) return result('blocked', operation, 'operation-identity-mismatch');
+  if (operation.deploymentId !== deploymentId) return result('blocked', operation, 'operation-identity-mismatch');
   return applyDeploymentPlan(journal, operationId, targets, ports);
+}
+export async function resolveDeploymentOperation(
+  journal: OperationJournalPort,
+  operationId: string,
+  deploymentId: string,
+  resolution: OperationResolution,
+): Promise<DeploymentApplyResult> {
+  if (resolution.operationId !== operationId || resolution.deploymentId !== deploymentId) return result('inconclusive', await journal.find(operationId), 'observe-remote-state');
+  const operation = await journal.resolveInconclusive(operationId, resolution);
+  return result(operation.phase === 'needs-manual-cleanup' ? 'needs-manual-cleanup' : 'inconclusive', operation);
 }

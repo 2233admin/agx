@@ -18,9 +18,20 @@ export interface OperationJournalRecord {
   readonly deploymentId: string;
   readonly phase: OperationJournalPhase;
   readonly steps: readonly OperationStep[];
+  readonly resolutions?: readonly OperationResolution[];
   readonly remoteRetention: 'retain';
   readonly nextAction: string;
-  readonly reason?: string;
+}
+export type ResolutionOutcome = 'matched' | 'absent' | 'drifted';
+export interface OperationResolution {
+  readonly operationId: string;
+  readonly deploymentId: string;
+  readonly sequence: number;
+  readonly kind: OperationStepKind;
+  readonly resource: string;
+  readonly outcome: ResolutionOutcome;
+  readonly fingerprint: string;
+  readonly observedAt: string;
 }
 
 export interface OperationPlanStep {
@@ -44,7 +55,7 @@ export function createOperationJournal(input: OperationPlanInput): OperationJour
     if (!RESOURCE_ID.test(step.resource)) throw new Error('invalid operation plan step');
     return { sequence: index + 1, kind: step.kind, resource: step.resource, phase: 'pending' as const };
   });
-  return { operationId: input.operationId, deploymentId: input.deploymentId, phase: 'prepared', steps, remoteRetention: 'retain', nextAction: 'start-operation' };
+  return { operationId: input.operationId, deploymentId: input.deploymentId, phase: 'prepared', steps, resolutions: [], remoteRetention: 'retain', nextAction: 'start-operation' };
 }
 export function appendOperationStep(record: OperationJournalRecord, step: OperationStep): OperationJournalRecord {
   if (step.phase === ('verified' as OperationStepPhase)) throw new Error('verified requires evaluator-approved evidence');
@@ -61,6 +72,21 @@ export function appendOperationStep(record: OperationJournalRecord, step: Operat
 export function startOperationJournal(record: OperationJournalRecord): OperationJournalRecord {
   if (record.phase !== 'prepared' && record.phase !== 'needs-resume') throw new Error('operation is not resumable');
   return { ...record, phase: 'applying', nextAction: 'observe-operation' };
+}
+
+export function resolveInconclusiveOperation(
+  record: OperationJournalRecord,
+  resolution: OperationResolution,
+): OperationJournalRecord {
+  const pending = record.steps.find((step) => step.phase === 'inconclusive' || step.phase === 'pending');
+  if (record.phase !== 'inconclusive' || pending === undefined ||
+      resolution.operationId !== record.operationId || resolution.deploymentId !== record.deploymentId ||
+      resolution.sequence !== pending.sequence || resolution.kind !== pending.kind || resolution.resource !== pending.resource ||
+      !/^[a-f0-9]{64}$/.test(resolution.fingerprint) || !Number.isFinite(Date.parse(resolution.observedAt))) {
+    throw new Error('invalid operation resolution');
+  }
+  if (resolution.outcome !== 'matched') return { ...record, resolutions: [...(record.resolutions ?? []), resolution], phase: 'needs-manual-cleanup', nextAction: 'manual-cleanup' };
+  return { ...record, resolutions: [...(record.resolutions ?? []), resolution], phase: 'needs-resume', nextAction: 'resume-operation' };
 }
 
 export function finishOperationJournal(record: OperationJournalRecord, phase: Extract<OperationJournalPhase, 'succeeded' | 'failed' | 'cancelled'>, reason?: string): OperationJournalRecord {

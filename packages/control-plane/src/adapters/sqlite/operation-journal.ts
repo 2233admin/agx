@@ -1,11 +1,13 @@
 import { Database } from 'bun:sqlite';
 import OPERATION_SQL from '../../../migrations/0004_deployment_operation.sql' with { type: 'text' };
 import STEPS_SQL from '../../../migrations/0006_operation_steps.sql' with { type: 'text' };
+import RESOLUTION_SQL from '../../../migrations/0007_operation_resolutions.sql' with { type: 'text' };
 import type { OperationJournalPort } from '../../application/ports';
-import { appendOperationStep, createOperationJournal, finishOperationJournal, startOperationJournal, type OperationJournalPhase, type OperationJournalRecord, type OperationPlanInput, type OperationStep } from '../../domain/operation-journal';
+import { appendOperationStep, createOperationJournal, finishOperationJournal, resolveInconclusiveOperation, startOperationJournal, type OperationJournalPhase, type OperationJournalRecord, type OperationPlanInput, type OperationResolution, type OperationStep } from '../../domain/operation-journal';
 import { openSqliteDatabase } from './connection';
 
 interface StatusRow { readonly operation_id: string; readonly deployment_id: string; readonly phase: string; readonly reason: string | null; readonly next_action: string }
+interface ResolutionRow { readonly operation_id: string; readonly deployment_id: string; readonly sequence: number; readonly kind: OperationResolution['kind']; readonly resource: string; readonly outcome: OperationResolution['outcome']; readonly fingerprint: string; readonly observed_at: string }
 interface StepRow { readonly sequence: number; readonly revision: number; readonly kind: OperationStep['kind']; readonly resource: string; readonly phase: OperationStep['phase']; readonly reason: string | null }
 type Clock = () => string;
 
@@ -27,6 +29,7 @@ export class SqliteOperationJournal implements OperationJournalPort {
     this.db.transaction(() => {
       this.db.exec(OPERATION_SQL);
       this.db.exec(STEPS_SQL);
+      this.db.exec(RESOLUTION_SQL);
     })();
   }
 
@@ -68,6 +71,16 @@ export class SqliteOperationJournal implements OperationJournalPort {
     if (result.changes !== 1) throw new Error('operation finish rejected: stale operation state');
     return updated;
   }
+  async resolveInconclusive(operationId: string, resolution: OperationResolution): Promise<OperationJournalRecord> {
+    const current = this.readOrThrow(operationId);
+    const updated = resolveInconclusiveOperation(current, resolution);
+    this.db.transaction(() => {
+      this.db.query(`INSERT INTO operation_resolution (operation_id, deployment_id, sequence, kind, resource, outcome, fingerprint, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(operationId, resolution.deploymentId, resolution.sequence, resolution.kind, resolution.resource, resolution.outcome, resolution.fingerprint, resolution.observedAt);
+      const result = this.db.query(`UPDATE operation_status SET phase = ?, next_action = ?, updated_at = ? WHERE operation_id = ? AND deployment_id = ? AND phase = 'inconclusive'`).run(updated.phase, updated.nextAction, this.now(), operationId, resolution.deploymentId);
+      if (result.changes !== 1) throw new Error('operation resolution rejected: stale operation state');
+    })();
+    return this.readOrThrow(operationId);
+  }
   async appendStep(operationId: string, step: OperationStep): Promise<OperationJournalRecord> {
     const current = this.readOrThrow(operationId);
     const updated = appendOperationStep(current, step);
@@ -105,8 +118,9 @@ export class SqliteOperationJournal implements OperationJournalPort {
     const status = this.db.query<StatusRow, [string]>(`SELECT operation_id, deployment_id, phase, reason, next_action FROM operation_status WHERE operation_id = ?`).get(operationId);
     if (status === null) return null;
     const rows = this.db.query<StepRow, [string]>(`SELECT sequence, revision, kind, resource, phase, reason FROM operation_step AS current WHERE operation_id = ? AND revision = (SELECT MAX(revision) FROM operation_step AS latest WHERE latest.operation_id = current.operation_id AND latest.sequence = current.sequence) ORDER BY sequence`).all(operationId);
+    const resolutions = this.db.query<ResolutionRow, [string]>(`SELECT operation_id, deployment_id, sequence, kind, resource, outcome, fingerprint, observed_at FROM operation_resolution WHERE operation_id = ? ORDER BY sequence`).all(operationId);
     const phase = mapPhase(status.phase);
     const nextAction = status.next_action;
-    return { operationId: status.operation_id, deploymentId: status.deployment_id, phase, steps: rows.map(({ sequence, kind, resource, phase, reason }) => ({ sequence, kind, resource, phase, ...(reason === null ? {} : { reason }) })), remoteRetention: 'retain', nextAction, ...(status.reason === null ? {} : { reason: status.reason }) };
+    return { operationId: status.operation_id, deploymentId: status.deployment_id, phase, steps: rows.map(({ sequence, kind, resource, phase, reason }) => ({ sequence, kind, resource, phase, ...(reason === null ? {} : { reason }) })), resolutions: resolutions.map(({ operation_id, deployment_id, sequence, kind, resource, outcome, fingerprint, observed_at }) => ({ operationId: operation_id, deploymentId: deployment_id, sequence, kind, resource, outcome, fingerprint, observedAt: observed_at })), remoteRetention: 'retain', nextAction, ...(status.reason === null ? {} : { reason: status.reason }) };
   }
 }

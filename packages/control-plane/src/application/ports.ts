@@ -24,7 +24,7 @@ import type {
   ProviderName,
 } from '../domain/provider';
 import type { MulticaReadbackResult, MulticaSubject } from '../domain/multica';
-import type { OperationJournalRecord, OperationPlanInput, OperationStep } from '../domain/operation-journal';
+import type { OperationJournalRecord, OperationPlanInput, OperationResolution, OperationStep } from '../domain/operation-journal';
 import type { ClaudeContentMaterializationResult } from '../adapters/clients/claude/content-materializer';
 import type { SupplyRefRejection } from '../cli/supply-root';
 
@@ -42,6 +42,7 @@ export interface ConfigRevisionRepository {
 export interface OperationJournalPort {
   prepare(input: OperationPlanInput): Promise<OperationJournalRecord>;
   start(operationId: string): Promise<OperationJournalRecord>;
+  resolveInconclusive(operationId: string, resolution: OperationResolution): Promise<OperationJournalRecord>;
   appendStep(operationId: string, step: OperationStep): Promise<OperationJournalRecord>;
   finish(operationId: string, phase: 'succeeded' | 'failed' | 'cancelled', reason?: string): Promise<OperationJournalRecord>;
   find(operationId: string): Promise<OperationJournalRecord | null>;
