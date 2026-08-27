@@ -1273,7 +1273,7 @@ async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverr
   }
   if (projection === undefined || projection === null) {
     console.log(JSON.stringify({ kind: 'unsupported', phase: 'preflight-blocked', code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'select-existing-deployment', ...(kind === 'diagnose' ? { readOnly: true } : {}) }));
-    return 0;
+    return selectors === undefined ? 0 : 1;
   }
   const value = kind === 'diagnose' ? diagnoseDeployment(projection) : getUnifiedStatus(projection);
   console.log(JSON.stringify(value));

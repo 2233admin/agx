@@ -46,6 +46,8 @@ describe('lifecycle rehearsal CLI', () => {
     try {
       expect(await main(['status', '--deployment-id', 'dep-durable', '--operation-id', 'op-durable'])).toBe(0);
       expect(await main(['diagnose', '--deployment-id', 'dep-durable', '--operation-id', 'op-durable'])).toBe(0);
+      expect(await main(['status', '--deployment-id', 'dep-missing', '--operation-id', 'op-missing'])).toBe(1);
+      expect(await main(['diagnose', '--deployment-id', 'dep-missing', '--operation-id', 'op-missing'])).toBe(1);
     } finally {
       restore(); if (previous === undefined) delete process.env.CONTROL_PLANE_DB_PATH; else process.env.CONTROL_PLANE_DB_PATH = previous; rmSync(root, { recursive: true, force: true });
     }
