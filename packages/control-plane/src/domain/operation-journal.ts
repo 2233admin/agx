@@ -85,7 +85,7 @@ export function resolveInconclusiveOperation(
       resolution.operationId !== record.operationId || resolution.deploymentId !== record.deploymentId ||
       resolution.sequence !== pending.sequence || resolution.kind !== pending.kind || resolution.resource !== pending.resource ||
       !/^[a-f0-9]{64}$/.test(resolution.fingerprint) || !Number.isFinite(Date.parse(resolution.observedAt)) || !Number.isFinite(Date.parse(now)) ||
-      Date.parse(resolution.observedAt) > Date.parse(now) || Date.parse(now) - Date.parse(resolution.observedAt) > OPERATION_RESOLUTION_MAX_AGE_MS) {
+      Date.parse(resolution.observedAt) > Date.parse(now) || Date.parse(now) - Date.parse(resolution.observedAt) >= OPERATION_RESOLUTION_MAX_AGE_MS) {
     throw new Error('invalid operation resolution');
   }
   if (resolution.outcome !== 'matched') return { ...record, resolutions: [...(record.resolutions ?? []), resolution], phase: 'needs-manual-cleanup', nextAction: 'manual-cleanup' };

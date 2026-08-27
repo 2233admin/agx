@@ -60,7 +60,7 @@ describe('recoverDeploymentOperation', () => {
     expect(resumed.remoteRetention).toBe('retain');
   });
   test('rejects stale and future resolutions without persisting them', async () => {
-    for (const observedAt of ['2026-08-26T23:00:00.000Z', '2026-08-27T00:00:02.000Z']) {
+    for (const observedAt of ['2026-08-26T23:00:00.000Z', '2026-08-26T23:45:01.000Z', '2026-08-27T00:00:02.000Z']) {
       const journal = new InMemoryOperationJournal(); await prepared(journal); const uncertainDeps = deps([]);
       uncertainDeps.repositories = { ...uncertainDeps.repositories, provision: async () => ({ kind: 'inconclusive', stage: 'readback', reason: 'timeout', remoteRetention: 'retain' }) };
       await applyDeploymentPlan(journal, 'op-recovery', targets, uncertainDeps);
