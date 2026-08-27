@@ -76,6 +76,10 @@ export class SqliteOperationJournal implements OperationJournalPort {
     const updated = resolveInconclusiveOperation(current, resolution);
     this.db.transaction(() => {
       this.db.query(`INSERT INTO operation_resolution (operation_id, deployment_id, sequence, kind, resource, outcome, fingerprint, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(operationId, resolution.deploymentId, resolution.sequence, resolution.kind, resolution.resource, resolution.outcome, resolution.fingerprint, resolution.observedAt);
+      if (resolution.outcome === 'matched') {
+        const latestRevision = this.db.query<{ revision: number }, [string, number]>(`SELECT MAX(revision) AS revision FROM operation_step WHERE operation_id = ? AND sequence = ?`).get(operationId, resolution.sequence)?.revision ?? 0;
+        this.db.query(`INSERT INTO operation_step (operation_id, sequence, revision, kind, resource, phase, reason, created_at) VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?)`).run(operationId, resolution.sequence, latestRevision + 1, resolution.kind, resolution.resource, this.now());
+      }
       const result = this.db.query(`UPDATE operation_status SET phase = ?, next_action = ?, updated_at = ? WHERE operation_id = ? AND deployment_id = ? AND phase = 'inconclusive'`).run(updated.phase, updated.nextAction, this.now(), operationId, resolution.deploymentId);
       if (result.changes !== 1) throw new Error('operation resolution rejected: stale operation state');
     })();

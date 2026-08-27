@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryOperationJournal } from '../../src/adapters/operation/in-memory-journal';
 import { prepareDeploymentOperationPlan } from '../../src/application/operation-plan';
 import { applyDeploymentPlan, recoverDeploymentOperation, resolveDeploymentOperation, type DeploymentApplyTargets } from '../../src/application/deployment-apply';
-import type { GithubProjectPort, GithubRepositoryPort, OperationJournalPort, ProviderActivationPort } from '../../src/application/ports';
 import type { OperationPlanInput } from '../../src/domain/operation-journal';
+import type { GithubProjectPort, GithubRepositoryPort, OperationJournalPort, ProviderActivationPort } from '../../src/application/ports';
 
 const repo = { owner: 'octocat', name: 'agent-control', visibility: 'private', description: '', sourcePath: 'C:/source', initialRevision: { commit: 'a'.repeat(40), templateVersion: 'v1', templateDigest: 'b'.repeat(64), requiredPaths: ['README.md'] } } as const;
 const project = { owner: 'octocat', title: 'Agent System', visibility: 'private', linkedRepository: 'octocat/agent-control', installationId: 'install-0123456789abcdef' } as const;
@@ -58,5 +58,14 @@ describe('recoverDeploymentOperation', () => {
     expect(resumed.operation?.phase).toBe('needs-resume');
     expect(resumed.operation?.nextAction).toBe('resume-operation');
     expect(resumed.remoteRetention).toBe('retain');
+  });
+  test('apply retries the resolved inconclusive step before later planned steps', async () => {
+    const journal = new InMemoryOperationJournal(); await prepared(journal); const order: string[] = []; const first = deps(order); let attempts = 0;
+    first.repositories = { ...first.repositories, provision: async () => { order.push('repo'); attempts += 1; return attempts === 1 ? { kind: 'inconclusive', stage: 'readback', reason: 'timeout', remoteRetention: 'retain' } : repoResult; } };
+    await applyDeploymentPlan(journal, 'op-recovery', targets, first);
+    await resolveDeploymentOperation(journal, 'op-recovery', 'dep-recovery', { operationId: 'op-recovery', deploymentId: 'dep-recovery', sequence: 1, kind: 'github-repository', resource: 'octocat/agent-control', outcome: 'matched', fingerprint: 'a'.repeat(64), observedAt: '2026-08-27T00:00:00Z' });
+    const resumed = await applyDeploymentPlan(journal, 'op-recovery', targets, deps(order));
+    expect(resumed.operation?.phase).toBe('succeeded');
+    expect(order).toEqual(['repo', 'repo', 'repo-readback', 'project', 'project-readback', 'provider']);
   });
 });

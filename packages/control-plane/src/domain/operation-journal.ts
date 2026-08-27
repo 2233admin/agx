@@ -86,7 +86,8 @@ export function resolveInconclusiveOperation(
     throw new Error('invalid operation resolution');
   }
   if (resolution.outcome !== 'matched') return { ...record, resolutions: [...(record.resolutions ?? []), resolution], phase: 'needs-manual-cleanup', nextAction: 'manual-cleanup' };
-  return { ...record, resolutions: [...(record.resolutions ?? []), resolution], phase: 'needs-resume', nextAction: 'resume-operation' };
+  const steps = record.steps.map((step) => step.sequence === pending.sequence ? { sequence: step.sequence, kind: step.kind, resource: step.resource, phase: 'pending' as const } : step);
+  return { ...record, steps, resolutions: [...(record.resolutions ?? []), resolution], phase: 'needs-resume', nextAction: 'resume-operation' };
 }
 
 export function finishOperationJournal(record: OperationJournalRecord, phase: Extract<OperationJournalPhase, 'succeeded' | 'failed' | 'cancelled'>, reason?: string): OperationJournalRecord {

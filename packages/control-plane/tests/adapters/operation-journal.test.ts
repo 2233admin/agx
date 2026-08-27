@@ -75,4 +75,16 @@ describe('SqliteOperationJournal', () => {
     await expect(prepareDeploymentOperationPlan(reopened, { ...INPUT, operationId: 'op-new' })).rejects.toThrow('deployment is not plan-ready');
     reopened.close();
   });
+  test('atomically persists a matched resolution with the resolved step reset to pending', async () => {
+    const { root, value } = journal();
+    await prepareDeploymentOperationPlan(value, INPUT);
+    await value.start('op-sqlite');
+    await value.appendStep('op-sqlite', { sequence: 1, kind: 'github-repository', resource: 'agent-control', phase: 'inconclusive', reason: 'readback-timeout' });
+    const resolved = await value.resolveInconclusive('op-sqlite', { operationId: 'op-sqlite', deploymentId: 'dep-sqlite', sequence: 1, kind: 'github-repository', resource: 'agent-control', outcome: 'matched', fingerprint: 'a'.repeat(64), observedAt: '2026-08-27T00:00:00.000Z' });
+    expect(resolved.steps[0]?.phase).toBe('pending');
+    value.close();
+    const reopened = new SqliteOperationJournal(path.join(root, 'state.sqlite3'), () => '2026-08-27T00:00:01.000Z');
+    expect((await reopened.find('op-sqlite'))?.steps[0]?.phase).toBe('pending');
+    reopened.close();
+  });
 });
