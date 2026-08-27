@@ -5,8 +5,8 @@ import { ClaudeProviderAdapter, CodexProviderAdapter } from '../../src/adapters/
 import type { ProviderActivationTarget } from '../../src/domain/provider';
 
 const SOURCE = 'C:/agent-plugins';
-const CODEX_TARGET: ProviderActivationTarget = { provider: 'codex', marketplaceSource: SOURCE, plugins: ['grilling'] };
-const CLAUDE_TARGET: ProviderActivationTarget = { provider: 'claude', marketplaceSource: SOURCE, plugins: ['grilling'] };
+const CODEX_TARGET: ProviderActivationTarget = { provider: 'codex', marketplaceSource: SOURCE, plugins: [{ name: 'grilling', version: '1.2.3', enabled: true }] };
+const CLAUDE_TARGET: ProviderActivationTarget = { provider: 'claude', marketplaceSource: SOURCE, plugins: [{ name: 'grilling', version: '1.2.3', enabled: true }] };
 
 interface Response { readonly stdout: string; readonly exitCode: number | null }
 
@@ -60,9 +60,19 @@ describe('CodexProviderAdapter', () => {
       ['plugin add grilling@agent-plugins --json', [json({})]],
     ]);
     const adapter = new CodexProviderAdapter(command as unknown as CodexProviderCommandPort);
-    await expect(adapter.activate(CODEX_TARGET)).resolves.toMatchObject({ kind: 'activated', ownership: { marketplace: 'pre-existing', plugins: ['grilling'] } });
+    await expect(adapter.activate(CODEX_TARGET)).resolves.toMatchObject({ kind: 'activated', ownership: { marketplace: 'pre-existing', plugins: [{ name: 'grilling', version: '1.2.3', source: SOURCE }] } });
     expect(command.calls).toContainEqual(['plugin', 'add', 'grilling@agent-plugins', '--json']);
     expect(command.calls).not.toContainEqual(['plugin marketplace add', SOURCE, '--json']);
+  });
+  test('post-activation readback mismatch is inconclusive, never success', async () => {
+    const command = sequence([
+      [codexInventoryKeys[0], [CODEX_EMPTY, CODEX_PRESENT]],
+      [codexInventoryKeys[1], [CODEX_PLUGINS_EMPTY, json({ installed: [{ name: 'grilling', marketplaceName: 'agent-plugins', version: '1.2.3', installed: true, enabled: false }] })]],
+      ['plugin marketplace add C:/agent-plugins --json', [json({})]],
+      ['plugin add grilling@agent-plugins --json', [json({})]],
+    ]);
+    const adapter = new CodexProviderAdapter(command as unknown as CodexProviderCommandPort);
+    await expect(adapter.activate(CODEX_TARGET)).resolves.toEqual({ kind: 'inconclusive', reason: 'provider-post-activation-readback-mismatch' });
   });
 
   test('different marketplace source is a collision and is never rebound', async () => {
@@ -79,7 +89,18 @@ describe('CodexProviderAdapter', () => {
       ['plugin marketplace remove agent-plugins --json', [json({})]],
     ]);
     const adapter = new CodexProviderAdapter(command as unknown as CodexProviderCommandPort);
-    await expect(adapter.revoke(CODEX_TARGET, { marketplace: 'created-by-configs', marketplaceSource: SOURCE, plugins: ['grilling'] })).resolves.toMatchObject({ kind: 'revoked' });
+    await expect(adapter.revoke(CODEX_TARGET, { marketplace: 'created-by-configs', marketplaceSource: SOURCE, plugins: [{ name: 'grilling', version: '1.2.3', source: SOURCE }] })).resolves.toMatchObject({ kind: 'revoked' });
+  });
+  test('plugin version drift blocks revoke without removing the changed plugin', async () => {
+    const command = sequence([
+      [codexInventoryKeys[0], [CODEX_PRESENT]],
+      [codexInventoryKeys[1], [json({ installed: [{ name: 'grilling', marketplaceName: 'agent-plugins', version: '9.9.9', installed: true, enabled: true }] })]],
+    ]);
+    const adapter = new CodexProviderAdapter(command as unknown as CodexProviderCommandPort);
+    await expect(adapter.revoke(CODEX_TARGET, { marketplace: 'created-by-configs', marketplaceSource: SOURCE, plugins: [{ name: 'grilling', version: '1.2.3', source: SOURCE }] })).resolves.toEqual({
+      kind: 'collision', reason: 'plugin-drift', actualSource: 'C:/agent-plugins:9.9.9',
+    });
+    expect(command.calls.some((args) => args.includes('remove'))).toBe(false);
   });
 });
 
@@ -112,6 +133,19 @@ describe('ClaudeProviderAdapter', () => {
 
     const timeout = new CodexProviderAdapter({ available: async () => { throw new Error('timeout'); }, run: async () => raw('') });
     await expect(timeout.inspect()).resolves.toEqual({ kind: 'inconclusive', reason: 'provider-inventory-inconclusive' });
+  });
+  test('strictly rejects duplicate and unknown JSON fields', async () => {
+    const duplicate = new CodexProviderAdapter(sequence([
+      [codexInventoryKeys[0], [raw('{\"marketplaces\":[],\"marketplaces\":[]}')]],
+      [codexInventoryKeys[1], [CODEX_PLUGINS_EMPTY]],
+    ]) as unknown as CodexProviderCommandPort);
+    await expect(duplicate.inspect()).resolves.toEqual({ kind: 'inconclusive', reason: 'provider-inventory-inconclusive' });
+
+    const unknown = new ClaudeProviderAdapter(sequence([
+      [claudeInventoryKeys[0], [raw('[{\"name\":\"agent-plugins\",\"source\":\"directory\",\"path\":\"C:/agent-plugins\",\"unexpected\":true}]')]],
+      [claudeInventoryKeys[1], [CLAUDE_PLUGINS_EMPTY]],
+    ]) as unknown as ClaudeProviderCommandPort);
+    await expect(unknown.inspect()).resolves.toEqual({ kind: 'inconclusive', reason: 'provider-inventory-inconclusive' });
   });
 
   test('pre-existing marketplace is preserved and changed source cannot be revoked', async () => {

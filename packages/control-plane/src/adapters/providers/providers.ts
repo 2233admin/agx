@@ -17,14 +17,78 @@ import type {
 
 const MARKETPLACE = 'agent-plugins';
 
-function parseJson(stdout: string): unknown | null {
-  try { return JSON.parse(stdout); } catch { return null; }
+function duplicateKeysOrMalformed(value: string): boolean {
+  let index = 0;
+  const whitespace = () => { while (/\s/.test(value[index] ?? '')) index += 1; };
+  const stringValue = (): string | null => {
+    if (value[index] !== '"') return null;
+    const start = index;
+    index += 1;
+    while (index < value.length) {
+      if (value[index] === '\\') index += 2;
+      else if (value[index++] === '"') {
+        try { return JSON.parse(value.slice(start, index)) as string; } catch { return null; }
+      }
+    }
+    return null;
+  };
+  const parseValue = (): boolean => {
+    whitespace();
+    if (value[index] === '{') {
+      index += 1;
+      const keys = new Set<string>();
+      whitespace();
+      if (value[index] === '}') { index += 1; return true; }
+      while (index < value.length) {
+        const key = stringValue();
+        if (key === null || keys.has(key)) return false;
+        keys.add(key);
+        whitespace();
+        if (value[index++] !== ':') return false;
+        if (!parseValue()) return false;
+        whitespace();
+        if (value[index] === '}') { index += 1; return true; }
+        if (value[index++] !== ',') return false;
+        whitespace();
+      }
+      return false;
+    }
+    if (value[index] === '[') {
+      index += 1;
+      whitespace();
+      if (value[index] === ']') { index += 1; return true; }
+      while (index < value.length) {
+        if (!parseValue()) return false;
+        whitespace();
+        if (value[index] === ']') { index += 1; return true; }
+        if (value[index++] !== ',') return false;
+        whitespace();
+      }
+      return false;
+    }
+    if (value[index] === '"') return stringValue() !== null;
+    const match = /^(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null)/.exec(value.slice(index));
+    if (match === null) return false;
+    index += match[0].length;
+    return true;
+  };
+  if (!parseValue()) return true;
+  whitespace();
+  return index !== value.length;
 }
 
+function onlyKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(record).every((key) => allowed.has(key));
+}
+
+function parseJson(stdout: string): unknown | null {
+  if (duplicateKeysOrMalformed(stdout)) return null;
+  try { return JSON.parse(stdout); } catch { return null; }
+}
 function canonicalSource(value: string): string {
   return value.trim().replace(/^\\\\\?\\/, '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
-
 function sameSource(actual: string | null, expected: string): boolean {
   return actual !== null && actual.trim() !== '' && canonicalSource(actual) === canonicalSource(expected);
 }
@@ -34,11 +98,21 @@ function inconclusive(reason: string): { readonly kind: 'inconclusive'; readonly
 }
 
 function providerNameValid(value: string): boolean {
+
   return value.trim() !== '' && value.length <= 128 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+function activationMatches(inventory: ProviderInventory, target: ProviderActivationTarget): boolean {
+  if (!inventory.marketplace.present || !sameSource(inventory.marketplace.source, target.marketplaceSource)) return false;
+  return target.plugins.every((expected) => {
+    const actual = inventory.plugins.find((plugin) => plugin.name === expected.name);
+    return actual !== undefined && actual.enabled === expected.enabled &&
+      (expected.version === undefined || actual.version === expected.version);
+  });
 }
 
 function parseCodexInventory(marketplaceJSON: unknown, pluginJSON: unknown): ProviderInventory | null {
   if (marketplaceJSON === null || typeof marketplaceJSON !== 'object' || pluginJSON === null || typeof pluginJSON !== 'object') return null;
+  if (!onlyKeys(marketplaceJSON as Record<string, unknown>, ['marketplaces']) || !onlyKeys(pluginJSON as Record<string, unknown>, ['installed', 'available'])) return null;
   const marketplaces = (marketplaceJSON as Record<string, unknown>).marketplaces;
   const installed = (pluginJSON as Record<string, unknown>).installed;
   if (!Array.isArray(marketplaces) || !Array.isArray(installed)) return null;
@@ -46,6 +120,7 @@ function parseCodexInventory(marketplaceJSON: unknown, pluginJSON: unknown): Pro
   for (const item of marketplaces) {
     if (item === null || typeof item !== 'object') return null;
     const record = item as Record<string, unknown>;
+    if (!onlyKeys(record, ['name', 'root', 'marketplaceSource'])) return null;
     if (record.name !== MARKETPLACE) continue;
     if (typeof record.root !== 'string' || record.root.trim() === '') return null;
     const sourceRecord = record.marketplaceSource;
@@ -54,7 +129,7 @@ function parseCodexInventory(marketplaceJSON: unknown, pluginJSON: unknown): Pro
     if (sourceRecord !== undefined && sourceRecord !== null) {
       if (typeof sourceRecord !== 'object') return null;
       const typed = sourceRecord as Record<string, unknown>;
-      if (typeof typed.sourceType !== 'string' || typeof typed.source !== 'string' || typed.source.trim() === '') return null;
+      if (!onlyKeys(typed, ['sourceType', 'source']) || typeof typed.sourceType !== 'string' || typeof typed.source !== 'string' || typed.source.trim() === '') return null;
       sourceType = typed.sourceType;
       source = typed.source;
     }
@@ -65,6 +140,7 @@ function parseCodexInventory(marketplaceJSON: unknown, pluginJSON: unknown): Pro
   for (const item of installed) {
     if (item === null || typeof item !== 'object') return null;
     const record = item as Record<string, unknown>;
+    if (!onlyKeys(record, ['pluginId', 'name', 'marketplaceName', 'version', 'installed', 'enabled'])) return null;
     if (record.marketplaceName !== MARKETPLACE || record.installed !== true) continue;
     if (typeof record.name !== 'string' || !providerNameValid(record.name) || typeof record.version !== 'string' || typeof record.enabled !== 'boolean') return null;
     plugins.push({ name: record.name, version: record.version, enabled: record.enabled });
@@ -78,6 +154,7 @@ function parseClaudeInventory(marketplaceJSON: unknown, pluginJSON: unknown): Pr
   for (const item of marketplaceJSON) {
     if (item === null || typeof item !== 'object') return null;
     const record = item as Record<string, unknown>;
+    if (!onlyKeys(record, ['name', 'source', 'repo', 'url', 'path', 'installLocation'])) return null;
     if (record.name !== MARKETPLACE) continue;
     const source = [record.path, record.repo, record.url, record.installLocation].find((value): value is string => typeof value === 'string' && value.trim() !== '') ?? null;
     if (source === null || typeof record.source !== 'string') return null;
@@ -88,6 +165,7 @@ function parseClaudeInventory(marketplaceJSON: unknown, pluginJSON: unknown): Pr
   for (const item of pluginJSON) {
     if (item === null || typeof item !== 'object') return null;
     const record = item as Record<string, unknown>;
+    if (!onlyKeys(record, ['id', 'version', 'scope', 'enabled'])) return null;
     if (typeof record.id !== 'string' || !record.id.endsWith(`@${MARKETPLACE}`) || record.scope !== 'user') continue;
     const name = record.id.slice(0, -(`@${MARKETPLACE}`).length);
     if (!providerNameValid(name) || typeof record.version !== 'string' || typeof record.enabled !== 'boolean') return null;
@@ -121,13 +199,16 @@ abstract class ProviderAdapterBase<Command extends { available(): Promise<boolea
   }
 
   async activate(target: ProviderActivationTarget): Promise<ProviderActivationResult> {
-    if (target.provider !== this.provider || target.marketplaceSource.trim() === '' || target.plugins.some((plugin) => !providerNameValid(plugin))) return inconclusive('invalid-provider-activation-target');
+    if (target.provider !== this.provider || target.marketplaceSource.trim() === '' ||
+        target.plugins.some((plugin) => !providerNameValid(plugin.name) || (plugin.version !== undefined && plugin.version.trim() === ''))) {
+      return inconclusive('invalid-provider-activation-target');
+    }
     const before = await this.inspect();
     if (before.kind === 'inconclusive') return before;
     if (before.inventory.marketplace.present && !sameSource(before.inventory.marketplace.source, target.marketplaceSource)) {
       return { kind: 'collision', reason: 'different-marketplace-source', actualSource: before.inventory.marketplace.source ?? '(unknown)' };
     }
-    let marketplaceOwnership: ProviderOwnershipRecord['marketplace'] = before.inventory.marketplace.present ? 'pre-existing' : 'created-by-configs';
+    const marketplaceOwnership: ProviderOwnershipRecord['marketplace'] = before.inventory.marketplace.present ? 'pre-existing' : 'created-by-configs';
     if (!before.inventory.marketplace.present) {
       try {
         const result = await this.command.run(this.addMarketplaceArgs(target.marketplaceSource));
@@ -137,19 +218,25 @@ abstract class ProviderAdapterBase<Command extends { available(): Promise<boolea
       }
     }
     const existing = new Set(before.inventory.plugins.map((plugin) => plugin.name));
-    const ownedPlugins: string[] = [];
+    const installedNames: string[] = [];
     for (const plugin of target.plugins) {
-      if (existing.has(plugin)) continue;
+      if (existing.has(plugin.name)) continue;
       try {
-        const result = await this.command.run(this.installPluginArgs(plugin));
-        if (result.exitCode !== 0) return inconclusive(`plugin-activation-inconclusive:${plugin}`);
-        ownedPlugins.push(plugin);
+        const result = await this.command.run(this.installPluginArgs(plugin.name));
+        if (result.exitCode !== 0) return inconclusive(`plugin-activation-inconclusive:${plugin.name}`);
+        installedNames.push(plugin.name);
       } catch {
-        return inconclusive(`plugin-activation-inconclusive:${plugin}`);
+        return inconclusive(`plugin-activation-inconclusive:${plugin.name}`);
       }
     }
     const after = await this.inspect();
     if (after.kind === 'inconclusive') return after;
+    if (!activationMatches(after.inventory, target)) return inconclusive('provider-post-activation-readback-mismatch');
+    const ownedPlugins = installedNames.map((name) => {
+      const plugin = after.inventory.plugins.find((item) => item.name === name);
+      return { name, version: plugin?.version ?? '', source: target.marketplaceSource };
+    });
+    if (ownedPlugins.some((plugin) => plugin.version === '')) return inconclusive('provider-post-activation-readback-mismatch');
     return { kind: 'activated', inventory: after.inventory, ownership: { marketplace: marketplaceOwnership, marketplaceSource: target.marketplaceSource, plugins: ownedPlugins } };
   }
 
@@ -162,13 +249,17 @@ abstract class ProviderAdapterBase<Command extends { available(): Promise<boolea
       if (current.inventory.marketplace.present && current.inventory.marketplace.source !== null) return { kind: 'collision', reason: 'marketplace-source-changed', actualSource: current.inventory.marketplace.source };
       return inconclusive('marketplace-source-inconclusive');
     }
-    for (const plugin of ownership.plugins) {
-      if (!current.inventory.plugins.some((item) => item.name === plugin)) continue;
+    for (const binding of ownership.plugins) {
+      const currentPlugin = current.inventory.plugins.find((item) => item.name === binding.name);
+      if (currentPlugin === undefined) continue;
+      if (currentPlugin.version !== binding.version || !sameSource(current.inventory.marketplace.source, binding.source)) {
+        return { kind: 'collision', reason: 'plugin-drift', actualSource: `${current.inventory.marketplace.source ?? '(unknown)'}:${currentPlugin.version}` };
+      }
       try {
-        const result = await this.command.run(this.removePluginArgs(plugin));
-        if (result.exitCode !== 0) return inconclusive(`plugin-revoke-inconclusive:${plugin}`);
+        const result = await this.command.run(this.removePluginArgs(binding.name));
+        if (result.exitCode !== 0) return inconclusive(`plugin-revoke-inconclusive:${binding.name}`);
       } catch {
-        return inconclusive(`plugin-revoke-inconclusive:${plugin}`);
+        return inconclusive(`plugin-revoke-inconclusive:${binding.name}`);
       }
     }
     if (ownership.marketplace === 'pre-existing') return { kind: 'preserved', reason: 'marketplace-pre-existing' };

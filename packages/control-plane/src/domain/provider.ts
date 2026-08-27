@@ -18,20 +18,32 @@ export interface ProviderInventory {
   readonly plugins: readonly ProviderPlugin[];
 }
 
+export interface ProviderPluginTarget {
+  readonly name: string;
+  readonly version?: string;
+  readonly enabled: boolean;
+}
+
 export interface ProviderActivationTarget {
   readonly provider: ProviderName;
   readonly marketplaceSource: string;
-  readonly plugins: readonly string[];
+  readonly plugins: readonly ProviderPluginTarget[];
 }
 
 export type ProviderOwnership = 'created-by-configs' | 'pre-existing' | 'unknown';
 
+export interface ProviderPluginBinding {
+  readonly name: string;
+  readonly version: string;
+  readonly source: string;
+}
+
 export interface ProviderOwnershipRecord {
   readonly marketplace: ProviderOwnership;
   readonly marketplaceSource: string;
-  readonly plugins: readonly string[];
-}
+  readonly plugins: readonly ProviderPluginBinding[];
 
+}
 export type ProviderInventoryResult =
   | { readonly kind: 'observed'; readonly inventory: ProviderInventory }
   | { readonly kind: 'inconclusive'; readonly reason: string };
@@ -44,5 +56,5 @@ export type ProviderActivationResult =
 export type ProviderRevokeResult =
   | { readonly kind: 'revoked'; readonly ownership: ProviderOwnershipRecord }
   | { readonly kind: 'preserved'; readonly reason: 'marketplace-pre-existing' | 'ownership-unknown' }
-  | { readonly kind: 'collision'; readonly reason: 'marketplace-source-changed'; readonly actualSource: string }
+  | { readonly kind: 'collision'; readonly reason: 'marketplace-source-changed' | 'plugin-drift'; readonly actualSource: string }
   | { readonly kind: 'inconclusive'; readonly reason: string };
