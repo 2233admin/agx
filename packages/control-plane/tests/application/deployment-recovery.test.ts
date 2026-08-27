@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { InMemoryOperationJournal } from '../../src/adapters/operation/in-memory-journal';
 import { prepareDeploymentOperationPlan } from '../../src/application/operation-plan';
-import { applyDeploymentPlan, recoverDeploymentOperation, type DeploymentApplyTargets } from '../../src/application/deployment-apply';
+import { applyDeploymentPlan, recoverDeploymentOperation, resolveDeploymentOperation, type DeploymentApplyTargets } from '../../src/application/deployment-apply';
 import type { GithubProjectPort, GithubRepositoryPort, OperationJournalPort, ProviderActivationPort } from '../../src/application/ports';
 import type { OperationPlanInput } from '../../src/domain/operation-journal';
 
@@ -40,5 +40,23 @@ describe('recoverDeploymentOperation', () => {
   test('rejects any attempt to append a verified recovery step', async () => {
     const journal = new InMemoryOperationJournal(); await prepared(journal);
     await expect(journal.appendStep('op-recovery', { sequence: 1, kind: 'github-repository', resource: 'octocat/agent-control', phase: 'verified' as never })).rejects.toThrow('verified requires evaluator-approved evidence');
+  });
+  test('requires exact structured readback before resuming an inconclusive operation', async () => {
+    const journal = new InMemoryOperationJournal();
+    await prepared(journal);
+    const collisionDeps = deps([]);
+    collisionDeps.repositories = { ...collisionDeps.repositories, provision: async () => ({ kind: 'inconclusive', stage: 'readback', reason: 'timeout', remoteRetention: 'retain' }) };
+    await applyDeploymentPlan(journal, 'op-recovery', targets, collisionDeps);
+    const resolution = {
+      operationId: 'op-recovery', deploymentId: 'dep-recovery', sequence: 1,
+      kind: 'github-repository' as const, resource: 'octocat/agent-control',
+      outcome: 'matched' as const, fingerprint: 'a'.repeat(64), observedAt: '2026-08-27T00:00:00Z',
+    };
+    await expect(recoverDeploymentOperation(journal, 'op-recovery', 'dep-recovery', targets, deps([]))).resolves.toMatchObject({ kind: 'inconclusive' });
+    await expect(journal.resolveInconclusive('op-recovery', { ...resolution, operationId: 'wrong' })).rejects.toThrow('invalid operation resolution');
+    const resumed = await resolveDeploymentOperation(journal, 'op-recovery', 'dep-recovery', resolution);
+    expect(resumed.operation?.phase).toBe('needs-resume');
+    expect(resumed.operation?.nextAction).toBe('resume-operation');
+    expect(resumed.remoteRetention).toBe('retain');
   });
 });
