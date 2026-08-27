@@ -20,7 +20,7 @@ export interface ProviderInventory {
 
 export interface ProviderPluginTarget {
   readonly name: string;
-  readonly version?: string;
+  readonly version: string;
   readonly enabled: boolean;
 }
 

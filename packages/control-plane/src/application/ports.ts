@@ -23,6 +23,7 @@ import type {
   ProviderOwnershipRecord,
   ProviderName,
 } from '../domain/provider';
+import type { MulticaReadbackResult, MulticaSubject } from '../domain/multica';
 import type { ClaudeContentMaterializationResult } from '../adapters/clients/claude/content-materializer';
 import type { SupplyRefRejection } from '../cli/supply-root';
 
@@ -36,6 +37,15 @@ export interface ConfigRevisionRepository {
   listAll(): Promise<readonly StableConfigRevision[]>;
   findById(revisionId: string): Promise<StableConfigRevision | null>;
 }
+export interface MulticaCommandPort {
+  available(): Promise<boolean>;
+  run(args: readonly string[]): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
+}
+
+export interface MulticaRuntimePort {
+  readback(subject: MulticaSubject): Promise<MulticaReadbackResult>;
+}
+
 /**
  * Structured `gh` boundary. The adapter receives argv as an array and parses
  * only allowlisted JSON fields; tests provide deterministic fixtures here.

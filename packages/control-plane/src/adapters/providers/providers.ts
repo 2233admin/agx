@@ -105,8 +105,7 @@ function activationMatches(inventory: ProviderInventory, target: ProviderActivat
   if (!inventory.marketplace.present || !sameSource(inventory.marketplace.source, target.marketplaceSource)) return false;
   return target.plugins.every((expected) => {
     const actual = inventory.plugins.find((plugin) => plugin.name === expected.name);
-    return actual !== undefined && actual.enabled === expected.enabled &&
-      (expected.version === undefined || actual.version === expected.version);
+    return actual !== undefined && actual.enabled === expected.enabled && actual.version === expected.version;
   });
 }
 
@@ -200,7 +199,7 @@ abstract class ProviderAdapterBase<Command extends { available(): Promise<boolea
 
   async activate(target: ProviderActivationTarget): Promise<ProviderActivationResult> {
     if (target.provider !== this.provider || target.marketplaceSource.trim() === '' ||
-        target.plugins.some((plugin) => !providerNameValid(plugin.name) || (plugin.version !== undefined && plugin.version.trim() === ''))) {
+        target.plugins.some((plugin) => !providerNameValid(plugin.name) || !providerNameValid(plugin.version))) {
       return inconclusive('invalid-provider-activation-target');
     }
     const before = await this.inspect();
