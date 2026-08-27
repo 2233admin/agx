@@ -7,6 +7,7 @@ import type { GithubProjectTarget } from '../../src/domain/github-project';
 import type { GithubRepositoryTarget } from '../../src/domain/github-repository';
 import type { MulticaSubject } from '../../src/domain/multica';
 import type { ProviderInventoryResult } from '../../src/domain/provider';
+import type { OperationJournalRecord, OperationPlanInput } from '../../src/domain/operation-journal';
 import { InMemoryOperationJournal } from '../../src/adapters/operation/in-memory-journal';
 
 const REVISION_ID = 'rev-1';
@@ -20,6 +21,13 @@ const PROVIDERS = [
   { provider: 'codex', marketplaceSource: 'C:/agent-plugins', plugins: [{ name: 'grill', version: '1.0.0', enabled: true }] },
 ] as const;
 const RUNTIME: MulticaSubject = { kind: 'runtime', id: 'd3baaa7b-1111-4111-8111-111111111111' };
+class RecordingJournal extends InMemoryOperationJournal {
+  prepareCalls = 0;
+  override async prepare(input: OperationPlanInput): Promise<OperationJournalRecord> {
+    this.prepareCalls += 1;
+    return super.prepare(input);
+  }
+}
 
 function input(overrides: Partial<DeploymentPreflightInput> = {}): DeploymentPreflightInput {
   return { deploymentId: 'dep-1', operationId: 'op-1', revisionId: REVISION_ID, repositories: REPOSITORIES, project: PROJECT, providers: PROVIDERS, multicaSubjects: [RUNTIME], ...overrides };
@@ -40,7 +48,7 @@ describe('prepareDeploymentPlan preflight', () => {
     expect(result.kind).toBe('ready');
     expect(result.remoteRetention).toBe('retain');
     expect(result.plan.steps.map((step) => `${step.kind}:${step.resource}`)).toEqual([
-      'github-repository:a-repo', 'github-repository:z-repo', 'github-project:Agent-System', 'provider-activation:claude', 'provider-activation:codex',
+      'github-repository:octocat/a-repo', 'github-repository:octocat/z-repo', 'github-project:Agent-System', 'provider-activation:claude', 'provider-activation:codex',
     ]);
     expect(calls).toEqual(['repo:a-repo', 'repo:z-repo', 'project', 'provider', 'provider']);
   });
@@ -49,11 +57,12 @@ describe('prepareDeploymentPlan preflight', () => {
     const calls: string[] = [];
     const ports = { ...readyPorts(calls) };
     ports.repositories = { ...ports.repositories, preflight: async () => ({ kind: 'collision', ownership: 'pre-existing', repository: {} as never }) };
-    const result = await prepareDeploymentPlan(new InMemoryOperationJournal(), input(), ports);
+    const journal = new RecordingJournal();
+    const result = await prepareDeploymentPlan(journal, input(), ports);
     expect(result.kind).toBe('blocked');
     expect(result.blockers[0]?.reason).toBe('repository-collision');
     expect(result.plan.phase).toBe('prepared');
-    expect(calls).toEqual(['project', 'provider', 'provider']);
+    expect(journal.prepareCalls).toBe(0);
   });
 
   test('inconclusive provider and missing config remain blocked with retained remote state', async () => {
@@ -76,5 +85,17 @@ describe('prepareDeploymentPlan preflight', () => {
     expect(JSON.stringify(first.plan)).toBe(JSON.stringify(second.plan));
     expect(first.kind).toBe('blocked');
     expect(first.blockers.some((blocker) => blocker.reason === 'multica-offline')).toBe(true);
+  });
+  test('invalid IDs and punctuation-only Project titles block before journal writes', async () => {
+    const journal = new RecordingJournal();
+    const result = await prepareDeploymentPlan(journal, input({ operationId: '!!!', project: { ...PROJECT, title: '!!!' } }), readyPorts());
+    expect(result.kind).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['invalid-operation-id', 'invalid-project-resource']);
+    expect(journal.prepareCalls).toBe(0);
+  });
+  test('keeps repositories with equal names but different owners distinct', async () => {
+    const otherOwner = { ...REPOSITORIES[1]!, owner: 'other-owner' };
+    const result = await prepareDeploymentPlan(new InMemoryOperationJournal(), input({ repositories: [REPOSITORIES[1]!, otherOwner] }), readyPorts());
+    expect(result.plan.steps.slice(0, 2).map((step) => step.resource)).toEqual(['octocat/a-repo', 'other-owner/a-repo']);
   });
 });

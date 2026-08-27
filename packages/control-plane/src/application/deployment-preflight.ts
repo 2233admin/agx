@@ -7,7 +7,7 @@ import type {
   ProviderInventoryPort,
 } from './ports';
 import { prepareDeploymentOperationPlan } from './operation-plan';
-import type { OperationJournalRecord, OperationPlanInput } from '../domain/operation-journal';
+import { createOperationJournal, type OperationJournalRecord, type OperationPlanInput } from '../domain/operation-journal';
 import type { GithubProjectTarget } from '../domain/github-project';
 import type { GithubRepositoryTarget } from '../domain/github-repository';
 import type { MulticaSubject } from '../domain/multica';
@@ -41,15 +41,37 @@ export type DeploymentPreflightResult =
   | { readonly kind: 'ready'; readonly plan: OperationJournalRecord; readonly blockers: readonly []; readonly remoteRetention: 'retain' }
   | { readonly kind: 'blocked'; readonly plan: OperationJournalRecord; readonly blockers: readonly DeploymentPreflightBlocker[]; readonly remoteRetention: 'retain' };
 
+const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 function repositoryResource(target: GithubRepositoryTarget): string { return `${target.owner}/${target.name}`; }
 function projectResource(target: GithubProjectTarget): string { return target.title.trim().replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
-function sameSource(actual: string | null, expected: string): boolean { return actual !== null && actual.trim() !== '' && actual.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === expected.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); }
+function sameSource(actual: string | null, expected: string): boolean {
+  return actual !== null && actual.trim() !== '' &&
+    actual.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() ===
+    expected.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
 
 function sortedRepositories(targets: readonly GithubRepositoryTarget[]): readonly GithubRepositoryTarget[] {
   return [...targets].sort((left, right) => repositoryResource(left).localeCompare(repositoryResource(right)));
 }
 function sortedProviders(targets: readonly ProviderActivationTarget[]): readonly ProviderActivationTarget[] {
   return [...targets].sort((left, right) => left.provider.localeCompare(right.provider));
+}
+
+function inputBlockers(input: DeploymentPreflightInput): readonly DeploymentPreflightBlocker[] {
+  const blockers: DeploymentPreflightBlocker[] = [];
+  if (!RESOURCE_ID.test(input.deploymentId)) blockers.push({ resource: input.deploymentId || '(missing)', reason: 'invalid-deployment-id' });
+  if (!RESOURCE_ID.test(input.operationId)) blockers.push({ resource: input.operationId || '(missing)', reason: 'invalid-operation-id' });
+  if (input.revisionId.trim() === '') blockers.push({ resource: '(missing)', reason: 'configuration-revision-required' });
+  for (const target of input.repositories) if (!RESOURCE_ID.test(repositoryResource(target))) blockers.push({ resource: repositoryResource(target), reason: 'invalid-repository-resource' });
+  if (!RESOURCE_ID.test(projectResource(input.project))) blockers.push({ resource: input.project.title || '(missing)', reason: 'invalid-project-resource' });
+  for (const target of input.providers) if (!RESOURCE_ID.test(target.provider)) blockers.push({ resource: target.provider || '(missing)', reason: 'invalid-provider-resource' });
+  return blockers;
+}
+
+function diagnosticPlan(input: OperationPlanInput): OperationJournalRecord {
+  const safe = (value: string, fallback: string): string => RESOURCE_ID.test(value) ? value : fallback;
+  const steps = input.steps.map((step, index) => ({ ...step, resource: safe(step.resource, `${step.kind}-${index + 1}`) }));
+  return createOperationJournal({ operationId: safe(input.operationId, 'invalid-operation'), deploymentId: safe(input.deploymentId, 'invalid-deployment'), steps });
 }
 
 function buildPlanInput(input: DeploymentPreflightInput): OperationPlanInput {
@@ -59,7 +81,7 @@ function buildPlanInput(input: DeploymentPreflightInput): OperationPlanInput {
     deploymentId: input.deploymentId,
     operationId: input.operationId,
     steps: [
-      ...repositories.map((target) => ({ kind: 'github-repository' as const, resource: target.name })),
+      ...repositories.map((target) => ({ kind: 'github-repository' as const, resource: repositoryResource(target) })),
       { kind: 'github-project' as const, resource: projectResource(input.project) },
       ...providers.map((target) => ({ kind: 'provider-activation' as const, resource: target.provider })),
     ],
@@ -72,8 +94,10 @@ export async function prepareDeploymentPlan(
   input: DeploymentPreflightInput,
   ports: DeploymentPreflightPorts,
 ): Promise<DeploymentPreflightResult> {
-  const plan = await prepareDeploymentOperationPlan(journal, buildPlanInput(input));
-  const blockers: DeploymentPreflightBlocker[] = [];
+  const planInput = buildPlanInput(input);
+  const diagnostic = diagnosticPlan(planInput);
+  const blockers = [...inputBlockers(input)];
+  if (blockers.length > 0) return { kind: 'blocked', plan: diagnostic, blockers, remoteRetention: 'retain' };
   try {
     const revision = await ports.revision.findById(input.revisionId);
     if (revision === null) blockers.push({ resource: input.revisionId, reason: 'configuration-revision-missing' });
@@ -123,5 +147,7 @@ export async function prepareDeploymentPlan(
     }
   }
 
-  return blockers.length === 0 ? { kind: 'ready', plan, blockers: [], remoteRetention: 'retain' } : { kind: 'blocked', plan, blockers, remoteRetention: 'retain' };
+  if (blockers.length > 0) return { kind: 'blocked', plan: diagnostic, blockers, remoteRetention: 'retain' };
+  const plan = await prepareDeploymentOperationPlan(journal, planInput);
+  return { kind: 'ready', plan, blockers: [], remoteRetention: 'retain' };
 }
