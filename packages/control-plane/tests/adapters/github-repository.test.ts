@@ -239,6 +239,28 @@ describe('GithubRepositoryAdapter', () => {
       rmSync(sourcePath, { recursive: true, force: true });
     }
   });
+  test('failed git staging command invalidates and cleans the snapshot', async () => {
+    const sourcePath = mkdtempSync(path.join(os.tmpdir(), 'github-source-failed-git-'));
+    let snapshotPath = '';
+    try {
+      writeFileSync(path.join(sourcePath, 'README.md'), 'hello');
+      const git: GithubRepositoryCommandPort = {
+        async run(args) {
+          snapshotPath = args[2] ?? snapshotPath;
+          return { stdout: args.includes('rev-parse') ? `${INITIAL_COMMIT}\n` : '', exitCode: args.includes('add') ? 1 : 0 };
+        },
+      };
+
+      const result = await new FsGithubRepositorySourcePort(git).validate(sourcePath);
+
+      expect(result).toEqual({ kind: 'invalid', reason: 'source-path-unreadable' });
+      expect(snapshotPath).not.toBe('');
+      expect(existsSync(snapshotPath)).toBe(false);
+    } finally {
+      rmSync(sourcePath, { recursive: true, force: true });
+      if (snapshotPath !== '') rmSync(snapshotPath, { recursive: true, force: true });
+    }
+  });
   test('accepts later commits while preserving the requested initial commit readback', async () => {
     const laterCommit = 'c'.repeat(40);
     const gh = new FixtureGh(

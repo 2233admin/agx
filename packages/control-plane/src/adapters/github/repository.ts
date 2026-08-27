@@ -187,14 +187,18 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
         await mkdir(path.dirname(destination), { recursive: true });
         await writeFile(destination, file.content, { mode: 0o400 });
       }
-      await this.command.run(['git', '-C', snapshotPath, 'init', '--initial-branch=main']);
-      await this.command.run(['git', '-C', snapshotPath, 'config', 'user.name', 'configs']);
-      await this.command.run(['git', '-C', snapshotPath, 'config', 'user.email', 'configs@users.noreply.github.com']);
-      await this.command.run(['git', '-C', snapshotPath, 'add', '--all']);
-      await this.command.run(['git', '-C', snapshotPath, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize repository']);
-      const initialCommitResult = await this.command.run(['git', '-C', snapshotPath, 'rev-parse', 'HEAD']);
-      const initialCommit = initialCommitResult.stdout.trim();
-      if (initialCommitResult.exitCode !== 0 || !HEX_COMMIT.test(initialCommit)) throw new Error('invalid staged initial commit');
+      const runGit = async (args: readonly string[]): Promise<{ readonly stdout: string }> => {
+        const result = await this.command.run(args);
+        if (result.exitCode !== 0) throw new Error('git staging command failed');
+        return result;
+      };
+      await runGit(['git', '-C', snapshotPath, 'init', '--initial-branch=main']);
+      await runGit(['git', '-C', snapshotPath, 'config', 'user.name', 'configs']);
+      await runGit(['git', '-C', snapshotPath, 'config', 'user.email', 'configs@users.noreply.github.com']);
+      await runGit(['git', '-C', snapshotPath, 'add', '--all']);
+      await runGit(['git', '-C', snapshotPath, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize repository']);
+      const initialCommit = (await runGit(['git', '-C', snapshotPath, 'rev-parse', 'HEAD'])).stdout.trim();
+      if (!HEX_COMMIT.test(initialCommit)) throw new Error('invalid staged initial commit');
       await chmod(snapshotPath, 0o700);
       return { kind: 'valid', snapshotPath, contentDigest, initialCommit };
     } catch {
