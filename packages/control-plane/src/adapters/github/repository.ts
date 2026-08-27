@@ -1,7 +1,14 @@
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { known } from '../../domain/facts';
-import type { GithubRepositoryCommandPort, GithubRepositoryPort, GithubRepositorySourcePort } from '../../application/ports';
+import type {
+  GithubRepositoryCommandPort,
+  GithubRepositoryPort,
+  GithubRepositorySourcePort,
+  GithubRepositorySourceValidation,
+} from '../../application/ports';
 import type {
   GithubRepositoryInspection,
   GithubRepositoryPreflightResult,
@@ -116,8 +123,31 @@ function isContained(root: string, candidate: string): boolean {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+interface SnapshotFile {
+  readonly relativePath: string;
+  readonly content: Uint8Array;
+}
+
+function snapshotDigest(files: readonly SnapshotFile[]): string {
+  const hash = createHash('sha256');
+  hash.update('agx.bootstrap-manifest/v1\0');
+  for (const file of [...files].sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
+    const pathBytes = Buffer.from(file.relativePath, 'utf8');
+    const pathLength = Buffer.allocUnsafe(8);
+    pathLength.writeBigUInt64BE(BigInt(pathBytes.length));
+    hash.update(pathLength);
+    hash.update(pathBytes);
+    const contentLength = Buffer.allocUnsafe(8);
+    contentLength.writeBigUInt64BE(BigInt(file.content.byteLength));
+    hash.update(contentLength);
+    hash.update(file.content);
+  }
+  return hash.digest('hex');
+}
+
 export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort {
-  async validate(sourcePath: string): Promise<{ readonly kind: 'valid' } | { readonly kind: 'invalid'; readonly reason: string }> {
+  async validate(sourcePath: string): Promise<GithubRepositorySourceValidation> {
+    let snapshotPath: string | null = null;
     try {
       if (!path.isAbsolute(sourcePath)) return { kind: 'invalid', reason: 'source-path-not-absolute' };
       const sourceInfo = await lstat(sourcePath);
@@ -126,6 +156,7 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
       }
       const root = await realpath(sourcePath);
       const pending = [sourcePath];
+      const files: SnapshotFile[] = [];
       while (pending.length > 0) {
         const directory = pending.pop();
         if (directory === undefined) continue;
@@ -135,12 +166,29 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
           if (info.isSymbolicLink()) return { kind: 'invalid', reason: 'source-tree-contains-symlink-or-junction' };
           const resolved = await realpath(candidate);
           if (!isContained(root, resolved)) return { kind: 'invalid', reason: 'source-tree-escapes-source-root' };
-          if (info.isDirectory()) pending.push(candidate);
-          else if (!info.isFile()) return { kind: 'invalid', reason: 'source-tree-contains-non-regular-entry' };
+          if (info.isDirectory()) {
+            pending.push(candidate);
+          } else if (info.isFile()) {
+            files.push({
+              relativePath: path.relative(sourcePath, candidate).split(path.sep).join('/'),
+              content: await readFile(candidate),
+            });
+          } else {
+            return { kind: 'invalid', reason: 'source-tree-contains-non-regular-entry' };
+          }
         }
       }
-      return { kind: 'valid' };
+      const contentDigest = snapshotDigest(files);
+      snapshotPath = await mkdtemp(path.join(os.tmpdir(), 'configs-github-source-'));
+      for (const file of files) {
+        const destination = path.join(snapshotPath, ...file.relativePath.split('/'));
+        await mkdir(path.dirname(destination), { recursive: true });
+        await writeFile(destination, file.content, { mode: 0o400 });
+      }
+      if (snapshotPath !== null) await chmod(snapshotPath, 0o500);
+      return { kind: 'valid', snapshotPath, contentDigest };
     } catch {
+      if (snapshotPath !== null) await rm(snapshotPath, { recursive: true, force: true }).catch(() => undefined);
       return { kind: 'invalid', reason: 'source-path-unreadable' };
     }
   }
@@ -164,6 +212,7 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
       const inventory = await this.command.run(argsForRepositoryQuery(target, false));
       const payload = parseJson(inventory.stdout);
       if (payload !== null && isStructuredAbsence(payload)) return { kind: 'ready' };
+      if (inventory.exitCode !== 0) return { kind: 'inconclusive', reason: 'github-command-inconclusive', remoteRetention: 'retain' };
       const repository = payload === null ? null : parseInspection(payload);
       if (repository !== null) return { kind: 'collision', repository, ownership: 'pre-existing' };
       return { kind: 'inconclusive', reason: 'repository-inventory-inconclusive', remoteRetention: 'retain' };
@@ -176,11 +225,13 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
     validateTarget(target);
     try {
       const response = await this.command.run(argsForRepositoryQuery(target, true));
+      if (response.exitCode !== 0) return { kind: 'inconclusive', reason: 'github-command-inconclusive', remoteRetention: 'retain' };
       const payload = parseJson(response.stdout);
       if (payload !== null && isStructuredAbsence(payload)) return { kind: 'absent' };
       const repository = payload === null ? null : parseInspection(payload);
       if (repository === null) return { kind: 'inconclusive', reason: 'repository-readback-inconclusive', remoteRetention: 'retain' };
       const treeResponse = await this.command.run(['api', TREE_ENDPOINT(target.owner, target.name)]);
+      if (treeResponse.exitCode !== 0) return { kind: 'inconclusive', reason: 'github-command-inconclusive', remoteRetention: 'retain' };
       const treePayload = parseJson(treeResponse.stdout);
       if (treePayload === null || typeof treePayload !== 'object') return { kind: 'inconclusive', reason: 'repository-tree-inconclusive', remoteRetention: 'retain' };
       const tree = treePayload as GithubTreeResponse;
@@ -196,18 +247,20 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
 
 
   async provision(target: GithubRepositoryTarget): Promise<GithubRepositoryProvisionResult> {
-    validateTarget(target);
+    let snapshotPath: string | null = null;
     try {
       const preflight = await this.preflight(target);
       if (preflight.kind === 'collision') return preflight;
       if (preflight.kind === 'inconclusive') return inconclusive('preflight', preflight.reason);
       const source = await this.source.validate(target.sourcePath);
       if (source.kind === 'invalid') return inconclusive('create', `source-path-invalid:${source.reason}`);
+      snapshotPath = source.snapshotPath;
+      if (source.contentDigest !== target.initialRevision.templateDigest) return inconclusive('create', 'source-content-digest-mismatch');
 
       const create = await this.command.run([
         'repo', 'create', `${target.owner}/${target.name}`, `--${target.visibility}`,
         ...(target.description === '' ? [] : ['--description', target.description]),
-        '--source', target.sourcePath, '--remote', 'origin', '--push',
+        '--source', source.snapshotPath, '--remote', 'origin', '--push',
       ]);
       if (create.exitCode !== 0) {
         const recovery = await this.readback(target);
@@ -223,6 +276,9 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
       return inconclusive('readback', 'repository-absent-after-create');
     } catch {
       return inconclusive('create', 'github-command-inconclusive');
+    }
+    finally {
+      if (snapshotPath !== null) await rm(snapshotPath, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 

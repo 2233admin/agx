@@ -19,7 +19,9 @@ const TARGET: GithubRepositoryTarget = {
   },
 };
 
-const VALID_SOURCE: GithubRepositorySourcePort = { validate: async () => ({ kind: 'valid' }) };
+const VALID_SOURCE: GithubRepositorySourcePort = {
+  validate: async () => ({ kind: 'valid', snapshotPath: 'C:/owned/immutable-source-snapshot', contentDigest: 'a'.repeat(64) }),
+};
 
 function makeAdapter(command: GithubRepositoryCommandPort): GithubRepositoryAdapter {
   return new GithubRepositoryAdapter(command, VALID_SOURCE);
@@ -51,25 +53,29 @@ function absent(): FixtureResponse {
   return json({ data: { repository: null }, errors: [{ type: 'NOT_FOUND', path: ['repository'] }] });
 }
 
-function present(overrides: Record<string, unknown> = {}): FixtureResponse {
-  return json({
-    data: {
-      repository: {
-        nameWithOwner: 'octocat/agent-control',
-        url: 'https://github.com/octocat/agent-control',
-        visibility: 'PRIVATE',
-        hasIssuesEnabled: true,
-        defaultBranchRef: { name: 'main', target: { oid: INITIAL_COMMIT } },
-        object: { oid: INITIAL_COMMIT },
-        ...overrides,
+function present(overrides: Record<string, unknown> = {}, exitCode: number | null = 0): FixtureResponse {
+  return {
+    stdout: JSON.stringify({
+      data: {
+        repository: {
+          nameWithOwner: 'octocat/agent-control',
+          url: 'https://github.com/octocat/agent-control',
+          visibility: 'PRIVATE',
+          hasIssuesEnabled: true,
+          defaultBranchRef: { name: 'main', target: { oid: INITIAL_COMMIT } },
+          object: { oid: INITIAL_COMMIT },
+          ...overrides,
+        },
       },
-    },
-  });
+    }),
+    exitCode,
+  };
 }
 
-function tree(): FixtureResponse {
-  return json({ truncated: false, tree: [{ path: 'README.md', type: 'blob' }, { path: 'control.yaml', type: 'blob' }] });
+function tree(exitCode: number | null = 0): FixtureResponse {
+  return json({ truncated: false, tree: [{ path: 'README.md', type: 'blob' }, { path: 'control.yaml', type: 'blob' }] }, exitCode);
 }
+
 
 describe('GithubRepositoryAdapter', () => {
   test('preflight parses structured absence and never mutates', async () => {
@@ -118,7 +124,7 @@ describe('GithubRepositoryAdapter', () => {
     const createCall = gh.calls.find((args) => args[0] === 'repo' && args[1] === 'create');
     expect(createCall).toEqual([
       'repo', 'create', 'octocat/agent-control', '--private', '--description', TARGET.description,
-      '--source', TARGET.sourcePath, '--remote', 'origin', '--push',
+      '--source', 'C:/owned/immutable-source-snapshot', '--remote', 'origin', '--push',
     ]);
     expect(gh.calls.find((args) => args[0] === 'repo' && args[1] === 'edit')).toEqual([
       'repo', 'edit', 'octocat/agent-control', '--enable-issues',
@@ -217,5 +223,42 @@ describe('GithubRepositoryAdapter', () => {
       expect(result.repository.headCommit).toBe(laterCommit);
       expect(result.repository.initialCommit).toBe(INITIAL_COMMIT);
     }
+  });
+  test('failed repository read with stale stdout remains inconclusive', async () => {
+    const gh = new FixtureGh(
+      json({ login: 'octocat' }),
+      absent(),
+      json({}),
+      json({}),
+      present({}, 1),
+      tree(),
+    );
+    const adapter = makeAdapter(gh);
+
+    await expect(adapter.provision(TARGET)).resolves.toEqual({
+      kind: 'inconclusive',
+      stage: 'readback',
+      reason: 'github-command-inconclusive',
+      remoteRetention: 'retain',
+    });
+  });
+
+  test('failed tree read with stale stdout remains inconclusive', async () => {
+    const gh = new FixtureGh(
+      json({ login: 'octocat' }),
+      absent(),
+      json({}),
+      json({}),
+      present(),
+      tree(1),
+    );
+    const adapter = makeAdapter(gh);
+
+    await expect(adapter.provision(TARGET)).resolves.toEqual({
+      kind: 'inconclusive',
+      stage: 'readback',
+      reason: 'github-command-inconclusive',
+      remoteRetention: 'retain',
+    });
   });
 });
