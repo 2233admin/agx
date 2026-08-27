@@ -122,6 +122,30 @@ async function runBounded(
   return result;
 }
 
+type AvailabilityResult = 'available' | 'unavailable' | 'timeout' | 'cancelled' | 'error';
+
+async function probeAvailability(command: MulticaCommandPort, timeoutMs: number, outerSignal?: AbortSignal): Promise<AvailabilityResult> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timeout = new Promise<AvailabilityResult>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  const cancelled = new Promise<AvailabilityResult>((resolve) => {
+    onAbort = () => resolve('cancelled');
+    if (outerSignal?.aborted) onAbort();
+    else outerSignal?.addEventListener('abort', onAbort, { once: true });
+  });
+  const running: Promise<AvailabilityResult> = command.available(controller.signal)
+    .then((available): AvailabilityResult => available ? 'available' : 'unavailable')
+    .catch((): AvailabilityResult => 'error');
+  const result = await Promise.race([running, timeout, cancelled]);
+  if (result !== 'available' && result !== 'unavailable') controller.abort();
+  clearTimeout(timer);
+  if (outerSignal !== undefined && onAbort !== undefined) outerSignal.removeEventListener('abort', onAbort);
+  return result;
+}
+
 export class MulticaCliAdapter implements MulticaRuntimePort {
   constructor(
     private readonly command: MulticaCommandPort,
@@ -132,7 +156,11 @@ export class MulticaCliAdapter implements MulticaRuntimePort {
     if (!validateSubject(subject)) return { kind: 'inconclusive', subject, reason: 'invalid-subject' };
     if (subject.kind !== 'runtime') return { kind: 'inconclusive', subject, reason: 'subject-kind-not-observed' };
     try {
-      if (!(await this.command.available())) return { kind: 'inconclusive', subject, reason: 'multica-cli-unavailable' };
+      const availability = await probeAvailability(this.command, this.timeoutMs, signal);
+      if (availability === 'timeout') return { kind: 'inconclusive', subject, reason: 'multica-timeout' };
+      if (availability === 'cancelled') return { kind: 'inconclusive', subject, reason: 'multica-cancelled' };
+      if (availability === 'error') return { kind: 'inconclusive', subject, reason: 'multica-command-inconclusive' };
+      if (availability === 'unavailable') return { kind: 'inconclusive', subject, reason: 'multica-cli-unavailable' };
       const bounded = await runBounded(this.command, ['runtime', 'list', '--output', 'json'], this.timeoutMs, signal);
       if (bounded.kind === 'timeout') return { kind: 'inconclusive', subject, reason: 'multica-timeout' };
       if (bounded.kind === 'cancelled') return { kind: 'inconclusive', subject, reason: 'multica-cancelled' };

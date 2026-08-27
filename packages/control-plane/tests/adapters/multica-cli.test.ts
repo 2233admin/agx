@@ -11,7 +11,7 @@ interface Response { readonly stdout: string; readonly exitCode: number | null }
 class FixtureMultica implements MulticaCommandPort {
   readonly calls: readonly (readonly string[])[] = [];
   constructor(private readonly response: Response, private readonly usable = true) {}
-  async available(): Promise<boolean> { return this.usable; }
+  async available(_signal: AbortSignal): Promise<boolean> { return this.usable; }
   async run(args: readonly string[], _signal: AbortSignal): Promise<Response> {
     (this.calls as (readonly string[])[]).push([...args]);
     return this.response;
@@ -66,5 +66,14 @@ describe('MulticaCliAdapter', () => {
     const result = cancelled.readback(RUNTIME, controller.signal);
     controller.abort();
     await expect(result).resolves.toEqual({ kind: 'inconclusive', subject: RUNTIME, reason: 'multica-cancelled' });
+  });
+  test('bounds a hanging CLI availability probe', async () => {
+    const command: MulticaCommandPort = {
+      available: async () => new Promise<boolean>(() => undefined),
+      run: async (_args, _signal) => ({ stdout: '[]', exitCode: 0 }),
+    };
+    await expect(new MulticaCliAdapter(command, 5).readback(RUNTIME)).resolves.toEqual({
+      kind: 'inconclusive', subject: RUNTIME, reason: 'multica-timeout',
+    });
   });
 });

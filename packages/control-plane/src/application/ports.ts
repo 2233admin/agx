@@ -38,7 +38,7 @@ export interface ConfigRevisionRepository {
   findById(revisionId: string): Promise<StableConfigRevision | null>;
 }
 export interface MulticaCommandPort {
-  available(): Promise<boolean>;
+  available(signal: AbortSignal): Promise<boolean>;
   run(args: readonly string[], signal: AbortSignal): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
 }
 
