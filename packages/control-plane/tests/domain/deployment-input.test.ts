@@ -25,6 +25,7 @@ describe('parseDeploymentInput', () => {
     const result = parseDeploymentInput(json(VALID));
     expect(result.kind).toBe('accepted');
     if (result.kind !== 'accepted') return;
+    expect(result.sourceRoot).toBe('C:/workspace/source');
     expect(result.sourceValidation).toBe('deferred-realpath-required');
     expect(result.input.deploymentId).toBe('deployment-1');
     expect(result.input.repositories[0]?.initialRevision.templateDigest).toBe('b'.repeat(64));

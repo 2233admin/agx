@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -207,6 +207,28 @@ describe('GithubRepositoryAdapter', () => {
       remoteRetention: 'retain',
     });
     expect(gh.calls).toHaveLength(2);
+  });
+  test('real source-root validation rejects a symlink escape before repository provision', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'github-source-root-'));
+    const outside = mkdtempSync(path.join(os.tmpdir(), 'github-source-outside-'));
+    const sourcePath = path.join(root, 'linked-source');
+    const git: GithubRepositoryGitPort = { run: async () => { throw new Error('git must not run'); } };
+    const gh = new FixtureGh(json({ login: 'octocat' }), absent());
+    try {
+      symlinkSync(outside, sourcePath, 'junction');
+      const target = { ...TARGET, sourcePath };
+      const adapter = new GithubRepositoryAdapter(gh, new FsGithubRepositorySourcePort(git, root));
+      await expect(adapter.provision(target)).resolves.toEqual({
+        kind: 'inconclusive',
+        stage: 'create',
+        reason: 'source-path-invalid:source-path-is-not-a-regular-contained-directory',
+        remoteRetention: 'retain',
+      });
+      expect(gh.calls).toHaveLength(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
   test('snapshots only source content, excludes .git metadata, and leaves Git staging writable', async () => {
     const sourcePath = mkdtempSync(path.join(os.tmpdir(), 'github-source-'));

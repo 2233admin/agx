@@ -21,7 +21,7 @@ export interface DeploymentInputDiagnostic {
   readonly message: string;
 }
 export type DeploymentInputResult =
-  | { readonly kind: 'accepted'; readonly input: DeploymentPreflightInput; readonly sourceValidation: 'deferred-realpath-required' }
+  | { readonly kind: 'accepted'; readonly input: DeploymentPreflightInput; readonly sourceRoot: string; readonly sourceValidation: 'deferred-realpath-required' }
   | { readonly kind: 'rejected'; readonly diagnostics: readonly DeploymentInputDiagnostic[] };
 
 function isRecord(value: unknown): value is JsonRecord { return value !== null && typeof value === 'object' && !Array.isArray(value); }
@@ -197,5 +197,5 @@ export function parseDeploymentInput(value: string | Uint8Array): DeploymentInpu
     }
   }
   if (diagnostics.length > 0 || !isAbsolutePath(sourceRoot) || !isId(deploymentId) || !isId(operationId) || !isId(revisionId) || project === null) return { kind: 'rejected', diagnostics };
-  return { kind: 'accepted', input: { deploymentId, operationId, revisionId, repositories, project, providers, ...(multicaSubjects === undefined ? {} : { multicaSubjects }) }, sourceValidation: 'deferred-realpath-required' };
+  return { kind: 'accepted', input: { deploymentId, operationId, revisionId, repositories, project, providers, ...(multicaSubjects === undefined ? {} : { multicaSubjects }) }, sourceRoot, sourceValidation: 'deferred-realpath-required' };
 }
