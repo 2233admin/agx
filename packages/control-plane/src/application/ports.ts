@@ -2,6 +2,13 @@ import type { Fact } from '../domain/facts';
 import type { StableConfigRevision, TriggerCategory } from '../domain/config';
 import type { ClientId } from '../domain/client';
 import type { LaunchPhase, LaunchPlan } from '../domain/activation';
+import type {
+  GithubRepositoryInspection,
+  GithubRepositoryPreflightResult,
+  GithubRepositoryProvisionResult,
+  GithubRepositoryReadbackResult,
+  GithubRepositoryTarget,
+} from '../domain/github-repository';
 import type { ClaudeContentMaterializationResult } from '../adapters/clients/claude/content-materializer';
 import type { SupplyRefRejection } from '../cli/supply-root';
 
@@ -15,6 +22,20 @@ export interface ConfigRevisionRepository {
   listAll(): Promise<readonly StableConfigRevision[]>;
   findById(revisionId: string): Promise<StableConfigRevision | null>;
 }
+/**
+ * Structured `gh` boundary. The adapter receives argv as an array and parses
+ * only allowlisted JSON fields; tests provide deterministic fixtures here.
+ */
+export interface GithubRepositoryCommandPort {
+  run(args: readonly string[]): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
+}
+
+export interface GithubRepositoryPort {
+  preflight(target: GithubRepositoryTarget): Promise<GithubRepositoryPreflightResult>;
+  readback(target: GithubRepositoryTarget): Promise<GithubRepositoryReadbackResult>;
+  provision(target: GithubRepositoryTarget): Promise<GithubRepositoryProvisionResult>;
+}
+
 
 /**
  * `[Story 3.1]` Everything `create` needs besides the candidate itself.
