@@ -9,6 +9,12 @@ import type {
   GithubRepositoryReadbackResult,
   GithubRepositoryTarget,
 } from '../domain/github-repository';
+import type {
+  GithubProjectPreflightResult,
+  GithubProjectProvisionResult,
+  GithubProjectReadbackResult,
+  GithubProjectTarget,
+} from '../domain/github-project';
 import type { ClaudeContentMaterializationResult } from '../adapters/clients/claude/content-materializer';
 import type { SupplyRefRejection } from '../cli/supply-root';
 
@@ -32,6 +38,16 @@ export interface GithubRepositoryCommandPort {
 
 export interface GithubRepositoryGitPort {
   run(args: readonly string[]): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
+}
+
+export interface GithubProjectCommandPort {
+  run(args: readonly string[]): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
+}
+
+export interface GithubProjectPort {
+  preflight(target: GithubProjectTarget): Promise<GithubProjectPreflightResult>;
+  readback(target: GithubProjectTarget, number: number): Promise<GithubProjectReadbackResult>;
+  provision(target: GithubProjectTarget): Promise<GithubProjectProvisionResult>;
 }
 
 export interface GithubRepositoryPort {
