@@ -48,7 +48,7 @@ describe('prepareDeploymentPlan preflight', () => {
     expect(result.kind).toBe('ready');
     expect(result.remoteRetention).toBe('retain');
     expect(result.plan.steps.map((step) => `${step.kind}:${step.resource}`)).toEqual([
-      'github-repository:octocat/a-repo', 'github-repository:octocat/z-repo', 'github-project:Agent-System', 'provider-activation:claude', 'provider-activation:codex',
+      'github-repository:octocat/a-repo', 'github-repository:octocat/z-repo', 'github-project:install-0123456789abcdef', 'provider-activation:claude', 'provider-activation:codex',
     ]);
     expect(calls).toEqual(['repo:a-repo', 'repo:z-repo', 'project', 'provider', 'provider']);
   });
@@ -90,7 +90,28 @@ describe('prepareDeploymentPlan preflight', () => {
     const journal = new RecordingJournal();
     const result = await prepareDeploymentPlan(journal, input({ operationId: '!!!', project: { ...PROJECT, title: '!!!' } }), readyPorts());
     expect(result.kind).toBe('blocked');
-    expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['invalid-operation-id', 'invalid-project-resource']);
+    expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['invalid-operation-id', 'invalid-project-title']);
+    expect(journal.prepareCalls).toBe(0);
+  });
+  test('uses installation identity for valid non-ASCII Project titles', async () => {
+    const result = await prepareDeploymentPlan(new InMemoryOperationJournal(), input({ project: { ...PROJECT, title: '配置系统' } }), readyPorts());
+    expect(result.kind).toBe('ready');
+    expect(result.plan.steps.some((step) => step.kind === 'github-project' && step.resource === PROJECT.installationId)).toBe(true);
+  });
+  test('null Project input blocks before journal writes', async () => {
+    const journal = new RecordingJournal();
+    const result = await prepareDeploymentPlan(journal, input({ operationId: '!!!', project: null as unknown as GithubProjectTarget }), readyPorts());
+    expect(result.kind).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['invalid-operation-id', 'invalid-project-input']);
+    expect(journal.prepareCalls).toBe(0);
+  });
+  test('rejects duplicate canonical repository and provider targets before journal writes', async () => {
+    const journal = new RecordingJournal();
+    const duplicateRepo = { ...REPOSITORIES[1]! };
+    const duplicateProvider = { ...PROVIDERS[1]! };
+    const result = await prepareDeploymentPlan(journal, input({ repositories: [duplicateRepo, duplicateRepo], providers: [duplicateProvider, duplicateProvider] }), readyPorts());
+    expect(result.kind).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['duplicate-repository-target', 'duplicate-provider-target']);
     expect(journal.prepareCalls).toBe(0);
   });
   test('keeps repositories with equal names but different owners distinct', async () => {

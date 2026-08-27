@@ -43,7 +43,9 @@ export type DeploymentPreflightResult =
 
 const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 function repositoryResource(target: GithubRepositoryTarget): string { return `${target.owner}/${target.name}`; }
-function projectResource(target: GithubProjectTarget): string { return target.title.trim().replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
+function projectResource(target: GithubProjectTarget | null | undefined): string {
+  return target !== null && target !== undefined && typeof target.installationId === 'string' ? target.installationId : '';
+}
 function sameSource(actual: string | null, expected: string): boolean {
   return actual !== null && actual.trim() !== '' &&
     actual.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() ===
@@ -56,27 +58,55 @@ function sortedRepositories(targets: readonly GithubRepositoryTarget[]): readonl
 function sortedProviders(targets: readonly ProviderActivationTarget[]): readonly ProviderActivationTarget[] {
   return [...targets].sort((left, right) => left.provider.localeCompare(right.provider));
 }
-
 function inputBlockers(input: DeploymentPreflightInput): readonly DeploymentPreflightBlocker[] {
   const blockers: DeploymentPreflightBlocker[] = [];
-  if (!RESOURCE_ID.test(input.deploymentId)) blockers.push({ resource: input.deploymentId || '(missing)', reason: 'invalid-deployment-id' });
-  if (!RESOURCE_ID.test(input.operationId)) blockers.push({ resource: input.operationId || '(missing)', reason: 'invalid-operation-id' });
-  if (input.revisionId.trim() === '') blockers.push({ resource: '(missing)', reason: 'configuration-revision-required' });
-  for (const target of input.repositories) if (!RESOURCE_ID.test(repositoryResource(target))) blockers.push({ resource: repositoryResource(target), reason: 'invalid-repository-resource' });
-  if (!RESOURCE_ID.test(projectResource(input.project))) blockers.push({ resource: input.project.title || '(missing)', reason: 'invalid-project-resource' });
-  for (const target of input.providers) if (!RESOURCE_ID.test(target.provider)) blockers.push({ resource: target.provider || '(missing)', reason: 'invalid-provider-resource' });
+  if (!RESOURCE_ID.test(input.deploymentId)) blockers.push({ resource: '(invalid deployment id)', reason: 'invalid-deployment-id' });
+  if (!RESOURCE_ID.test(input.operationId)) blockers.push({ resource: '(invalid operation id)', reason: 'invalid-operation-id' });
+  if (input.revisionId.trim() === '') blockers.push({ resource: '(missing revision id)', reason: 'configuration-revision-required' });
+  const repositories = Array.isArray(input.repositories) ? input.repositories : [];
+  const seenRepositories = new Set<string>();
+  for (const target of repositories) {
+    const resource = repositoryResource(target);
+    const canonical = resource.toLowerCase();
+    if (!RESOURCE_ID.test(resource)) blockers.push({ resource: '(invalid repository target)', reason: 'invalid-repository-resource' });
+    else if (seenRepositories.has(canonical)) blockers.push({ resource, reason: 'duplicate-repository-target' });
+    seenRepositories.add(canonical);
+  }
+  const project = input.project as GithubProjectTarget | null | undefined;
+  const resource = projectResource(project);
+  if (project === null || project === undefined || typeof project !== 'object' || Array.isArray(project)) blockers.push({ resource: '(invalid project target)', reason: 'invalid-project-input' });
+  else if (typeof project.title !== 'string' || project.title.trim() === '' || !/[\p{L}\p{N}]/u.test(project.title) || /[\u0000-\u001f\u007f]/.test(project.title)) blockers.push({ resource: '(invalid project title)', reason: 'invalid-project-title' });
+  else if (!RESOURCE_ID.test(resource)) blockers.push({ resource: '(invalid project identity)', reason: 'invalid-project-resource' });
+  const seenProviders = new Set<string>();
+  const providers = Array.isArray(input.providers) ? input.providers : [];
+  for (const target of providers) {
+    const canonical = target.provider.toLowerCase();
+    if (!RESOURCE_ID.test(target.provider)) blockers.push({ resource: '(invalid provider target)', reason: 'invalid-provider-resource' });
+    else if (seenProviders.has(canonical)) blockers.push({ resource: target.provider, reason: 'duplicate-provider-target' });
+    seenProviders.add(canonical);
+  }
   return blockers;
 }
 
 function diagnosticPlan(input: OperationPlanInput): OperationJournalRecord {
-  const safe = (value: string, fallback: string): string => RESOURCE_ID.test(value) ? value : fallback;
-  const steps = input.steps.map((step, index) => ({ ...step, resource: safe(step.resource, `${step.kind}-${index + 1}`) }));
-  return createOperationJournal({ operationId: safe(input.operationId, 'invalid-operation'), deploymentId: safe(input.deploymentId, 'invalid-deployment'), steps });
+  return {
+    operationId: RESOURCE_ID.test(input.operationId) ? input.operationId : '[invalid-operation-id]',
+    deploymentId: RESOURCE_ID.test(input.deploymentId) ? input.deploymentId : '[invalid-deployment-id]',
+    phase: 'prepared',
+    steps: input.steps.map((step, index) => ({
+      sequence: index + 1,
+      kind: step.kind,
+      resource: RESOURCE_ID.test(step.resource) ? step.resource : `[invalid-${step.kind}-${index + 1}]`,
+      phase: 'pending',
+    })),
+    remoteRetention: 'retain',
+    nextAction: 'start-operation',
+  };
 }
 
 function buildPlanInput(input: DeploymentPreflightInput): OperationPlanInput {
-  const repositories = sortedRepositories(input.repositories);
-  const providers = sortedProviders(input.providers);
+  const repositories = sortedRepositories(Array.isArray(input.repositories) ? input.repositories : []);
+  const providers = sortedProviders(Array.isArray(input.providers) ? input.providers : []);
   return {
     deploymentId: input.deploymentId,
     operationId: input.operationId,
