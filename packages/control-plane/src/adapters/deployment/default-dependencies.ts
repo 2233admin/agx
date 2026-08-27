@@ -26,6 +26,10 @@ export interface DefaultDeploymentCommands {
   readonly multica: MulticaCommandPort;
 }
 export interface DefaultDeploymentOptions { readonly dbPath: string; readonly cwd: string; readonly sourceRoot: string; readonly commands?: Partial<DefaultDeploymentCommands>; }
+export interface DefaultDeploymentPreflightDependencies {
+  readonly preflight: DeploymentPreflightPorts;
+  readonly close: () => void;
+}
 export interface DefaultDeploymentDependencies {
   readonly journal: OperationJournalPort;
   readonly preflight: DeploymentPreflightPorts;
@@ -40,6 +44,31 @@ class ProviderAdapterMux implements ProviderInventoryPort, ProviderActivationPor
   inspect(provider?: ProviderName): Promise<ProviderInventoryResult> { return provider === undefined ? Promise.resolve({ kind: 'inconclusive', reason: 'provider-selection-required' }) : this.adapter(provider).inspect(); }
   activate(target: ProviderActivationTarget) { return this.adapter(target.provider).activate(target); }
   revoke(target: ProviderActivationTarget, ownership: ProviderOwnershipRecord): Promise<ProviderRevokeResult> { return this.adapter(target.provider).revoke(target, ownership); }
+}
+
+export function createDefaultDeploymentPreflightDependencies(options: DefaultDeploymentOptions): DefaultDeploymentPreflightDependencies {
+  requireAbsolute('cwd', options.cwd); requireAbsolute('sourceRoot', options.sourceRoot);
+  if (options.dbPath !== ':memory:') requireAbsolute('dbPath', options.dbPath);
+  const commands = options.commands ?? {};
+  const repositoryCommand = commands.repository ?? createGithubRepositoryCommandPort({ cwd: options.cwd });
+  const gitCommand = commands.git ?? createGithubRepositoryGitPort({ cwd: options.cwd });
+  const projectCommand = commands.project ?? createGithubProjectCommandPort({ cwd: options.cwd });
+  const codexCommand = commands.codex ?? createCodexProviderCommandPort({ cwd: options.cwd });
+  const claudeCommand = commands.claude ?? createClaudeProviderCommandPort({ cwd: options.cwd });
+  const multicaCommand = commands.multica ?? createMulticaCommandPort({ cwd: options.cwd });
+  let configRepository: SqliteConfigRevisionRepository | undefined;
+  try {
+    configRepository = new SqliteConfigRevisionRepository(options.dbPath, { readonly: true });
+    const source = new FsGithubRepositorySourcePort(gitCommand, options.sourceRoot);
+    const repositories = new GithubRepositoryAdapter(repositoryCommand, source);
+    const project = new GithubProjectAdapter(projectCommand);
+    const providers = new ProviderAdapterMux(new CodexProviderAdapter(codexCommand), new ClaudeProviderAdapter(claudeCommand));
+    const multica = new MulticaCliAdapter(multicaCommand);
+    return { preflight: { revision: configRepository, repositories, source, project, providers, multica }, close: () => { configRepository?.close(); } };
+  } catch (error) {
+    configRepository?.close();
+    throw error;
+  }
 }
 
 export function createDefaultDeploymentDependencies(options: DefaultDeploymentOptions): DefaultDeploymentDependencies {

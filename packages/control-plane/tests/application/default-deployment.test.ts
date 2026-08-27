@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createDefaultDeploymentDependencies } from '../../src/adapters/deployment/default-dependencies';
+import { createDefaultDeploymentDependencies, createDefaultDeploymentPreflightDependencies } from '../../src/adapters/deployment/default-dependencies';
 import { FsGithubRepositorySourcePort } from '../../src/adapters/github/repository';
 
 test('default deployment assembly wires typed preflight/apply/status ports without invoking remotes', async () => {
@@ -33,6 +33,14 @@ test('default assembly enforces the configured source root through the source po
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
   }
+});
+test('readonly preflight dependencies do not create a missing database', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'configs-readonly-preflight-'));
+  const dbPath = path.join(root, 'missing', 'state.sqlite3');
+  try {
+    expect(() => createDefaultDeploymentPreflightDependencies({ dbPath, cwd: root, sourceRoot: root })).toThrow();
+    expect(existsSync(dbPath)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('default assembly requires explicit absolute cwd and source root', () => {

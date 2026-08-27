@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { main } from '../../src/cli/index';
@@ -47,8 +47,16 @@ describe('configs init deployment CLI', () => {
     writeFileSync(inputPath, JSON.stringify({ schemaVersion: 1, sourceRoot: 'C:/', deploymentId: 'dep-input', operationId: 'op-input', revisionId: 'rev', repositories: [repo], project, providers: [provider] }));
     const counters = { remote: 0 }; const order: string[] = []; const fixture = adapters(order, counters); const journal = new InMemoryOperationJournal(); let factoryCalls = 0; let closeCalls = 0;
     const defaultDeploymentFactory = (): DefaultDeploymentDependencies => { factoryCalls += 1; return { journal, preflight: fixture.preflight, apply: { repositories: fixture.preflight.repositories, project: fixture.preflight.project, provider: fixture.preflight.providers as never }, readonlyStatus: { load: async () => null }, close: () => { closeCalls += 1; } }; };
+    const defaultDeploymentPreflightFactory = (): { preflight: DeploymentPreflightPorts; close: () => void } => { factoryCalls += 1; return { preflight: fixture.preflight, close: () => { closeCalls += 1; } }; };
     const restore = capture();
-    try { expect(await main(['init', '--plan', '--input', inputPath], { defaultDeploymentFactory })).toBe(0); expect(await journal.find('op-input')).toBeNull(); expect(await main(['init', '--apply', '--input', inputPath], { defaultDeploymentFactory })).toBe(1); expect(factoryCalls).toBe(2); expect(closeCalls).toBe(2); expect(order).toEqual(['repo']); } finally { restore(); rmSync(root, { recursive: true, force: true }); }
+    try { expect(await main(['init', '--plan', '--input', inputPath], { defaultDeploymentPreflightFactory })).toBe(0); expect(await journal.find('op-input')).toBeNull(); expect(await main(['init', '--apply', '--input', inputPath], { defaultDeploymentFactory })).toBe(1); expect(factoryCalls).toBe(2); expect(closeCalls).toBe(2); expect(order).toEqual(['repo']); } finally { restore(); rmSync(root, { recursive: true, force: true }); }
+  });
+  test('default plan with a fresh database returns typed unavailable without creating the database', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'configs-fresh-plan-')); const inputPath = path.join(root, 'deployment.json'); const dbPath = path.join(root, 'missing', 'state.sqlite3');
+    writeFileSync(inputPath, JSON.stringify({ schemaVersion: 1, sourceRoot: 'C:/', deploymentId: 'dep-fresh', operationId: 'op-fresh', revisionId: 'rev', repositories: [repo], project, providers: [provider] }));
+    const previousDbPath = process.env.CONTROL_PLANE_DB_PATH; process.env.CONTROL_PLANE_DB_PATH = dbPath; const restore = capture();
+    try { expect(await main(['init', '--plan', '--input', inputPath])).toBe(1); } finally { restore(); if (previousDbPath === undefined) delete process.env.CONTROL_PLANE_DB_PATH; else process.env.CONTROL_PLANE_DB_PATH = previousDbPath; rmSync(root, { recursive: true, force: true }); }
+    expect(output.join('\\n')).toContain('DEPLOYMENT-DEPENDENCIES-UNAVAILABLE'); expect(existsSync(dbPath)).toBe(false);
   });
   test('default input rejects malformed files before constructing deployment dependencies', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'configs-invalid-input-')); const inputPath = path.join(root, 'deployment.json'); writeFileSync(inputPath, JSON.stringify({ schemaVersion: 1, unknown: 'secret-value' })); let factoryCalls = 0; const restore = capture();

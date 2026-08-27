@@ -94,7 +94,7 @@ import {
 } from '../application/establish';
 import { buildSupplyCandidate, loadSupplyGroups } from '../adapters/sources/supply-fs';
 import { importLegacyReceipt, type MigrationImportResult } from '../adapters/migration/receipt-importer';
-import { createDefaultDeploymentDependencies, type DefaultDeploymentDependencies } from '../adapters/deployment/default-dependencies';
+import { createDefaultDeploymentDependencies, createDefaultDeploymentPreflightDependencies, type DefaultDeploymentDependencies, type DefaultDeploymentPreflightDependencies } from '../adapters/deployment/default-dependencies';
 import { parseDeploymentInput, type DeploymentInputResult } from '../domain/deployment-input';
 import type { StatusProjectionInput } from '../domain/status';
 import { getUnifiedStatus, loadStatusProjection, type DurableStatusDependencies, type DurableStatusSelectors } from '../application/status';
@@ -652,9 +652,10 @@ export interface CliOverrides {
   readonly statusProjection?: StatusProjectionInput;
   readonly statusProjectionLoader?: () => Promise<StatusProjectionInput | null>;
   readonly statusDurableLoader?: (selectors: DurableStatusSelectors) => Promise<StatusProjectionInput | null>;
-  readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
   readonly deploymentPlan?: { readonly journal: OperationJournalPort; readonly input: DeploymentPreflightInput; readonly ports: DeploymentPreflightPorts };
+  readonly defaultDeploymentPreflightFactory?: (options: Parameters<typeof createDefaultDeploymentPreflightDependencies>[0]) => DefaultDeploymentPreflightDependencies;
   readonly defaultDeploymentFactory?: (options: Parameters<typeof createDefaultDeploymentDependencies>[0]) => DefaultDeploymentDependencies;
+  readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
   readonly lifecycleDecisionProviders?: LifecycleDecisionProviders;
   readonly defaultDeployment?: DefaultDeploymentDependencies;
   readonly deploymentApply?: { readonly journal: OperationJournalPort; readonly operationId: string; readonly deploymentId: string; readonly targets: DeploymentApplyTargets; readonly ports: DeploymentApplyPorts };
@@ -1311,31 +1312,42 @@ async function runDefaultDeploymentInit(parsed: Extract<ParsedCommand, { kind: '
     console.log(JSON.stringify({ kind: 'rejected', command: `init-${parsed.mode}`, code: 'DEPLOYMENT-INPUT-INVALID', diagnostics: document.diagnostics.map(({ code, path: fieldPath, message }) => ({ code, path: fieldPath, message })), remoteRetention: 'retain' }));
     return 1;
   }
+  const dependencyOptions = { dbPath: defaultDbPath(), cwd: process.cwd(), sourceRoot: document.sourceRoot };
+  if (parsed.mode === 'plan') {
+    let dependencies: DefaultDeploymentPreflightDependencies;
+    try {
+      dependencies = (overrides.defaultDeploymentPreflightFactory ?? createDefaultDeploymentPreflightDependencies)(dependencyOptions);
+    } catch {
+      console.log(JSON.stringify({ kind: 'unsupported', command: 'init-plan', code: 'DEPLOYMENT-DEPENDENCIES-UNAVAILABLE', nextAction: 'inspect-local-state', remoteRetention: 'retain' }));
+      return 1;
+    }
+    try {
+      const result = await prepareDeploymentPlan(dryRunOperationJournal(), document.input, dependencies.preflight);
+      console.log(JSON.stringify({ kind: result.kind, plan: result.plan, blockers: result.blockers.map(({ resource, reason }) => ({ resource, reason })), remoteRetention: result.remoteRetention }));
+      return result.kind === 'ready' ? 0 : 1;
+    } finally {
+      dependencies.close();
+    }
+  }
   let dependencies: DefaultDeploymentDependencies;
   try {
-    dependencies = (overrides.defaultDeploymentFactory ?? createDefaultDeploymentDependencies)({ dbPath: defaultDbPath(), cwd: process.cwd(), sourceRoot: document.sourceRoot });
+    dependencies = (overrides.defaultDeploymentFactory ?? createDefaultDeploymentDependencies)(dependencyOptions);
   } catch {
-    console.log(JSON.stringify({ kind: 'unsupported', command: `init-${parsed.mode}`, code: 'DEPLOYMENT-DEPENDENCIES-UNAVAILABLE', nextAction: 'inspect-local-state', remoteRetention: 'retain' }));
+    console.log(JSON.stringify({ kind: 'unsupported', command: 'init-apply', code: 'DEPLOYMENT-DEPENDENCIES-UNAVAILABLE', nextAction: 'inspect-local-state', remoteRetention: 'retain' }));
     return 1;
   }
   try {
-    const input = document.input;
-    if (parsed.mode === 'plan') {
-      const result = await prepareDeploymentPlan(dryRunOperationJournal(), input, dependencies.preflight);
-      console.log(JSON.stringify({ kind: result.kind, plan: result.plan, blockers: result.blockers.map(({ resource, reason }) => ({ resource, reason })), remoteRetention: result.remoteRetention }));
-      return result.kind === 'ready' ? 0 : 1;
-    }
-    const prepared = await prepareDeploymentPlan(dependencies.journal, input, dependencies.preflight);
+    const prepared = await prepareDeploymentPlan(dependencies.journal, document.input, dependencies.preflight);
     if (prepared.kind !== 'ready') {
       console.log(JSON.stringify({ kind: prepared.kind, plan: prepared.plan, blockers: prepared.blockers.map(({ resource, reason }) => ({ resource, reason })), remoteRetention: prepared.remoteRetention }));
       return 1;
     }
     const targets: DeploymentApplyTargets = {
-      repositories: new Map(input.repositories.map((target) => [`${target.owner}/${target.name}`, target])),
-      project: input.project,
-      providers: new Map(input.providers.map((target) => [target.provider, target])),
+      repositories: new Map(document.input.repositories.map((target) => [`${target.owner}/${target.name}`, target])),
+      project: document.input.project,
+      providers: new Map(document.input.providers.map((target) => [target.provider, target])),
     };
-    const result = await applyDeploymentPlan(dependencies.journal, input.operationId, targets, dependencies.apply);
+    const result = await applyDeploymentPlan(dependencies.journal, document.input.operationId, targets, dependencies.apply);
     console.log(JSON.stringify({ kind: result.kind, operation: result.operation === null ? null : { operationId: result.operation.operationId, deploymentId: result.operation.deploymentId, phase: result.operation.phase, remoteRetention: result.operation.remoteRetention, nextAction: result.operation.nextAction }, remoteRetention: result.remoteRetention, nextAction: result.nextAction }));
     return result.kind === 'succeeded' ? 0 : 1;
   } finally {
