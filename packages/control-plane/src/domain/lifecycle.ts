@@ -19,7 +19,7 @@ const SHA1 = /^[a-f0-9]{40}$/;
 const INSTALLATION = /^install-[a-f0-9]{16}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_.-]{1,100}$/;
-const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const VERSION = /^[0-9]+(?:\.[0-9]+){1,2}$/;
 const SAFE_TEXT = /^[^\u0000-\u001f\u007f]{1,256}$/;
 const FORBIDDEN = new Set(['prompt', 'transcript', 'token', 'credential', 'password', 'secret', 'private_content', 'tool_payload']);
 const REMOTE_RESOURCES = ['repositories', 'projects', 'provider-client'] as const;
@@ -44,7 +44,7 @@ function classifyLocalState(state: unknown): 'ok' | 'unknown-local-state' | 'uns
   return 'ok';
 }
 function validRelease(value: unknown): value is ReleaseDescriptor {
-  if (!record(value) || Object.keys(value).some((key) => !['version', 'tag', 'assetName', 'assetSHA256', 'provenance', 'platform'].includes(key)) || typeof value.assetName !== 'string' || typeof value.assetSHA256 !== 'string' || !VERSION.test(String(value.version)) || value.tag !== `v${value.version}` || !SAFE_TEXT.test(value.assetName) || value.assetName.includes('/') || !SHA256.test(value.assetSHA256) || !record(value.provenance) || Object.keys(value.provenance).some((key) => !['repository', 'commitSHA'].includes(key)) || !REPOSITORY.test(String(value.provenance.repository)) || !SHA1.test(String(value.provenance.commitSHA)) || !record(value.platform) || Object.keys(value.platform).some((key) => !['os', 'arch'].includes(key)) || typeof value.platform.os !== 'string' || typeof value.platform.arch !== 'string' || !SAFE_TEXT.test(value.platform.os) || !SAFE_TEXT.test(value.platform.arch)) return false;
+  if (!record(value) || Object.keys(value).some((key) => !['version', 'tag', 'assetName', 'assetSHA256', 'provenance', 'platform'].includes(key)) || typeof value.assetName !== 'string' || typeof value.assetSHA256 !== 'string' || !VERSION.test(String(value.version)) || value.tag !== `configs-v${value.version}` || !SAFE_TEXT.test(value.assetName) || value.assetName.includes('/') || !SHA256.test(value.assetSHA256) || !record(value.provenance) || Object.keys(value.provenance).some((key) => !['repository', 'commitSHA'].includes(key)) || !REPOSITORY.test(String(value.provenance.repository)) || !SHA1.test(String(value.provenance.commitSHA)) || !record(value.platform) || Object.keys(value.platform).some((key) => !['os', 'arch'].includes(key)) || typeof value.platform.os !== 'string' || typeof value.platform.arch !== 'string' || !SAFE_TEXT.test(value.platform.os) || !SAFE_TEXT.test(value.platform.arch)) return false;
   return true;
 }
 

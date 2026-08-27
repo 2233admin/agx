@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { decideRollback, decideUninstall, decideUpgrade, validateUpgradeCheckpoint, type LocalState, type ReleaseDescriptor, type UpgradeCheckpoint } from '../../src/domain/lifecycle';
 
 const files = [{ path: 'configs/settings.json', digest: 'a'.repeat(64), ownership: 'created-by-configs' as const, kind: 'file' as const }, { path: 'configs/README.md', digest: 'b'.repeat(64), ownership: 'pre-existing' as const, kind: 'file' as const }];
-const release: ReleaseDescriptor = { version: '1.2.3', tag: 'v1.2.3', assetName: 'configs-windows-amd64.zip', assetSHA256: 'c'.repeat(64), provenance: { repository: 'zaurakworks/agent-control', commitSHA: 'd'.repeat(40) }, platform: { os: 'windows', arch: 'amd64' } };
+const release: ReleaseDescriptor = { version: '1.2.3', tag: 'configs-v1.2.3', assetName: 'configs-windows-amd64.zip', assetSHA256: 'c'.repeat(64), provenance: { repository: 'zaurakworks/agent-control', commitSHA: 'd'.repeat(40) }, platform: { os: 'windows', arch: 'amd64' } };
 const checkpoint = (): UpgradeCheckpoint => ({ schemaVersion: 'configs.lifecycle/v1', checkpointId: 'checkpoint-1', installationId: 'install-0123456789abcdef', deploymentId: 'dep-1', revisionId: 'rev-1', fromVersion: '1.2.2', toVersion: release.version, release, preUpgradeStateDigest: 'e'.repeat(64), postUpgradeStateDigest: 'f'.repeat(64), preUpgradeState: files, remoteRetention: 'retain' });
 const state = (digest: string, records: LocalState['records'] = files): LocalState => ({ digest, records });
 
@@ -13,7 +13,7 @@ describe('lifecycle contracts', () => {
   });
 
   test('rejects malformed or secret checkpoints and exact release/tag/asset/provenance/platform mismatches', () => {
-    expect(validateUpgradeCheckpoint({ ...checkpoint(), token: 'secret' })).toMatchObject({ kind: 'rejected' });
+    expect(validateUpgradeCheckpoint({ ...checkpoint(), release: { ...release, tag: 'v1.2.3' } })).toMatchObject({ kind: 'rejected' });
     expect(validateUpgradeCheckpoint({ ...checkpoint(), preUpgradeStateDigest: 'bad' })).toMatchObject({ kind: 'rejected' });
     expect(decideUpgrade({ checkpoint: checkpoint(), release: { ...release, tag: 'v9.9.9' }, platform: release.platform, currentState: state(checkpoint().preUpgradeStateDigest), smoke: 'passed' })).toMatchObject({ kind: 'rejected', reason: 'release-mismatch' });
     expect(decideUpgrade({ checkpoint: checkpoint(), release, platform: { os: 'linux', arch: 'amd64' }, currentState: state(checkpoint().preUpgradeStateDigest), smoke: 'passed' })).toMatchObject({ kind: 'rejected', reason: 'platform-mismatch' });
