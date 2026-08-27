@@ -94,6 +94,7 @@ import { buildSupplyCandidate, loadSupplyGroups } from '../adapters/sources/supp
 import { importLegacyReceipt, type MigrationImportResult } from '../adapters/migration/receipt-importer';
 import { diagnoseDeployment } from '../application/diagnose';
 import { getUnifiedStatus, loadStatusProjection, type DurableStatusDependencies, type DurableStatusSelectors } from '../application/status';
+import type { DefaultDeploymentDependencies } from '../adapters/deployment/default-dependencies';
 import type { StatusProjectionInput } from '../domain/status';
 import { defaultSupplyRoot } from './supply-root';
 import { isStdinTTY, readCandidateFile, readStdinText } from './candidate-source';
@@ -651,6 +652,7 @@ export interface CliOverrides {
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
   readonly deploymentPlan?: { readonly journal: OperationJournalPort; readonly input: DeploymentPreflightInput; readonly ports: DeploymentPreflightPorts };
   readonly lifecycleDecisionProviders?: LifecycleDecisionProviders;
+  readonly defaultDeployment?: DefaultDeploymentDependencies;
   readonly deploymentApply?: { readonly journal: OperationJournalPort; readonly operationId: string; readonly deploymentId: string; readonly targets: DeploymentApplyTargets; readonly ports: DeploymentApplyPorts };
 }
 
@@ -1267,7 +1269,7 @@ async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverr
     try { projection = await overrides.statusProjectionLoader(); } catch { projection = null; }
   }
   if (projection === undefined && selectors !== undefined) {
-    try { projection = overrides.statusDurableLoader === undefined ? await loadDefaultStatusProjection(selectors) : await overrides.statusDurableLoader(selectors); } catch { projection = null; }
+    try { projection = overrides.statusDurableLoader !== undefined ? await overrides.statusDurableLoader(selectors) : overrides.defaultDeployment !== undefined ? await loadStatusProjection(overrides.defaultDeployment.status, selectors) : await loadDefaultStatusProjection(selectors); } catch { projection = null; }
   }
   if (projection === undefined || projection === null) {
     console.log(JSON.stringify({ kind: 'unsupported', phase: 'preflight-blocked', code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'select-existing-deployment', ...(kind === 'diagnose' ? { readOnly: true } : {}) }));
