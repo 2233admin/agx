@@ -2,10 +2,10 @@ import { Database } from 'bun:sqlite';
 import OPERATION_SQL from '../../../migrations/0004_deployment_operation.sql' with { type: 'text' };
 import STEPS_SQL from '../../../migrations/0006_operation_steps.sql' with { type: 'text' };
 import type { OperationJournalPort } from '../../application/ports';
-import { appendOperationStep, createOperationJournal, type OperationJournalPhase, type OperationJournalRecord, type OperationPlanInput, type OperationStep } from '../../domain/operation-journal';
+import { appendOperationStep, createOperationJournal, finishOperationJournal, startOperationJournal, type OperationJournalPhase, type OperationJournalRecord, type OperationPlanInput, type OperationStep } from '../../domain/operation-journal';
 import { openSqliteDatabase } from './connection';
 
-interface StatusRow { readonly operation_id: string; readonly deployment_id: string; readonly phase: string; readonly next_action: string }
+interface StatusRow { readonly operation_id: string; readonly deployment_id: string; readonly phase: string; readonly reason: string | null; readonly next_action: string }
 interface StepRow { readonly sequence: number; readonly revision: number; readonly kind: OperationStep['kind']; readonly resource: string; readonly phase: OperationStep['phase']; readonly reason: string | null }
 type Clock = () => string;
 
@@ -53,7 +53,21 @@ export class SqliteOperationJournal implements OperationJournalPort {
     })();
     return this.readOrThrow(input.operationId);
   }
+  async start(operationId: string): Promise<OperationJournalRecord> {
+    const current = this.readOrThrow(operationId);
+    const updated = startOperationJournal(current);
+    const result = this.db.query(`UPDATE operation_status SET phase = 'applying', next_action = 'observe-operation', updated_at = ? WHERE operation_id = ? AND phase = 'prepared'`).run(this.now(), operationId);
+    if (result.changes !== 1) throw new Error('operation start rejected: stale operation state');
+    return updated;
+  }
 
+  async finish(operationId: string, phase: 'succeeded' | 'failed' | 'cancelled', reason?: string): Promise<OperationJournalRecord> {
+    const current = this.readOrThrow(operationId);
+    const updated = finishOperationJournal(current, phase, reason);
+    const result = this.db.query(`UPDATE operation_status SET phase = ?, next_action = ?, reason = ?, updated_at = ? WHERE operation_id = ? AND phase IN ('applying', 'observing')`).run(phase, updated.nextAction, reason ?? null, this.now(), operationId);
+    if (result.changes !== 1) throw new Error('operation finish rejected: stale operation state');
+    return updated;
+  }
   async appendStep(operationId: string, step: OperationStep): Promise<OperationJournalRecord> {
     const current = this.readOrThrow(operationId);
     const updated = appendOperationStep(current, step);
@@ -88,11 +102,11 @@ export class SqliteOperationJournal implements OperationJournalPort {
   }
 
   private read(operationId: string): OperationJournalRecord | null {
-    const status = this.db.query<StatusRow, [string]>(`SELECT operation_id, deployment_id, phase, next_action FROM operation_status WHERE operation_id = ?`).get(operationId);
+    const status = this.db.query<StatusRow, [string]>(`SELECT operation_id, deployment_id, phase, reason, next_action FROM operation_status WHERE operation_id = ?`).get(operationId);
     if (status === null) return null;
     const rows = this.db.query<StepRow, [string]>(`SELECT sequence, revision, kind, resource, phase, reason FROM operation_step AS current WHERE operation_id = ? AND revision = (SELECT MAX(revision) FROM operation_step AS latest WHERE latest.operation_id = current.operation_id AND latest.sequence = current.sequence) ORDER BY sequence`).all(operationId);
     const phase = mapPhase(status.phase);
     const nextAction = status.next_action;
-    return { operationId: status.operation_id, deploymentId: status.deployment_id, phase, steps: rows.map(({ sequence, kind, resource, phase, reason }) => ({ sequence, kind, resource, phase, ...(reason === null ? {} : { reason }) })), remoteRetention: 'retain', nextAction };
+    return { operationId: status.operation_id, deploymentId: status.deployment_id, phase, steps: rows.map(({ sequence, kind, resource, phase, reason }) => ({ sequence, kind, resource, phase, ...(reason === null ? {} : { reason }) })), remoteRetention: 'retain', nextAction, ...(status.reason === null ? {} : { reason: status.reason }) };
   }
 }

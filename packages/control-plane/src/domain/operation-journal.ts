@@ -20,6 +20,7 @@ export interface OperationJournalRecord {
   readonly steps: readonly OperationStep[];
   readonly remoteRetention: 'retain';
   readonly nextAction: string;
+  readonly reason?: string;
 }
 
 export interface OperationPlanStep {
@@ -55,4 +56,15 @@ export function appendOperationStep(record: OperationJournalRecord, step: Operat
   if (step.phase === 'inconclusive') return { ...record, steps, phase: 'inconclusive', nextAction: 'observe-remote-state' };
   if (step.phase === 'needs-manual-cleanup') return { ...record, steps, phase: 'needs-manual-cleanup', nextAction: 'manual-cleanup' };
   return { ...record, steps };
+}
+
+export function startOperationJournal(record: OperationJournalRecord): OperationJournalRecord {
+  if (record.phase !== 'prepared') throw new Error('operation is not prepared');
+  return { ...record, phase: 'applying', nextAction: 'observe-operation' };
+}
+
+export function finishOperationJournal(record: OperationJournalRecord, phase: Extract<OperationJournalPhase, 'succeeded' | 'failed' | 'cancelled'>, reason?: string): OperationJournalRecord {
+  if (record.phase !== 'applying' && record.phase !== 'observing') throw new Error('operation is not applying');
+  if (reason !== undefined && (reason.length > MAX_STEP_REASON_LENGTH || !STEP_REASON.test(reason))) throw new Error('invalid operation reason');
+  return { ...record, phase, nextAction: phase === 'succeeded' || phase === 'cancelled' ? 'none' : 'inspect-diagnostics', ...(reason === undefined ? {} : { reason }) };
 }
