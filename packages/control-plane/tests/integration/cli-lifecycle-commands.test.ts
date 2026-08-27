@@ -24,7 +24,7 @@ test('lifecycle commands strictly parse selectors and emit allowlisted decisions
     expect(await main(['rollback', '--checkpoint', 'cp-1'], { lifecycleDecisionProviders: providers })).toBe(1);
     expect(await main(['uninstall'], { lifecycleDecisionProviders: providers })).toBe(0);
     expect(await main(['upgrade'])).toBe(2);
-    expect(await main(['uninstall', '--checkpoint', 'cp-1'])).toBe(2);
+    expect(await main(['upgrade', '--checkpoint', 'bad id'])).toBe(2);
   } finally { console.log = old; }
   expect(calls).toEqual(['upgrade:cp-1', 'rollback:cp-1', 'uninstall']);
   expect(output.join('\n')).toContain('"remoteRetention":"retain"');

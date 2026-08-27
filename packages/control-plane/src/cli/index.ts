@@ -576,7 +576,7 @@ function parseDiagnose(rest: readonly string[]): ParsedCommand {
   return parsed.kind === 'status' ? { kind: 'diagnose', deploymentId: parsed.deploymentId, operationId: parsed.operationId } : parsed;
 }
 function parseCheckpointCommand(kind: 'upgrade' | 'rollback', rest: readonly string[]): ParsedCommand {
-  if (rest.length !== 2 || rest[0] !== '--checkpoint' || rest[1] === undefined || rest[1].trim() === '') return { kind: 'usage-error', message: usageLine() };
+  if (rest.length !== 2 || rest[0] !== '--checkpoint' || rest[1] === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(rest[1])) return { kind: 'usage-error', message: usageLine() };
   return { kind, checkpointId: rest[1] };
 }
 function parseCommand(argv: readonly string[]): ParsedCommand {
