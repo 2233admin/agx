@@ -12,7 +12,7 @@ class FixtureMultica implements MulticaCommandPort {
   readonly calls: readonly (readonly string[])[] = [];
   constructor(private readonly response: Response, private readonly usable = true) {}
   async available(): Promise<boolean> { return this.usable; }
-  async run(args: readonly string[]): Promise<Response> {
+  async run(args: readonly string[], _signal: AbortSignal): Promise<Response> {
     (this.calls as (readonly string[])[]).push([...args]);
     return this.response;
   }
@@ -41,6 +41,7 @@ describe('MulticaCliAdapter', () => {
     await expect(new MulticaCliAdapter(new FixtureMultica(json([]))).readback(RUNTIME)).resolves.toEqual({ kind: 'absent', subject: RUNTIME });
     await expect(new MulticaCliAdapter(new FixtureMultica(json([runtime(), { ...runtime(), name: 'duplicate' }]))).readback(RUNTIME)).resolves.toEqual({ kind: 'ambiguous', subject: RUNTIME, matchCount: 2 });
     await expect(new MulticaCliAdapter(new FixtureMultica(json([runtime({ status: 'offline' })]))).readback(RUNTIME)).resolves.toEqual({ kind: 'offline', subject: RUNTIME, status: 'offline' });
+    await expect(new MulticaCliAdapter(new FixtureMultica(json([runtime({ status: 'mystery' })]))).readback(RUNTIME)).resolves.toEqual({ kind: 'inconclusive', subject: RUNTIME, reason: 'unknown-runtime-status' });
   });
 
   test('workspace and agent subjects are UUID-valid but inconclusive because only runtime list is observed', async () => {
@@ -55,5 +56,15 @@ describe('MulticaCliAdapter', () => {
       await expect(new MulticaCliAdapter(new FixtureMultica({ stdout: payload, exitCode: 0 })).readback(RUNTIME)).resolves.toMatchObject({ kind: 'inconclusive' });
     }
     await expect(new MulticaCliAdapter(new FixtureMultica(json([]))).readback({ kind: 'runtime', id: 'not-a-uuid' })).resolves.toMatchObject({ kind: 'inconclusive', reason: 'invalid-subject' });
+  });
+  test('bounds a hanging command and propagates cancellation', async () => {
+    const timeout = new MulticaCliAdapter({ available: async () => true, run: async () => new Promise<Response>(() => undefined) }, 5);
+    await expect(timeout.readback(RUNTIME)).resolves.toEqual({ kind: 'inconclusive', subject: RUNTIME, reason: 'multica-timeout' });
+
+    const controller = new AbortController();
+    const cancelled = new MulticaCliAdapter({ available: async () => true, run: async (_args, signal) => new Promise<Response>((resolve) => signal.addEventListener('abort', () => resolve({ stdout: '', exitCode: null }))) }, 1000);
+    const result = cancelled.readback(RUNTIME, controller.signal);
+    controller.abort();
+    await expect(result).resolves.toEqual({ kind: 'inconclusive', subject: RUNTIME, reason: 'multica-cancelled' });
   });
 });

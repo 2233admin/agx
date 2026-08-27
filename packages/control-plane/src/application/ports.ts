@@ -39,11 +39,11 @@ export interface ConfigRevisionRepository {
 }
 export interface MulticaCommandPort {
   available(): Promise<boolean>;
-  run(args: readonly string[]): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
+  run(args: readonly string[], signal: AbortSignal): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
 }
 
 export interface MulticaRuntimePort {
-  readback(subject: MulticaSubject): Promise<MulticaReadbackResult>;
+  readback(subject: MulticaSubject, signal?: AbortSignal): Promise<MulticaReadbackResult>;
 }
 
 /**
