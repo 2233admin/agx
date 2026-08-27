@@ -39,6 +39,14 @@ describe('safe operation journal seam', () => {
     await expect(journal.appendStep('op-1', { sequence: 3, kind: 'provider-activation', resource: 'codex', phase: 'succeeded' })).rejects.toThrow('operation step sequence is not append-only');
     expect(prepared.steps[0]?.phase).toBe('pending');
   });
+  test('rejects a step that changes the planned resource identity or carries unsafe reason text', async () => {
+    const journal = new InMemoryOperationJournal();
+    await prepareDeploymentOperationPlan(journal, PLAN);
+    await expect(journal.appendStep('op-1', { sequence: 1, kind: 'github-project', resource: 'Agent System', phase: 'succeeded' })).rejects.toThrow('operation step does not match plan');
+    await expect(journal.appendStep('op-1', { sequence: 1, kind: 'github-repository', resource: 'other-repository', phase: 'succeeded' })).rejects.toThrow('operation step does not match plan');
+    await expect(journal.appendStep('op-1', { sequence: 1, kind: 'github-repository', resource: 'agent-control', phase: 'inconclusive', reason: 'line\\nbreak' })).rejects.toThrow('invalid operation step reason');
+    await expect(journal.appendStep('op-1', { sequence: 1, kind: 'github-repository', resource: 'agent-control', phase: 'inconclusive', reason: 'x'.repeat(129) })).rejects.toThrow('invalid operation step reason');
+  });
 
   test('inconclusive and manual-cleanup steps remain non-verified and retain remote resources', async () => {
     const journal = new InMemoryOperationJournal();
