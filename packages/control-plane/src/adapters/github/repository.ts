@@ -146,7 +146,7 @@ function snapshotDigest(files: readonly SnapshotFile[]): string {
   return hash.digest('hex');
 }
 export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort {
-  constructor(private readonly git: GithubRepositoryGitPort) {}
+  constructor(private readonly git: GithubRepositoryGitPort, private readonly sourceRoot?: string) {}
   async validate(sourcePath: string): Promise<GithubRepositorySourceValidation> {
     let snapshotPath: string | null = null;
     try {
@@ -156,6 +156,10 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
         return { kind: 'invalid', reason: 'source-path-is-not-a-regular-contained-directory' };
       }
       const root = await realpath(sourcePath);
+      if (this.sourceRoot !== undefined) {
+        const allowedRoot = await realpath(this.sourceRoot);
+        if (!isContained(allowedRoot, root)) return { kind: 'invalid', reason: 'source-path-outside-source-root' };
+      }
       const pending = [sourcePath];
       const files: SnapshotFile[] = [];
       while (pending.length > 0) {

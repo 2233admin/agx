@@ -35,7 +35,7 @@ function requireAbsolute(name: string, value: string): void { if (typeof value !
 class ProviderAdapterMux implements ProviderInventoryPort, ProviderActivationPort {
   constructor(private readonly codex: CodexProviderAdapter, private readonly claude: ClaudeProviderAdapter) {}
   private adapter(provider: ProviderName): CodexProviderAdapter | ClaudeProviderAdapter { return provider === 'codex' ? this.codex : this.claude; }
-  inspect(provider?: ProviderName): Promise<ProviderInventoryResult> { return this.adapter(provider ?? 'codex').inspect(); }
+  inspect(provider?: ProviderName): Promise<ProviderInventoryResult> { return provider === undefined ? Promise.resolve({ kind: 'inconclusive', reason: 'provider-selection-required' }) : this.adapter(provider).inspect(); }
   activate(target: ProviderActivationTarget) { return this.adapter(target.provider).activate(target); }
   revoke(target: ProviderActivationTarget, ownership: ProviderOwnershipRecord): Promise<ProviderRevokeResult> { return this.adapter(target.provider).revoke(target, ownership); }
 }
@@ -50,13 +50,22 @@ export function createDefaultDeploymentDependencies(options: DefaultDeploymentOp
   const codexCommand = commands.codex ?? createCodexProviderCommandPort({ cwd: options.cwd });
   const claudeCommand = commands.claude ?? createClaudeProviderCommandPort({ cwd: options.cwd });
   const multicaCommand = commands.multica ?? createMulticaCommandPort({ cwd: options.cwd });
-  const configRepository = new SqliteConfigRevisionRepository(options.dbPath);
-  const deploymentRepository = new SqliteDeploymentOperationRepository(options.dbPath);
-  const operationJournal = new SqliteOperationJournal(options.dbPath);
-  const launchPlanRepository = new SqliteLaunchPlanRepository(options.dbPath);
-  const repositories = new GithubRepositoryAdapter(repositoryCommand, new FsGithubRepositorySourcePort(gitCommand));
-  const project = new GithubProjectAdapter(projectCommand);
-  const providers = new ProviderAdapterMux(new CodexProviderAdapter(codexCommand), new ClaudeProviderAdapter(claudeCommand));
-  const multica = new MulticaCliAdapter(multicaCommand);
-  return { preflight: { revision: configRepository, repositories, project, providers, multica }, apply: { repositories, project, provider: providers }, status: { configRepository, deploymentRepository, operationJournal, launchPlanRepository }, close: () => { launchPlanRepository.close(); operationJournal.close(); deploymentRepository.close(); configRepository.close(); } };
+  let configRepository: SqliteConfigRevisionRepository | undefined;
+  let deploymentRepository: SqliteDeploymentOperationRepository | undefined;
+  let operationJournal: SqliteOperationJournal | undefined;
+  let launchPlanRepository: SqliteLaunchPlanRepository | undefined;
+  try {
+    configRepository = new SqliteConfigRevisionRepository(options.dbPath);
+    deploymentRepository = new SqliteDeploymentOperationRepository(options.dbPath);
+    operationJournal = new SqliteOperationJournal(options.dbPath);
+    launchPlanRepository = new SqliteLaunchPlanRepository(options.dbPath);
+    const repositories = new GithubRepositoryAdapter(repositoryCommand, new FsGithubRepositorySourcePort(gitCommand, options.sourceRoot));
+    const project = new GithubProjectAdapter(projectCommand);
+    const providers = new ProviderAdapterMux(new CodexProviderAdapter(codexCommand), new ClaudeProviderAdapter(claudeCommand));
+    const multica = new MulticaCliAdapter(multicaCommand);
+    return { preflight: { revision: configRepository, repositories, project, providers, multica }, apply: { repositories, project, provider: providers }, status: { configRepository, deploymentRepository, operationJournal, launchPlanRepository }, close: () => { launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close(); } };
+  } catch (error) {
+    launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close();
+    throw error;
+  }
 }

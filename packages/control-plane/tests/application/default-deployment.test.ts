@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createDefaultDeploymentDependencies } from '../../src/adapters/deployment/default-dependencies';
+import { FsGithubRepositorySourcePort } from '../../src/adapters/github/repository';
 
-test('default deployment assembly wires typed preflight/apply/status ports without invoking remotes', () => {
+test('default deployment assembly wires typed preflight/apply/status ports without invoking remotes', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'configs-default-deps-'));
   const calls: string[] = [];
   try {
@@ -17,8 +18,21 @@ test('default deployment assembly wires typed preflight/apply/status ports witho
       multica: { available: async () => false, run: async (_args, _signal) => ({ stdout: '', exitCode: null }) },
     } });
     expect(deps.preflight).toBeDefined(); expect(deps.apply).toBeDefined(); expect(deps.status).toBeDefined(); expect(calls).toEqual([]);
+    expect(await deps.preflight.providers.inspect()).toEqual({ kind: 'inconclusive', reason: 'provider-selection-required' });
     deps.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('default assembly enforces the configured source root through the source port', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'configs-source-root-'));
+  const outside = mkdtempSync(path.join(os.tmpdir(), 'configs-source-outside-'));
+  try {
+    const source = new FsGithubRepositorySourcePort({ run: async () => { throw new Error('git must not run'); } }, root);
+    expect(await source.validate(outside)).toEqual({ kind: 'invalid', reason: 'source-path-outside-source-root' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 });
 
 test('default assembly requires explicit absolute cwd and source root', () => {
