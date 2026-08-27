@@ -38,7 +38,7 @@ export interface GithubRepositoryPort {
 
 
 export type GithubRepositorySourceValidation =
-  | { readonly kind: 'valid'; readonly snapshotPath: string; readonly contentDigest: string }
+  | { readonly kind: 'valid'; readonly snapshotPath: string; readonly contentDigest: string; readonly initialCommit: string }
   | { readonly kind: 'invalid'; readonly reason: string };
 
 export interface GithubRepositorySourcePort {

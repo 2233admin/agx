@@ -1,8 +1,11 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
 import type { GithubRepositoryCommandPort, GithubRepositorySourcePort } from '../../src/application/ports';
 import type { GithubRepositoryTarget } from '../../src/domain/github-repository';
-import { GithubRepositoryAdapter } from '../../src/adapters/github/repository';
+import { GithubRepositoryAdapter, FsGithubRepositorySourcePort } from '../../src/adapters/github/repository';
 
 const INITIAL_COMMIT = 'b'.repeat(40);
 const TARGET: GithubRepositoryTarget = {
@@ -20,7 +23,7 @@ const TARGET: GithubRepositoryTarget = {
 };
 
 const VALID_SOURCE: GithubRepositorySourcePort = {
-  validate: async () => ({ kind: 'valid', snapshotPath: 'C:/owned/immutable-source-snapshot', contentDigest: 'a'.repeat(64) }),
+  validate: async () => ({ kind: 'valid', snapshotPath: 'C:/owned/immutable-source-snapshot', contentDigest: 'a'.repeat(64), initialCommit: INITIAL_COMMIT }),
 };
 
 function makeAdapter(command: GithubRepositoryCommandPort): GithubRepositoryAdapter {
@@ -203,6 +206,38 @@ describe('GithubRepositoryAdapter', () => {
       remoteRetention: 'retain',
     });
     expect(gh.calls).toHaveLength(2);
+  });
+  test('snapshots only source content, excludes .git metadata, and leaves Git staging writable', async () => {
+    const sourcePath = mkdtempSync(path.join(os.tmpdir(), 'github-source-'));
+    const git: GithubRepositoryCommandPort = {
+      async run(args) {
+        return { stdout: args.includes('rev-parse') ? `${INITIAL_COMMIT}\n` : '', exitCode: 0 };
+      },
+    };
+    try {
+      mkdirSync(path.join(sourcePath, '.git'));
+      writeFileSync(path.join(sourcePath, '.git', 'config'), 'secret remote metadata');
+      writeFileSync(path.join(sourcePath, 'README.md'), 'hello');
+      const result = await new FsGithubRepositorySourcePort(git).validate(sourcePath);
+      expect(result.kind).toBe('valid');
+      if (result.kind !== 'valid') return;
+      expect(result.initialCommit).toBe(INITIAL_COMMIT);
+      expect(existsSync(path.join(result.snapshotPath, '.git', 'config'))).toBe(false);
+      expect(readFileSync(path.join(result.snapshotPath, 'README.md'), 'utf8')).toBe('hello');
+      expect(statSync(path.join(result.snapshotPath, 'README.md')).mode & 0o200).toBe(0);
+      expect(statSync(result.snapshotPath).mode & 0o200).not.toBe(0);
+      const withGitDigest = result.contentDigest;
+      rmSync(result.snapshotPath, { recursive: true, force: true });
+      rmSync(path.join(sourcePath, '.git'), { recursive: true, force: true });
+      const withoutGit = await new FsGithubRepositorySourcePort(git).validate(sourcePath);
+      expect(withoutGit.kind).toBe('valid');
+      if (withoutGit.kind === 'valid') {
+        expect(withoutGit.contentDigest).toBe(withGitDigest);
+        rmSync(withoutGit.snapshotPath, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(sourcePath, { recursive: true, force: true });
+    }
   });
   test('accepts later commits while preserving the requested initial commit readback', async () => {
     const laterCommit = 'c'.repeat(40);

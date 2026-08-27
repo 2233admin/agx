@@ -146,6 +146,7 @@ function snapshotDigest(files: readonly SnapshotFile[]): string {
 }
 
 export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort {
+  constructor(private readonly command: GithubRepositoryCommandPort) {}
   async validate(sourcePath: string): Promise<GithubRepositorySourceValidation> {
     let snapshotPath: string | null = null;
     try {
@@ -161,6 +162,7 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
         const directory = pending.pop();
         if (directory === undefined) continue;
         for (const entry of await readdir(directory, { withFileTypes: true })) {
+          if (entry.name === '.git') continue;
           const candidate = path.join(directory, entry.name);
           const info = await lstat(candidate);
           if (info.isSymbolicLink()) return { kind: 'invalid', reason: 'source-tree-contains-symlink-or-junction' };
@@ -185,8 +187,16 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
         await mkdir(path.dirname(destination), { recursive: true });
         await writeFile(destination, file.content, { mode: 0o400 });
       }
-      if (snapshotPath !== null) await chmod(snapshotPath, 0o500);
-      return { kind: 'valid', snapshotPath, contentDigest };
+      await this.command.run(['git', '-C', snapshotPath, 'init', '--initial-branch=main']);
+      await this.command.run(['git', '-C', snapshotPath, 'config', 'user.name', 'configs']);
+      await this.command.run(['git', '-C', snapshotPath, 'config', 'user.email', 'configs@users.noreply.github.com']);
+      await this.command.run(['git', '-C', snapshotPath, 'add', '--all']);
+      await this.command.run(['git', '-C', snapshotPath, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize repository']);
+      const initialCommitResult = await this.command.run(['git', '-C', snapshotPath, 'rev-parse', 'HEAD']);
+      const initialCommit = initialCommitResult.stdout.trim();
+      if (initialCommitResult.exitCode !== 0 || !HEX_COMMIT.test(initialCommit)) throw new Error('invalid staged initial commit');
+      await chmod(snapshotPath, 0o700);
+      return { kind: 'valid', snapshotPath, contentDigest, initialCommit };
     } catch {
       if (snapshotPath !== null) await rm(snapshotPath, { recursive: true, force: true }).catch(() => undefined);
       return { kind: 'invalid', reason: 'source-path-unreadable' };
@@ -256,6 +266,10 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
       if (source.kind === 'invalid') return inconclusive('create', `source-path-invalid:${source.reason}`);
       snapshotPath = source.snapshotPath;
       if (source.contentDigest !== target.initialRevision.templateDigest) return inconclusive('create', 'source-content-digest-mismatch');
+      const stagedTarget: GithubRepositoryTarget = {
+        ...target,
+        initialRevision: { ...target.initialRevision, commit: source.initialCommit },
+      };
 
       const create = await this.command.run([
         'repo', 'create', `${target.owner}/${target.name}`, `--${target.visibility}`,
@@ -263,15 +277,15 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
         '--source', source.snapshotPath, '--remote', 'origin', '--push',
       ]);
       if (create.exitCode !== 0) {
-        const recovery = await this.readback(target);
-        if (recovery.kind === 'present') return this.created(target, recovery.repository);
+        const recovery = await this.readback(stagedTarget);
+        if (recovery.kind === 'present') return this.created(stagedTarget, recovery.repository);
         return inconclusive(recovery.kind === 'inconclusive' ? 'readback' : 'create', recovery.kind === 'inconclusive' ? recovery.reason : 'create-failed-and-repository-absent');
       }
 
       const visibility = await this.command.run(['repo', 'edit', `${target.owner}/${target.name}`, '--enable-issues']);
       if (visibility.exitCode !== 0) return inconclusive('visibility', 'visibility-update-inconclusive');
-      const readback = await this.readback(target);
-      if (readback.kind === 'present') return this.created(target, readback.repository);
+      const readback = await this.readback(stagedTarget);
+      if (readback.kind === 'present') return this.created(stagedTarget, readback.repository);
       if (readback.kind === 'inconclusive') return inconclusive('readback', readback.reason);
       return inconclusive('readback', 'repository-absent-after-create');
     } catch {
