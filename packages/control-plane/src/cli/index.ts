@@ -26,6 +26,7 @@ import type { LaunchPlan } from '../domain/activation';
 import { known, unknown } from '../domain/facts';
 import type { OperationJournalPhase, OperationJournalRecord, OperationStep } from '../domain/operation-journal';
 import type { DeploymentStatus } from '../domain/deployment';
+import type { RollbackDecision, UninstallDecision, UpgradeDecision } from '../domain/lifecycle';
 import { SqliteConfigRevisionRepository } from '../adapters/sqlite/repository';
 import { SqliteConfigRevisionWriter } from '../adapters/sqlite/config-revision-writer';
 import { SqliteDeploymentOperationRepository } from '../adapters/sqlite/deployment-operation-repository';
@@ -148,7 +149,7 @@ import { runTui } from './tui';
 // language-dependent, so this is composed via `usageLine()` rather than
 // being a static constant.
 const USAGE_SYNTAX =
-  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|diagnose|migrate-agx --root <installation-root>|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group ...]>';
+  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|diagnose|migrate-agx --root <installation-root>|init --plan|init --apply|upgrade --checkpoint <id>|rollback --checkpoint <id>|uninstall|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group ...]>';
 
 function usageLine(): string {
   return `${t('usage.prefix')} ${USAGE_SYNTAX}`;
@@ -180,6 +181,8 @@ type ParsedCommand =
   | { readonly kind: 'show'; readonly id: string }
   | { readonly kind: 'status'; readonly planId: string | null; readonly deploymentId: string | null; readonly operationId: string | null }
   | { readonly kind: 'diagnose'; readonly deploymentId: string | null; readonly operationId: string | null }
+  | { readonly kind: 'upgrade' | 'rollback'; readonly checkpointId: string }
+  | { readonly kind: 'uninstall' }
   | { readonly kind: 'init'; readonly mode: 'plan' | 'apply' }
   | { readonly kind: 'migrate-agx'; readonly root: string }
   | { readonly kind: 'compare'; readonly ids: readonly string[] }
@@ -572,6 +575,10 @@ function parseDiagnose(rest: readonly string[]): ParsedCommand {
   const parsed = parseStatus(rest);
   return parsed.kind === 'status' ? { kind: 'diagnose', deploymentId: parsed.deploymentId, operationId: parsed.operationId } : parsed;
 }
+function parseCheckpointCommand(kind: 'upgrade' | 'rollback', rest: readonly string[]): ParsedCommand {
+  if (rest.length !== 2 || rest[0] !== '--checkpoint' || rest[1] === undefined || rest[1].trim() === '') return { kind: 'usage-error', message: usageLine() };
+  return { kind, checkpointId: rest[1] };
+}
 function parseCommand(argv: readonly string[]): ParsedCommand {
   const [command, ...rest] = argv;
   switch (command) {
@@ -601,6 +608,12 @@ function parseCommand(argv: readonly string[]): ParsedCommand {
       return parseDiagnose(rest);
     case 'migrate-agx':
       return parseMigrateAgx(rest);
+    case 'upgrade':
+      return parseCheckpointCommand('upgrade', rest);
+    case 'rollback':
+      return parseCheckpointCommand('rollback', rest);
+    case 'uninstall':
+      return rest.length === 0 ? { kind: 'uninstall' } : { kind: 'usage-error', message: usageLine() };
     case 'establish':
       return parseEstablish(rest);
     case 'revise':
@@ -617,6 +630,11 @@ function parseCommand(argv: readonly string[]): ParsedCommand {
   }
 }
 
+export interface LifecycleDecisionProviders {
+  readonly upgrade: (checkpointId: string) => Promise<UpgradeDecision>;
+  readonly rollback: (checkpointId: string) => Promise<RollbackDecision>;
+  readonly uninstall: () => Promise<UninstallDecision>;
+}
 export interface CliOverrides {
   readonly ompPort?: OmpProcessPort;
   readonly capabilityProbe?: OmpCapabilityProbePort;
@@ -632,6 +650,7 @@ export interface CliOverrides {
   readonly statusDurableLoader?: (selectors: DurableStatusSelectors) => Promise<StatusProjectionInput | null>;
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
   readonly deploymentPlan?: { readonly journal: OperationJournalPort; readonly input: DeploymentPreflightInput; readonly ports: DeploymentPreflightPorts };
+  readonly lifecycleDecisionProviders?: LifecycleDecisionProviders;
   readonly deploymentApply?: { readonly journal: OperationJournalPort; readonly operationId: string; readonly deploymentId: string; readonly targets: DeploymentApplyTargets; readonly ports: DeploymentApplyPorts };
 }
 
@@ -1285,6 +1304,32 @@ async function runInit(parsed: Extract<ParsedCommand, { kind: 'init' }>, overrid
   console.log(JSON.stringify({ kind: result.kind, operation: result.operation === null ? null : { operationId: result.operation.operationId, deploymentId: result.operation.deploymentId, phase: result.operation.phase, remoteRetention: result.operation.remoteRetention, nextAction: result.operation.nextAction }, remoteRetention: result.remoteRetention, nextAction: result.nextAction }));
   return result.kind === 'succeeded' ? 0 : 1;
 }
+async function runLifecycleCommand(command: Extract<ParsedCommand, { kind: 'upgrade' | 'rollback' | 'uninstall' }>, overrides: CliOverrides): Promise<number> {
+  const providers = overrides.lifecycleDecisionProviders;
+  if (providers === undefined) {
+    console.log(JSON.stringify({ kind: 'unsupported', command: command.kind, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inject-lifecycle-dependencies' }));
+    return 1;
+  }
+  let decision: UpgradeDecision | RollbackDecision | UninstallDecision;
+  try {
+    decision = command.kind === 'upgrade' ? await providers.upgrade(command.checkpointId) : command.kind === 'rollback' ? await providers.rollback(command.checkpointId) : await providers.uninstall();
+  } catch {
+    console.log(JSON.stringify({ kind: 'unsupported', command: command.kind, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inspect-lifecycle-state' }));
+    return 1;
+  }
+  if (decision.kind === 'rejected') { console.log(JSON.stringify({ kind: decision.kind, reason: decision.reason })); return 1; }
+  if (command.kind === 'upgrade') {
+    const value = decision as Extract<UpgradeDecision, { readonly kind: 'ready' }>;
+    console.log(JSON.stringify({ kind: value.kind, action: value.action, checkpoint: { schemaVersion: value.checkpoint.schemaVersion, checkpointId: value.checkpoint.checkpointId, installationId: value.checkpoint.installationId, deploymentId: value.checkpoint.deploymentId, revisionId: value.checkpoint.revisionId, fromVersion: value.checkpoint.fromVersion, toVersion: value.checkpoint.toVersion }, remoteRetention: value.remoteRetention }));
+  } else if (command.kind === 'rollback') {
+    const value = decision as Extract<RollbackDecision, { readonly kind: 'ready' }>;
+    console.log(JSON.stringify({ kind: value.kind, action: value.action, restorePaths: value.restore.map((entry) => entry.path), remoteRetention: value.remoteRetention }));
+  } else {
+    const value = decision as Extract<UninstallDecision, { readonly kind: 'ready' }>;
+    console.log(JSON.stringify({ kind: value.kind, action: value.action, deletePaths: value.deletePaths, retainRemote: value.retainRemote }));
+  }
+  return 0;
+}
 export async function main(argv: readonly string[], overrides: CliOverrides = {}): Promise<number> {
   // `[DELTA]` IA first layer: `configs` with no subcommand at all is no
   // longer a usage error -- it prints the same usage text as a normal,
@@ -1316,6 +1361,7 @@ export async function main(argv: readonly string[], overrides: CliOverrides = {}
     return 1;
   }
   const legacyStatusOverride = parsed.kind === 'status' && overrides.statusProjection === undefined && overrides.statusProjectionLoader === undefined && (overrides.ompPort !== undefined || overrides.capabilityProbe !== undefined || overrides.contextWriter !== undefined);
+  if (parsed.kind === 'upgrade' || parsed.kind === 'rollback' || parsed.kind === 'uninstall') return await runLifecycleCommand(parsed, overrides);
   if (parsed.kind === 'init') return await runInit(parsed, overrides);
   if (parsed.kind === 'diagnose') return await runUnifiedStatus('diagnose', overrides, parsed.deploymentId !== null && parsed.operationId !== null ? { deploymentId: parsed.deploymentId, operationId: parsed.operationId } : undefined);
   if (parsed.kind === 'migrate-agx') return await runMigrateAgx(parsed, overrides);
