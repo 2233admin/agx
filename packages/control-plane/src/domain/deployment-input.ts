@@ -27,6 +27,7 @@ export type DeploymentInputResult =
 function isRecord(value: unknown): value is JsonRecord { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function hasOnlyKeys(value: JsonRecord, keys: readonly string[]): boolean { const allowed = new Set(keys); return Object.keys(value).every((key) => allowed.has(key)); }
 function cleanMessage(message: string): string { return message.slice(0, MAX_DIAGNOSTIC_MESSAGE); }
+function isCleanText(value: unknown, max = 256): value is string { return typeof value === 'string' && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value); }
 function isCleanString(value: unknown, max = 256): value is string { return typeof value === 'string' && value.length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value); }
 function isId(value: unknown): value is string { return typeof value === 'string' && ID.test(value); }
 function isAbsolutePath(value: unknown): value is string { return isCleanString(value, 4096) && path.isAbsolute(value); }
@@ -131,7 +132,7 @@ export function parseDeploymentInput(value: string | Uint8Array): DeploymentInpu
     if (!isId(owner)) reject('invalid-repository-owner', `${fieldPath}.owner`, 'repository owner is malformed');
     if (!isId(name)) reject('invalid-repository-name', `${fieldPath}.name`, 'repository name is malformed');
     if (visibility !== 'private' && visibility !== 'public') reject('invalid-repository-visibility', `${fieldPath}.visibility`, 'repository visibility is invalid');
-    if (!isCleanString(description, 1024)) reject('invalid-repository-description', `${fieldPath}.description`, 'repository description is invalid');
+    if (!isCleanText(description, 1024)) reject('invalid-repository-description', `${fieldPath}.description`, 'repository description is invalid');
     if (!isAbsolutePath(sourcePath)) reject('invalid-source-path', `${fieldPath}.sourcePath`, 'repository sourcePath must be absolute');
     else if (isAbsolutePath(sourceRoot) && !isContained(sourceRoot, sourcePath)) reject('source-path-outside-root', `${fieldPath}.sourcePath`, 'repository sourcePath is outside sourceRoot');
     if (!isRecord(initial)) { reject('invalid-initial-revision', `${fieldPath}.initialRevision`, 'initialRevision must be an object'); continue; }
@@ -145,7 +146,7 @@ export function parseDeploymentInput(value: string | Uint8Array): DeploymentInpu
       if (repositoryIdentities.has(identity)) reject('duplicate-repository', fieldPath, 'duplicate repository identity');
       repositoryIdentities.add(identity);
     }
-    if (isId(owner) && isId(name) && (visibility === 'private' || visibility === 'public') && isCleanString(description, 1024) && isAbsolutePath(sourcePath) && isRecord(initial) && HEX40.test(String(initial.commit ?? '')) && isCleanString(initial.templateVersion, 128) && HEX64.test(String(initial.templateDigest ?? '')) && Array.isArray(initial.requiredPaths) && initial.requiredPaths.length > 0 && initial.requiredPaths.every(isRelativePath)) repositories.push({ owner, name, visibility, description, sourcePath, initialRevision: { commit: initial.commit as string, templateVersion: initial.templateVersion, templateDigest: initial.templateDigest as string, requiredPaths: initial.requiredPaths as string[] } });
+    if (isId(owner) && isId(name) && (visibility === 'private' || visibility === 'public') && isCleanText(description, 1024) && isAbsolutePath(sourcePath) && isRecord(initial) && HEX40.test(String(initial.commit ?? '')) && isCleanString(initial.templateVersion, 128) && HEX64.test(String(initial.templateDigest ?? '')) && Array.isArray(initial.requiredPaths) && initial.requiredPaths.length > 0 && initial.requiredPaths.every(isRelativePath)) repositories.push({ owner, name, visibility, description, sourcePath, initialRevision: { commit: initial.commit as string, templateVersion: initial.templateVersion, templateDigest: initial.templateDigest as string, requiredPaths: initial.requiredPaths as string[] } });
   }
   let project: GithubProjectTarget | null = null;
   if (!isRecord(root.project)) reject('invalid-project', '$.project', 'project must be an object');

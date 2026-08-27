@@ -19,6 +19,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import type { ClientId } from '../domain/client';
 import { resolveClientSupport } from '../domain/client';
@@ -92,10 +94,11 @@ import {
 } from '../application/establish';
 import { buildSupplyCandidate, loadSupplyGroups } from '../adapters/sources/supply-fs';
 import { importLegacyReceipt, type MigrationImportResult } from '../adapters/migration/receipt-importer';
-import { diagnoseDeployment } from '../application/diagnose';
-import { getUnifiedStatus, loadStatusProjection, type DurableStatusDependencies, type DurableStatusSelectors } from '../application/status';
-import type { DefaultDeploymentDependencies } from '../adapters/deployment/default-dependencies';
+import { createDefaultDeploymentDependencies, type DefaultDeploymentDependencies } from '../adapters/deployment/default-dependencies';
+import { parseDeploymentInput, type DeploymentInputResult } from '../domain/deployment-input';
 import type { StatusProjectionInput } from '../domain/status';
+import { getUnifiedStatus, loadStatusProjection, type DurableStatusDependencies, type DurableStatusSelectors } from '../application/status';
+import { diagnoseDeployment } from '../application/diagnose';
 import { defaultSupplyRoot } from './supply-root';
 import { isStdinTTY, readCandidateFile, readStdinText } from './candidate-source';
 import {
@@ -150,7 +153,7 @@ import { runTui } from './tui';
 // language-dependent, so this is composed via `usageLine()` rather than
 // being a static constant.
 const USAGE_SYNTAX =
-  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|diagnose|migrate-agx --root <installation-root>|init --plan|init --apply|upgrade --checkpoint <id>|rollback --checkpoint <id>|uninstall|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group ...]>';
+  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|diagnose|migrate-agx --root <installation-root>|init (--plan|--apply) --input <absolute-json-path>|upgrade --checkpoint <id>|rollback --checkpoint <id>|uninstall|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group ...]>';
 
 function usageLine(): string {
   return `${t('usage.prefix')} ${USAGE_SYNTAX}`;
@@ -184,7 +187,7 @@ type ParsedCommand =
   | { readonly kind: 'diagnose'; readonly deploymentId: string | null; readonly operationId: string | null }
   | { readonly kind: 'upgrade' | 'rollback'; readonly checkpointId: string }
   | { readonly kind: 'uninstall' }
-  | { readonly kind: 'init'; readonly mode: 'plan' | 'apply' }
+  | { readonly kind: 'init'; readonly mode: 'plan' | 'apply'; readonly inputPath?: string }
   | { readonly kind: 'migrate-agx'; readonly root: string }
   | { readonly kind: 'compare'; readonly ids: readonly string[] }
   | { readonly kind: 'use' | 'switch'; readonly id: string; readonly client: ClientId; readonly yes: boolean; readonly forwardedArgs: readonly string[] }
@@ -556,8 +559,8 @@ function parseMigrateAgx(rest: readonly string[]): ParsedCommand {
   return { kind: 'migrate-agx', root: rest[1] };
 }
 function parseInit(rest: readonly string[]): ParsedCommand {
-  if (rest.length !== 1 || (rest[0] !== '--plan' && rest[0] !== '--apply')) return { kind: 'usage-error', message: `${t('parseError.initMode')}\n${usageLine()}` };
-  return { kind: 'init', mode: rest[0] === '--plan' ? 'plan' : 'apply' };
+  if (rest.length !== 3 || (rest[0] !== '--plan' && rest[0] !== '--apply') || rest[1] !== '--input' || rest[2] === undefined || !path.isAbsolute(rest[2])) return { kind: 'usage-error', message: `${t('parseError.initMode')}\n${usageLine()}` };
+  return { kind: 'init', mode: rest[0] === '--plan' ? 'plan' : 'apply', inputPath: rest[2] };
 }
 function parseStatus(rest: readonly string[]): ParsedCommand {
   if (rest.length === 0) return { kind: 'status', planId: null, deploymentId: null, operationId: null };
@@ -651,6 +654,7 @@ export interface CliOverrides {
   readonly statusDurableLoader?: (selectors: DurableStatusSelectors) => Promise<StatusProjectionInput | null>;
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
   readonly deploymentPlan?: { readonly journal: OperationJournalPort; readonly input: DeploymentPreflightInput; readonly ports: DeploymentPreflightPorts };
+  readonly defaultDeploymentFactory?: (options: Parameters<typeof createDefaultDeploymentDependencies>[0]) => DefaultDeploymentDependencies;
   readonly lifecycleDecisionProviders?: LifecycleDecisionProviders;
   readonly defaultDeployment?: DefaultDeploymentDependencies;
   readonly deploymentApply?: { readonly journal: OperationJournalPort; readonly operationId: string; readonly deploymentId: string; readonly targets: DeploymentApplyTargets; readonly ports: DeploymentApplyPorts };
@@ -1294,7 +1298,52 @@ function dryRunOperationJournal(): OperationJournalPort {
   const unsupported = async (): Promise<never> => { throw new Error('dry-run journal does not persist operation state'); };
   return { prepare: async (input) => createOperationJournal(input), start: unsupported, resolveInconclusive: unsupported, appendStep: unsupported, finish: unsupported, find: async () => null };
 }
+async function runDefaultDeploymentInit(parsed: Extract<ParsedCommand, { kind: 'init' }>, overrides: CliOverrides): Promise<number> {
+  if (parsed.inputPath === undefined) return unavailableInit(parsed.mode);
+  let document: DeploymentInputResult;
+  try {
+    document = parseDeploymentInput(await readFile(parsed.inputPath));
+  } catch {
+    console.log(JSON.stringify({ kind: 'unsupported', command: `init-${parsed.mode}`, code: 'DEPLOYMENT-INPUT-UNAVAILABLE', nextAction: 'provide-readable-input-file', remoteRetention: 'retain' }));
+    return 1;
+  }
+  if (document.kind === 'rejected') {
+    console.log(JSON.stringify({ kind: 'rejected', command: `init-${parsed.mode}`, code: 'DEPLOYMENT-INPUT-INVALID', diagnostics: document.diagnostics.map(({ code, path: fieldPath, message }) => ({ code, path: fieldPath, message })), remoteRetention: 'retain' }));
+    return 1;
+  }
+  let dependencies: DefaultDeploymentDependencies;
+  try {
+    dependencies = (overrides.defaultDeploymentFactory ?? createDefaultDeploymentDependencies)({ dbPath: defaultDbPath(), cwd: process.cwd(), sourceRoot: document.sourceRoot });
+  } catch {
+    console.log(JSON.stringify({ kind: 'unsupported', command: `init-${parsed.mode}`, code: 'DEPLOYMENT-DEPENDENCIES-UNAVAILABLE', nextAction: 'inspect-local-state', remoteRetention: 'retain' }));
+    return 1;
+  }
+  try {
+    const input = document.input;
+    if (parsed.mode === 'plan') {
+      const result = await prepareDeploymentPlan(dryRunOperationJournal(), input, dependencies.preflight);
+      console.log(JSON.stringify({ kind: result.kind, plan: result.plan, blockers: result.blockers.map(({ resource, reason }) => ({ resource, reason })), remoteRetention: result.remoteRetention }));
+      return result.kind === 'ready' ? 0 : 1;
+    }
+    const prepared = await prepareDeploymentPlan(dependencies.journal, input, dependencies.preflight);
+    if (prepared.kind !== 'ready') {
+      console.log(JSON.stringify({ kind: prepared.kind, plan: prepared.plan, blockers: prepared.blockers.map(({ resource, reason }) => ({ resource, reason })), remoteRetention: prepared.remoteRetention }));
+      return 1;
+    }
+    const targets: DeploymentApplyTargets = {
+      repositories: new Map(input.repositories.map((target) => [`${target.owner}/${target.name}`, target])),
+      project: input.project,
+      providers: new Map(input.providers.map((target) => [target.provider, target])),
+    };
+    const result = await applyDeploymentPlan(dependencies.journal, input.operationId, targets, dependencies.apply);
+    console.log(JSON.stringify({ kind: result.kind, operation: result.operation === null ? null : { operationId: result.operation.operationId, deploymentId: result.operation.deploymentId, phase: result.operation.phase, remoteRetention: result.operation.remoteRetention, nextAction: result.operation.nextAction }, remoteRetention: result.remoteRetention, nextAction: result.nextAction }));
+    return result.kind === 'succeeded' ? 0 : 1;
+  } finally {
+    dependencies.close();
+  }
+}
 async function runInit(parsed: Extract<ParsedCommand, { kind: 'init' }>, overrides: CliOverrides): Promise<number> {
+  if (parsed.inputPath !== undefined) return runDefaultDeploymentInit(parsed, overrides);
   if (parsed.mode === 'plan') {
     if (overrides.deploymentPlan === undefined) return unavailableInit(parsed.mode);
     const result = await prepareDeploymentPlan(dryRunOperationJournal(), overrides.deploymentPlan.input, overrides.deploymentPlan.ports);
@@ -1353,7 +1402,8 @@ export async function main(argv: readonly string[], overrides: CliOverrides = {}
     return 0;
   }
 
-  const parsed = parseCommand(argv);
+  let parsed = parseCommand(argv);
+  if (parsed.kind === 'usage-error' && argv[0] === 'init' && argv.length === 2 && (argv[1] === '--plan' || argv[1] === '--apply') && (overrides.deploymentPlan !== undefined || overrides.deploymentApply !== undefined)) parsed = { kind: 'init', mode: argv[1] === '--plan' ? 'plan' : 'apply' };
   if (parsed.kind === 'usage-error') {
     console.error(parsed.message);
     return 2;

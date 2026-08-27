@@ -10,6 +10,7 @@ import { createClaudeProviderCommandPort, createCodexProviderCommandPort } from 
 import { ClaudeProviderAdapter, CodexProviderAdapter } from '../providers/providers';
 import { createMulticaCommandPort } from '../multica/process';
 import { MulticaCliAdapter } from '../multica/cli';
+import type { OperationJournalPort } from '../../application/ports';
 import type { DeploymentApplyPorts } from '../../application/deployment-apply';
 import type { DeploymentPreflightPorts } from '../../application/deployment-preflight';
 import { createReadonlyStatusDependencies, type ReadonlyStatusDependencies } from './readonly-status';
@@ -26,6 +27,7 @@ export interface DefaultDeploymentCommands {
 }
 export interface DefaultDeploymentOptions { readonly dbPath: string; readonly cwd: string; readonly sourceRoot: string; readonly commands?: Partial<DefaultDeploymentCommands>; }
 export interface DefaultDeploymentDependencies {
+  readonly journal: OperationJournalPort;
   readonly preflight: DeploymentPreflightPorts;
   readonly apply: DeploymentApplyPorts;
   readonly readonlyStatus: ReadonlyStatusDependencies;
@@ -64,7 +66,7 @@ export function createDefaultDeploymentDependencies(options: DefaultDeploymentOp
     const providers = new ProviderAdapterMux(new CodexProviderAdapter(codexCommand), new ClaudeProviderAdapter(claudeCommand));
     const multica = new MulticaCliAdapter(multicaCommand);
     const readonlyStatus = createReadonlyStatusDependencies(options.dbPath);
-    return { preflight: { revision: configRepository, repositories, source, project, providers, multica }, apply: { repositories, project, provider: providers }, readonlyStatus, close: () => { launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close(); } };
+    return { journal: operationJournal, preflight: { revision: configRepository, repositories, source, project, providers, multica }, apply: { repositories, project, provider: providers }, readonlyStatus, close: () => { launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close(); } };
   } catch (error) {
     launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close();
     throw error;
