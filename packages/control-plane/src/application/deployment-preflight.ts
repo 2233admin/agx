@@ -81,6 +81,7 @@ function normalizeInput(value: unknown): NormalizedDeploymentInput {
     multicaSubjects,
   };
   if (raw.revisionId !== undefined && typeof raw.revisionId !== 'string') blockers.push({ resource: '(invalid revision id)', reason: 'invalid-revision-input' });
+  if (!isRecord(raw.project)) blockers.push({ resource: '(invalid project target)', reason: 'invalid-project-input' });
   return { input: normalized, blockers };
 }
 
@@ -117,9 +118,8 @@ function inputBlockers(input: DeploymentPreflightInput): readonly DeploymentPref
   }
   const project = input.project as GithubProjectTarget | null | undefined;
   const resource = projectResource(project);
-  if (project === null || project === undefined || typeof project !== 'object' || Array.isArray(project)) blockers.push({ resource: '(invalid project target)', reason: 'invalid-project-input' });
-  else if (typeof project.title !== 'string' || project.title.trim() === '' || !/[\p{L}\p{N}]/u.test(project.title) || /[\u0000-\u001f\u007f]/.test(project.title)) blockers.push({ resource: '(invalid project title)', reason: 'invalid-project-title' });
-  else if (!RESOURCE_ID.test(resource)) blockers.push({ resource: '(invalid project identity)', reason: 'invalid-project-resource' });
+  if (project !== null && project !== undefined && (typeof project.title !== 'string' || project.title.trim() === '' || !/[\p{L}\p{N}]/u.test(project.title) || /[\u0000-\u001f\u007f]/.test(project.title))) blockers.push({ resource: '(invalid project title)', reason: 'invalid-project-title' });
+  else if (project !== null && project !== undefined && !RESOURCE_ID.test(resource)) blockers.push({ resource: '(invalid project identity)', reason: 'invalid-project-resource' });
   const seenProviders = new Set<string>();
   const providers = Array.isArray(input.providers) ? input.providers : [];
   for (const target of providers) {

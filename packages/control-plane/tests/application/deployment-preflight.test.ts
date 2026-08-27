@@ -102,7 +102,7 @@ describe('prepareDeploymentPlan preflight', () => {
     const journal = new RecordingJournal();
     const result = await prepareDeploymentPlan(journal, input({ operationId: '!!!', project: null as unknown as GithubProjectTarget }), readyPorts());
     expect(result.kind).toBe('blocked');
-    expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['invalid-operation-id', 'invalid-project-input']);
+    expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['invalid-project-input', 'invalid-operation-id']);
     expect(journal.prepareCalls).toBe(0);
   });
   test('rejects duplicate canonical repository and provider targets before journal writes', async () => {
