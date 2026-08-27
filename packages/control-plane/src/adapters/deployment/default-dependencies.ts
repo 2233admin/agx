@@ -12,7 +12,7 @@ import { createMulticaCommandPort } from '../multica/process';
 import { MulticaCliAdapter } from '../multica/cli';
 import type { DeploymentApplyPorts } from '../../application/deployment-apply';
 import type { DeploymentPreflightPorts } from '../../application/deployment-preflight';
-import type { DurableStatusDependencies } from '../../application/status';
+import { createReadonlyStatusDependencies, type ReadonlyStatusDependencies } from './readonly-status';
 import type { GithubProjectCommandPort, GithubRepositoryCommandPort, GithubRepositoryGitPort, ProviderActivationPort, ProviderInventoryPort, MulticaCommandPort, CodexProviderCommandPort, ClaudeProviderCommandPort } from '../../application/ports';
 import type { ProviderActivationTarget, ProviderName, ProviderOwnershipRecord, ProviderRevokeResult, ProviderInventoryResult } from '../../domain/provider';
 
@@ -28,7 +28,7 @@ export interface DefaultDeploymentOptions { readonly dbPath: string; readonly cw
 export interface DefaultDeploymentDependencies {
   readonly preflight: DeploymentPreflightPorts;
   readonly apply: DeploymentApplyPorts;
-  readonly status: DurableStatusDependencies;
+  readonly readonlyStatus: ReadonlyStatusDependencies;
   readonly close: () => void;
 }
 function requireAbsolute(name: string, value: string): void { if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error(`${name} must be an absolute path`); }
@@ -63,7 +63,8 @@ export function createDefaultDeploymentDependencies(options: DefaultDeploymentOp
     const project = new GithubProjectAdapter(projectCommand);
     const providers = new ProviderAdapterMux(new CodexProviderAdapter(codexCommand), new ClaudeProviderAdapter(claudeCommand));
     const multica = new MulticaCliAdapter(multicaCommand);
-    return { preflight: { revision: configRepository, repositories, project, providers, multica }, apply: { repositories, project, provider: providers }, status: { configRepository, deploymentRepository, operationJournal, launchPlanRepository }, close: () => { launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close(); } };
+    const readonlyStatus = createReadonlyStatusDependencies(options.dbPath);
+    return { preflight: { revision: configRepository, repositories, project, providers, multica }, apply: { repositories, project, provider: providers }, readonlyStatus, close: () => { launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close(); } };
   } catch (error) {
     launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close();
     throw error;

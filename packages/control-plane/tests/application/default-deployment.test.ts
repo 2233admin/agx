@@ -15,9 +15,9 @@ test('default deployment assembly wires typed preflight/apply/status ports witho
       project: { run: async () => { calls.push('project'); return { stdout: '', exitCode: 0 }; } },
       codex: { available: async () => false, run: async () => ({ stdout: '', exitCode: null }) },
       claude: { available: async () => false, run: async () => ({ stdout: '', exitCode: null }) },
-      multica: { available: async () => false, run: async (_args, _signal) => ({ stdout: '', exitCode: null }) },
+      multica: { available: async () => false, run: async (_args: readonly string[], _signal?: AbortSignal) => ({ stdout: '', exitCode: null }) },
     } });
-    expect(deps.preflight).toBeDefined(); expect(deps.apply).toBeDefined(); expect(deps.status).toBeDefined(); expect(calls).toEqual([]);
+    expect(deps.preflight).toBeDefined(); expect(deps.apply).toBeDefined(); expect(deps.readonlyStatus).toBeDefined(); expect(calls).toEqual([]);
     expect(await deps.preflight.providers.inspect()).toEqual({ kind: 'inconclusive', reason: 'provider-selection-required' });
     deps.close();
   } finally { rmSync(root, { recursive: true, force: true }); }

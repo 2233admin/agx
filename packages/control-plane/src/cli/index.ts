@@ -1269,7 +1269,7 @@ async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverr
     try { projection = await overrides.statusProjectionLoader(); } catch { projection = null; }
   }
   if (projection === undefined && selectors !== undefined) {
-    try { projection = overrides.statusDurableLoader !== undefined ? await overrides.statusDurableLoader(selectors) : overrides.defaultDeployment !== undefined ? await loadStatusProjection(overrides.defaultDeployment.status, selectors) : await loadDefaultStatusProjection(selectors); } catch { projection = null; }
+    try { projection = overrides.statusDurableLoader !== undefined ? await overrides.statusDurableLoader(selectors) : overrides.defaultDeployment !== undefined ? await overrides.defaultDeployment.readonlyStatus.load(selectors) : await loadDefaultStatusProjection(selectors); } catch { projection = null; }
   }
   if (projection === undefined || projection === null) {
     console.log(JSON.stringify({ kind: 'unsupported', phase: 'preflight-blocked', code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'select-existing-deployment', ...(kind === 'diagnose' ? { readOnly: true } : {}) }));
