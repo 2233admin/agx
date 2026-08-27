@@ -115,9 +115,9 @@ export type GithubRepositorySourceValidation =
   | { readonly kind: 'invalid'; readonly reason: string };
 
 export interface GithubRepositorySourcePort {
-  validate(sourcePath: string): Promise<GithubRepositorySourceValidation>;
-
+  validate(sourcePath: string, sourceRoot?: string): Promise<GithubRepositorySourceValidation>;
 }
+
 /**
  * `[Story 3.1]` Everything `create` needs besides the candidate itself.
  * `candidate` is intentionally `unknown` -- it is raw, untrusted JSON

@@ -147,7 +147,7 @@ function snapshotDigest(files: readonly SnapshotFile[]): string {
 }
 export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort {
   constructor(private readonly git: GithubRepositoryGitPort, private readonly sourceRoot?: string) {}
-  async validate(sourcePath: string): Promise<GithubRepositorySourceValidation> {
+  async validate(sourcePath: string, expectedSourceRoot?: string): Promise<GithubRepositorySourceValidation> {
     let snapshotPath: string | null = null;
     try {
       if (!path.isAbsolute(sourcePath)) return { kind: 'invalid', reason: 'source-path-not-absolute' };
@@ -156,10 +156,10 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
         return { kind: 'invalid', reason: 'source-path-is-not-a-regular-contained-directory' };
       }
       const root = await realpath(sourcePath);
-      if (this.sourceRoot !== undefined) {
-        const allowedRoot = await realpath(this.sourceRoot);
-        if (!isContained(allowedRoot, root)) return { kind: 'invalid', reason: 'source-path-outside-source-root' };
-      }
+      if (expectedSourceRoot !== undefined && !path.isAbsolute(expectedSourceRoot)) return { kind: 'invalid', reason: 'source-root-not-absolute' };
+      const allowedRoot = expectedSourceRoot === undefined ? (this.sourceRoot === undefined ? undefined : await realpath(this.sourceRoot)) : await realpath(expectedSourceRoot);
+      if (allowedRoot !== undefined && this.sourceRoot !== undefined && (await realpath(this.sourceRoot)) !== allowedRoot) return { kind: 'invalid', reason: 'source-root-mismatch' };
+      if (allowedRoot !== undefined && !isContained(allowedRoot, root)) return { kind: 'invalid', reason: 'source-path-outside-source-root' };
       const pending = [sourcePath];
       const files: SnapshotFile[] = [];
       while (pending.length > 0) {

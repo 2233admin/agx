@@ -1,7 +1,9 @@
+import path from 'node:path';
 import type {
   ConfigRevisionRepository,
   GithubProjectPort,
   GithubRepositoryPort,
+  GithubRepositorySourcePort,
   MulticaRuntimePort,
   OperationJournalPort,
   ProviderInventoryPort,
@@ -16,12 +18,14 @@ import type { ProviderActivationTarget } from '../domain/provider';
 export interface DeploymentPreflightPorts {
   readonly revision: ConfigRevisionRepository;
   readonly repositories: GithubRepositoryPort;
+  readonly source: GithubRepositorySourcePort;
   readonly project: GithubProjectPort;
   readonly providers: ProviderInventoryPort;
   readonly multica?: MulticaRuntimePort;
 }
 
 export interface DeploymentPreflightInput {
+  readonly sourceRoot: string;
   readonly deploymentId: string;
   readonly operationId: string;
   readonly revisionId: string;
@@ -72,6 +76,7 @@ function normalizeInput(value: unknown): NormalizedDeploymentInput {
   }
   const project = isRecord(raw.project) ? raw.project as unknown as GithubProjectTarget : null;
   const normalized: DeploymentPreflightInput = {
+    sourceRoot: typeof raw.sourceRoot === 'string' ? raw.sourceRoot : '',
     deploymentId: typeof raw.deploymentId === 'string' ? raw.deploymentId : '',
     operationId: typeof raw.operationId === 'string' ? raw.operationId : '',
     revisionId: typeof raw.revisionId === 'string' ? raw.revisionId : '[invalid-revision-id]',
@@ -104,6 +109,7 @@ function sortedProviders(targets: readonly ProviderActivationTarget[]): readonly
 }
 function inputBlockers(input: DeploymentPreflightInput): readonly DeploymentPreflightBlocker[] {
   const blockers: DeploymentPreflightBlocker[] = [];
+  if (!path.isAbsolute(input.sourceRoot)) blockers.push({ resource: '(invalid source root)', reason: 'invalid-source-root' });
   if (!RESOURCE_ID.test(input.deploymentId)) blockers.push({ resource: '(invalid deployment id)', reason: 'invalid-deployment-id' });
   if (!RESOURCE_ID.test(input.operationId)) blockers.push({ resource: '(invalid operation id)', reason: 'invalid-operation-id' });
   if (input.revisionId.trim() === '') blockers.push({ resource: '(missing revision id)', reason: 'configuration-revision-required' });
@@ -174,6 +180,15 @@ export async function prepareDeploymentPlan(
   const planInput = buildPlanInput(input);
   const diagnostic = diagnosticPlan(planInput);
   const blockers = [...normalized.blockers, ...inputBlockers(input)];
+  if (blockers.length > 0) return { kind: 'blocked', plan: diagnostic, blockers, remoteRetention: 'retain' };
+  for (const target of sortedRepositories(input.repositories)) {
+    try {
+      const result = await ports.source.validate(target.sourcePath, input.sourceRoot);
+      if (result.kind === 'invalid') blockers.push({ resource: repositoryResource(target), reason: 'source-boundary-unverified', detail: result.reason });
+    } catch {
+      blockers.push({ resource: repositoryResource(target), reason: 'source-boundary-unverified' });
+    }
+  }
   if (blockers.length > 0) return { kind: 'blocked', plan: diagnostic, blockers, remoteRetention: 'retain' };
   try {
     const revision = await ports.revision.findById(input.revisionId);

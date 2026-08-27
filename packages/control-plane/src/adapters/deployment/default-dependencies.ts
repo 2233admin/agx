@@ -58,13 +58,13 @@ export function createDefaultDeploymentDependencies(options: DefaultDeploymentOp
     configRepository = new SqliteConfigRevisionRepository(options.dbPath);
     deploymentRepository = new SqliteDeploymentOperationRepository(options.dbPath);
     operationJournal = new SqliteOperationJournal(options.dbPath);
-    launchPlanRepository = new SqliteLaunchPlanRepository(options.dbPath);
-    const repositories = new GithubRepositoryAdapter(repositoryCommand, new FsGithubRepositorySourcePort(gitCommand, options.sourceRoot));
+    const source = new FsGithubRepositorySourcePort(gitCommand, options.sourceRoot);
+    const repositories = new GithubRepositoryAdapter(repositoryCommand, source);
     const project = new GithubProjectAdapter(projectCommand);
     const providers = new ProviderAdapterMux(new CodexProviderAdapter(codexCommand), new ClaudeProviderAdapter(claudeCommand));
     const multica = new MulticaCliAdapter(multicaCommand);
     const readonlyStatus = createReadonlyStatusDependencies(options.dbPath);
-    return { preflight: { revision: configRepository, repositories, project, providers, multica }, apply: { repositories, project, provider: providers }, readonlyStatus, close: () => { launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close(); } };
+    return { preflight: { revision: configRepository, repositories, source, project, providers, multica }, apply: { repositories, project, provider: providers }, readonlyStatus, close: () => { launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close(); } };
   } catch (error) {
     launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close();
     throw error;

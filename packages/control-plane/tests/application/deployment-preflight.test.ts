@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { prepareDeploymentPlan, type DeploymentPreflightInput, type DeploymentPreflightPorts } from '../../src/application/deployment-preflight';
-import type { ConfigRevisionRepository, GithubProjectPort, GithubRepositoryPort, MulticaRuntimePort, ProviderInventoryPort } from '../../src/application/ports';
+import type { ConfigRevisionRepository, GithubProjectPort, GithubRepositoryPort, GithubRepositorySourcePort, MulticaRuntimePort, ProviderInventoryPort } from '../../src/application/ports';
 import type { StableConfigRevision } from '../../src/domain/config';
 import type { GithubProjectTarget } from '../../src/domain/github-project';
 import type { GithubRepositoryTarget } from '../../src/domain/github-repository';
@@ -30,7 +30,7 @@ class RecordingJournal extends InMemoryOperationJournal {
 }
 
 function input(overrides: Partial<DeploymentPreflightInput> = {}): DeploymentPreflightInput {
-  return { deploymentId: 'dep-1', operationId: 'op-1', revisionId: REVISION_ID, repositories: REPOSITORIES, project: PROJECT, providers: PROVIDERS, multicaSubjects: [RUNTIME], ...overrides };
+  return { sourceRoot: 'C:/', deploymentId: 'dep-1', operationId: 'op-1', revisionId: REVISION_ID, repositories: REPOSITORIES, project: PROJECT, providers: PROVIDERS, multicaSubjects: [RUNTIME], ...overrides };
 }
 function readyPorts(calls: string[] = []): DeploymentPreflightPorts {
   const revision: ConfigRevisionRepository = { listAll: async () => [], findById: async () => ({ configName: 'general' } as unknown as StableConfigRevision) };
@@ -38,7 +38,8 @@ function readyPorts(calls: string[] = []): DeploymentPreflightPorts {
   const project: GithubProjectPort = { preflight: async () => { calls.push('project'); return { kind: 'ready' }; }, readback: async () => ({ kind: 'absent' }), provision: async () => { throw new Error('mutation must not run'); } };
   const providers: ProviderInventoryPort = { inspect: async (provider) => { calls.push('provider'); return { kind: 'observed', inventory: { provider: provider ?? 'codex', marketplace: { present: false, sourceType: null, source: null }, plugins: [] } }; } };
   const multica: MulticaRuntimePort = { readback: async () => ({ kind: 'observed', subject: RUNTIME, runtime: { id: RUNTIME.id, name: 'runtime', status: 'online' } }) };
-  return { revision, repositories, project, providers, multica };
+  const source: GithubRepositorySourcePort = { validate: async () => ({ kind: 'valid', snapshotPath: 'C:/snapshot', contentDigest: 'b'.repeat(64), initialCommit: 'a'.repeat(40) }) };
+  return { revision, repositories, source, project, providers, multica };
 }
 
 describe('prepareDeploymentPlan preflight', () => {
@@ -133,5 +134,15 @@ describe('prepareDeploymentPlan preflight', () => {
     const otherOwner = { ...REPOSITORIES[1]!, owner: 'other-owner' };
     const result = await prepareDeploymentPlan(new InMemoryOperationJournal(), input({ repositories: [REPOSITORIES[1]!, otherOwner] }), readyPorts());
     expect(result.plan.steps.slice(0, 2).map((step) => step.resource)).toEqual(['octocat/a-repo', 'other-owner/a-repo']);
+  });
+  test('blocks outside or symlink-invalid source before remote preflights or journal persistence', async () => {
+    const calls: string[] = [];
+    const journal = new RecordingJournal();
+    const ports = { ...readyPorts(calls), source: { validate: async () => ({ kind: 'invalid' as const, reason: 'source-tree-contains-symlink-or-junction' }) } };
+    const result = await prepareDeploymentPlan(journal, input(), ports);
+    expect(result.kind).toBe('blocked');
+    expect(result.blockers).toContainEqual({ resource: 'octocat/a-repo', reason: 'source-boundary-unverified', detail: 'source-tree-contains-symlink-or-junction' });
+    expect(journal.prepareCalls).toBe(0);
+    expect(calls).toEqual([]);
   });
 });

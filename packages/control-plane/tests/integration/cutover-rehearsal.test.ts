@@ -15,7 +15,7 @@ import { projectStatus, type StatusProjectionInput } from '../../src/domain/stat
 import { decideRollback, decideUninstall, decideUpgrade, type LocalState, type ReleaseDescriptor, type UpgradeCheckpoint } from '../../src/domain/lifecycle';
 import { known } from '../../src/domain/facts';
 import type { ConfigRevisionRepository, GithubProjectPort, GithubRepositoryPort, ProviderActivationPort, ProviderInventoryPort } from '../../src/application/ports';
-
+import type { GithubRepositorySourcePort } from '../../src/application/ports';
 const repo = { owner: 'octocat', name: 'agent-control', visibility: 'private', description: '', sourcePath: 'C:/template', initialRevision: { commit: 'a'.repeat(40), templateVersion: 'v1', templateDigest: 'b'.repeat(64), requiredPaths: ['README.md'] } } as const;
 const project = { owner: 'octocat', title: 'Agent System', visibility: 'private', linkedRepository: 'octocat/agent-control', installationId: 'install-0123456789abcdef' } as const;
 const provider = { provider: 'codex', marketplaceSource: 'C:/agent-plugins', plugins: [{ name: 'review', version: '1.0.0', enabled: true }] } as const;
@@ -30,7 +30,8 @@ function ports(order: string[], firstRepoInconclusive = false): { preflight: Dep
   const repositories: GithubRepositoryPort = { preflight: async () => ({ kind: 'ready' }), provision: async () => { remoteCalls += 1; order.push('repo-provision'); repoAttempts += 1; return firstRepoInconclusive && repoAttempts === 1 ? { kind: 'inconclusive', stage: 'readback', reason: 'timeout', remoteRetention: 'retain' } : remoteRepo(); }, readback: async () => { remoteCalls += 1; order.push('repo-readback'); return { kind: 'present', repository: remoteRepo().repository }; } };
   const projects: GithubProjectPort = { preflight: async () => ({ kind: 'ready' }), provision: async () => { remoteCalls += 1; order.push('project-provision'); return remoteProject(); }, readback: async () => { remoteCalls += 1; order.push('project-readback'); return { kind: 'present', identity: remoteProject().identity, hasIssues: true, linked: true }; } };
   const providers: ProviderInventoryPort & ProviderActivationPort = { inspect: async () => ({ kind: 'observed', inventory: { provider: 'codex', marketplace: { present: false, sourceType: null, source: null }, plugins: [] } }), activate: async () => { remoteCalls += 1; order.push('provider-activate'); return { kind: 'activated', inventory: { provider: 'codex' as const, marketplace: { present: true, sourceType: 'local', source: provider.marketplaceSource }, plugins: provider.plugins }, ownership: { marketplace: 'created-by-configs' as const, marketplaceSource: provider.marketplaceSource, plugins: [{ name: 'review', version: '1.0.0', source: provider.marketplaceSource }] } }; }, revoke: async () => ({ kind: 'preserved', reason: 'marketplace-pre-existing' }) };
-  return { preflight: { revision: { findById: async () => revision, listAll: async () => [revision] }, repositories, project: projects, providers }, apply: { repositories, project: projects, provider: providers }, remoteCalls: () => remoteCalls };
+  const source: GithubRepositorySourcePort = { validate: async () => ({ kind: 'valid', snapshotPath: 'C:/snapshot', contentDigest: 'a'.repeat(64), initialCommit: 'a'.repeat(40) }) };
+  return { preflight: { revision: { findById: async () => revision, listAll: async () => [revision] }, repositories, source, project: projects, providers }, apply: { repositories, project: projects, provider: providers }, remoteCalls: () => remoteCalls };
 }
 
 async function validReceiptRoot(): Promise<string> {
@@ -67,7 +68,7 @@ const lifecyclePostState: LocalState = { digest: 'b'.repeat(64), records: [] };
 describe('configs-primary cutover rehearsal', () => {
   test('runs preflight, interrupted apply, explicit resolution, verified status/diagnose, and legacy import without side effects', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'configs-cutover-journal-')); roots.push(root); const journal = new SqliteOperationJournal(path.join(root, 'state.sqlite3'), () => '2026-08-27T00:00:00.000Z'); const order: string[] = []; const adapters = ports(order, true);
-    const preflight = await prepareDeploymentPlan(journal, { deploymentId: 'dep-rehearsal', operationId: 'op-rehearsal', revisionId: 'rev-1', repositories: [repo], project, providers: [provider] }, adapters.preflight);
+    const preflight = await prepareDeploymentPlan(journal, { sourceRoot: 'C:/', deploymentId: 'dep-rehearsal', operationId: 'op-rehearsal', revisionId: 'rev-1', repositories: [repo], project, providers: [provider] }, adapters.preflight);
     expect(preflight.kind).toBe('ready');
     expect(adapters.remoteCalls()).toBe(0);
     const targets: DeploymentApplyTargets = { repositories: new Map([['octocat/agent-control', repo]]), project, providers: new Map([['codex', provider]]) };
@@ -92,7 +93,7 @@ describe('configs-primary cutover rehearsal', () => {
     const journalRoot = await mkdtemp(path.join(home, 'journal-')); roots.push(journalRoot);
     const journal = new SqliteOperationJournal(path.join(journalRoot, 'state.sqlite3'), () => '2026-08-27T00:00:00Z');
     const order: string[] = []; const adapters = ports(order, false);
-    const deploymentInput = { deploymentId: 'dep-user-flow', operationId: 'op-user-flow', revisionId: 'rev-1', repositories: [repo], project, providers: [provider] };
+    const deploymentInput = { sourceRoot: 'C:/', deploymentId: 'dep-user-flow', operationId: 'op-user-flow', revisionId: 'rev-1', repositories: [repo], project, providers: [provider] };
     const output: string[] = []; const oldLog = console.log; console.log = (...args: unknown[]) => output.push(args.map(String).join(' '));
     try {
       expect(await main(['init', '--plan'], { deploymentPlan: { journal, input: deploymentInput, ports: adapters.preflight } })).toBe(0);
