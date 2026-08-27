@@ -17,6 +17,7 @@ func TestLegacyMutationCommandsHandOffToConfigsWithoutActivation(t *testing.T) {
 		{"rollback", "--root", t.TempDir()},
 		{"install", "--root", t.TempDir()},
 		{"update", "--root", t.TempDir()},
+		{"config", "--root", t.TempDir(), "list"},
 	}
 	for _, args := range commands {
 		t.Run(args[0], func(t *testing.T) {

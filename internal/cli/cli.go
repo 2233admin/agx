@@ -77,7 +77,7 @@ func RunFrozen(args []string, version string, stdout, stderr io.Writer) int {
 }
 func isFrozenMutation(command string) bool {
 	switch command {
-	case "apply", "init", "uninstall", "upgrade", "rollback", "install", "update":
+	case "apply", "init", "uninstall", "upgrade", "rollback", "install", "update", "config":
 		return true
 	default:
 		return false
