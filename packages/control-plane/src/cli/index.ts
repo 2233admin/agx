@@ -31,7 +31,7 @@ import { BunOmpCapabilityProbe } from '../adapters/omp/capability-probe';
 import { FsLaunchContextWriter } from '../adapters/launch-context/fs-launch-context-writer';
 import { FsClaudeLaunchContextWriter } from '../adapters/launch-context/fs-claude-launch-context-writer';
 import { GithubReleaseUpdater } from '../adapters/self-update/github-release-updater';
-import { isCheckDue, readSelfUpdateState, writeSelfUpdateState } from '../adapters/self-update/check-state';
+import { acquireSelfUpdateLock, isCheckDue, readSelfUpdateState, writeSelfUpdateState } from '../adapters/self-update/check-state';
 import { BunClaudeProcessPort } from '../adapters/clients/claude/process-port';
 import { BunClaudeCapabilityProbe } from '../adapters/clients/claude/capability-probe';
 import { compileClaudeAssemblyManifest } from '../adapters/clients/claude/assembly-manifest';
@@ -1337,15 +1337,21 @@ export function reportPendingSelfUpdateNotice(params: {
   if (params.argv[0] === '--version') {
     return;
   }
-  const state = readSelfUpdateState(params.statePath);
-  if (state.pendingNoticeVersion === null || state.pendingNoticeVersion !== params.currentVersion) {
-    return;
-  }
-  writeSelfUpdateState(params.statePath, { ...state, pendingNoticeVersion: null });
+  const releaseLock = acquireSelfUpdateLock(params.statePath);
+  if (releaseLock === null) return;
   try {
-    console.log(t('selfUpdate.updated', { version: params.currentVersion }));
-  } catch {
-    // Best-effort only -- see doc comment above.
+    const state = readSelfUpdateState(params.statePath);
+    if (state.pendingNoticeVersion === null || state.pendingNoticeVersion !== params.currentVersion) {
+      return;
+    }
+    writeSelfUpdateState(params.statePath, { ...state, pendingNoticeVersion: null });
+    try {
+      console.log(t('selfUpdate.updated', { version: params.currentVersion }));
+    } catch {
+      // Best-effort only -- see doc comment above.
+    }
+  } finally {
+    releaseLock();
   }
 }
 
@@ -1397,23 +1403,29 @@ export function scheduleSelfUpdateCheck(params: {
   readonly spawnWorker?: () => void;
 }): boolean {
   try {
-    const state = readSelfUpdateState(params.statePath);
-    if (!isCheckDue(state, params.nowMs, params.cooldownMs)) {
-      return false;
+    const releaseLock = acquireSelfUpdateLock(params.statePath, params.nowMs);
+    if (releaseLock === null) return false;
+    try {
+      const state = readSelfUpdateState(params.statePath);
+      if (!isCheckDue(state, params.nowMs, params.cooldownMs)) {
+        return false;
+      }
+      if (!writeSelfUpdateState(params.statePath, { ...state, lastCheckedAtMs: params.nowMs })) {
+        return false;
+      }
+      (params.spawnWorker ?? spawnSelfUpdateWorker)();
+      return true;
+    } finally {
+      releaseLock();
     }
-    if (!writeSelfUpdateState(params.statePath, { ...state, lastCheckedAtMs: params.nowMs })) {
-      return false;
-    }
-    (params.spawnWorker ?? spawnSelfUpdateWorker)();
-    return true;
   } catch {
     // Self-update scheduling must never affect the command the user
     // actually invoked -- same fail-closed-and-silent contract as
     // `GithubReleaseUpdater.checkAndApply` itself.
     return false;
   }
-}
 
+}
 /**
  * The detached child's whole job: run the one check-download-verify-replace
  * pass, then record the outcome for the *next* foreground invocation to act
@@ -1429,6 +1441,8 @@ export async function runSelfUpdateWorker(params: {
   readonly nowMs?: number;
   readonly updater?: SelfUpdatePort;
 }): Promise<void> {
+  const releaseLock = acquireSelfUpdateLock(params.statePath);
+  if (releaseLock === null) return;
   try {
     const updater = params.updater ?? new GithubReleaseUpdater();
     const updatedVersion = await updater.checkAndApply(params.currentVersion);
@@ -1439,6 +1453,8 @@ export async function runSelfUpdateWorker(params: {
     });
   } catch {
     // Never throws -- see doc comment above.
+  } finally {
+    releaseLock();
   }
 }
 

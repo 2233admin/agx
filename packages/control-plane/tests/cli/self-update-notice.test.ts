@@ -109,4 +109,13 @@ describe('reportPendingSelfUpdateNotice', () => {
 
     expect(() => reportPendingSelfUpdateNotice({ statePath, currentVersion: '1.1.0', argv: ['list'] })).not.toThrow();
   });
+  test('does not consume a pending notice while another self-update process holds the lock', () => {
+    writeState({ lastCheckedAtMs: 1_000, pendingNoticeVersion: '1.1.0' });
+    writeFileSync(`${statePath}.lock`, 'held', 'utf8');
+
+    reportPendingSelfUpdateNotice({ statePath, currentVersion: '1.1.0', argv: ['list'] });
+
+    expect(logged).toEqual([]);
+    expect(readSelfUpdateState(statePath).pendingNoticeVersion).toBe('1.1.0');
+  });
 });

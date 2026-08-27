@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { rename } from 'node:fs/promises';
+import { rename, unlink } from 'node:fs/promises';
 
 import type { SelfUpdatePort } from '../../application/ports';
 import { resolveAssetName } from './asset-target';
@@ -12,7 +12,8 @@ import { writeToSameDirTempFile } from '../system/atomic-write';
  * GET, not derived from any user-controlled or runtime value (AD-15 /
  * Boundaries & Constraints). No auth header, no token, no telemetry.
  */
-const RELEASES_LATEST_URL = 'https://api.github.com/repos/Eridanus117/agent-system/releases/latest';
+const SOURCE_REPOSITORY = '2233admin/agent-systemX';
+const RELEASES_LATEST_URL = `https://api.github.com/repos/${SOURCE_REPOSITORY}/releases/latest`;
 
 /** Story 2.1's tag convention (`.github/workflows/release-configs.yml`). */
 const TAG_PREFIX = 'configs-v';
@@ -52,9 +53,25 @@ function isGithubReleaseResponse(value: unknown): value is GithubReleaseResponse
   const record = value as Record<string, unknown>;
   return typeof record.tag_name === 'string' && Array.isArray(record.assets) && record.assets.every(isGithubReleaseAsset);
 }
+function parseVersionFromTag(tag: string): string | null {
+  if (!/^configs-v[0-9]+(?:\.[0-9]+){2,3}$/.test(tag)) return null;
+  return tag.slice(TAG_PREFIX.length);
+}
 
-function parseVersionFromTag(tag: string): string {
-  return tag.startsWith(TAG_PREFIX) ? tag.slice(TAG_PREFIX.length) : tag;
+function isCanonicalAssetURL(url: string, tag: string, assetName: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' &&
+      parsed.hostname === 'github.com' &&
+      parsed.port === '' &&
+      parsed.username === '' &&
+      parsed.password === '' &&
+      parsed.search === '' &&
+      parsed.hash === '' &&
+      parsed.pathname === `/${SOURCE_REPOSITORY}/releases/download/${tag}/${assetName}`;
+  } catch {
+    return false;
+  }
 }
 
 function findAsset(assets: readonly GithubReleaseAsset[], name: string): GithubReleaseAsset | null {
@@ -94,13 +111,26 @@ async function withTimeout<T>(timeoutMs: number, run: (signal: AbortSignal) => P
  * Notes for why this ordering replaced the previous "rename first, write
  * second" approach.
  */
-async function replaceBinary(execPath: string, currentVersion: string, bytes: Uint8Array): Promise<void> {
+async function replaceBinary(execPath: string, currentVersion: string, bytes: Uint8Array, renameFn: typeof rename): Promise<void> {
   const tempPath = await writeToSameDirTempFile(execPath, bytes, { mode: 0o755, tempSuffix: '.download' });
   const backupPath = `${execPath}.${currentVersion}.bak`;
-  await rename(execPath, backupPath);
-  await rename(tempPath, execPath);
-}
+  try {
+    await renameFn(execPath, backupPath);
+    try {
+      await renameFn(tempPath, execPath);
+    } catch (error) {
+      await renameFn(backupPath, execPath);
+      throw error;
+    }
+  } finally {
+    try {
+      await unlink(tempPath);
+    } catch {
+      // The temporary path no longer exists after a successful rename.
+    }
+  }
 
+}
 export interface GithubReleaseUpdaterDeps {
   /** Defaults to the global `fetch`; overridable only for tests -- the
    * endpoint itself (`RELEASES_LATEST_URL`) is never configurable, so this
@@ -110,6 +140,7 @@ export interface GithubReleaseUpdaterDeps {
   readonly platform?: NodeJS.Platform;
   readonly arch?: string;
   readonly metadataTimeoutMs?: number;
+  readonly renameFn?: typeof rename;
   readonly assetTimeoutMs?: number;
 }
 
@@ -127,6 +158,7 @@ export interface GithubReleaseUpdaterDeps {
  */
 export class GithubReleaseUpdater implements SelfUpdatePort {
   private readonly fetchFn: typeof fetch;
+  private readonly renameFn: typeof rename;
   private readonly execPath: string;
   private readonly platform: string;
   private readonly arch: string;
@@ -138,6 +170,7 @@ export class GithubReleaseUpdater implements SelfUpdatePort {
     this.execPath = deps.execPath ?? process.execPath;
     this.platform = deps.platform ?? process.platform;
     this.arch = deps.arch ?? process.arch;
+    this.renameFn = deps.renameFn ?? rename;
     this.metadataTimeoutMs = deps.metadataTimeoutMs ?? 5_000;
     this.assetTimeoutMs = deps.assetTimeoutMs ?? 30_000;
   }
@@ -159,10 +192,8 @@ export class GithubReleaseUpdater implements SelfUpdatePort {
       }
 
       const remoteVersion = parseVersionFromTag(release.tag_name);
-      if (!isNewerVersion(remoteVersion, currentVersion)) {
-        // Covers "already latest", "latest is older" (e.g. the release
-        // workflow's own smoke-test step, which runs before the new
-        // Release exists) and any unparsable version -- fail closed.
+      if (remoteVersion === null || !isNewerVersion(remoteVersion, currentVersion)) {
+        // Covers an unrecognized tag, "already latest", and older releases.
         return null;
       }
 
@@ -174,6 +205,10 @@ export class GithubReleaseUpdater implements SelfUpdatePort {
       const asset = findAsset(release.assets, assetName);
       const sumsAsset = findAsset(release.assets, SHA256SUMS_ASSET_NAME);
       if (asset === null || sumsAsset === null) {
+        return null;
+      }
+      if (!isCanonicalAssetURL(asset.browser_download_url, release.tag_name, assetName) ||
+          !isCanonicalAssetURL(sumsAsset.browser_download_url, release.tag_name, SHA256SUMS_ASSET_NAME)) {
         return null;
       }
 
@@ -188,7 +223,7 @@ export class GithubReleaseUpdater implements SelfUpdatePort {
         return null;
       }
 
-      await replaceBinary(this.execPath, currentVersion, bytes);
+      await replaceBinary(this.execPath, currentVersion, bytes, this.renameFn);
       return remoteVersion;
     } catch {
       // Fail closed and silent -- see Boundaries & Constraints. The

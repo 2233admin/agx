@@ -89,7 +89,12 @@ class FakeLaunchPlanRepository implements LaunchPlanRepository {
     this.plans.set(plan.planId, plan);
     this.saveLog.push(plan);
   }
-
+  async saveIfPhase(plan: LaunchPlan, expectedPhase: LaunchPlan['phase']): Promise<boolean> {
+    const current = this.plans.get(plan.planId);
+    if (current === undefined || current.phase !== expectedPhase) return false;
+    await this.save(plan);
+    return true;
+  }
   async findById(planId: string): Promise<LaunchPlan | null> {
     return this.plans.get(planId) ?? null;
   }
@@ -205,6 +210,15 @@ describe('confirmLaunchPlan / rejectLaunchPlan', () => {
   test('confirming an unknown planId throws LaunchPlanNotFoundError', async () => {
     const { deps } = buildDeps();
     await expect(confirmLaunchPlan(deps, 'no-such-plan')).rejects.toBeInstanceOf(LaunchPlanNotFoundError);
+  });
+  test('a stale concurrent confirmation is rejected before a second launch can use it', async () => {
+    const { deps, configRepository, launchPlanRepository } = buildDeps();
+    configRepository.add(revision({ configName: 'general', revisionId: 'rev-1' }));
+    const plan = await prepareLaunchPlan(deps, { revisionId: 'rev-1', client: 'omp' });
+    launchPlanRepository.saveIfPhase = async () => false;
+
+    await expect(confirmLaunchPlan(deps, plan.planId)).rejects.toBeInstanceOf(StaleConfirmationError);
+    expect(launchPlanRepository.saveLog).toHaveLength(1);
   });
 });
 

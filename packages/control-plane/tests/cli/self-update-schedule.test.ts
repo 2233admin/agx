@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { SELF_UPDATE_WORKER_ARG, runSelfUpdateWorker, scheduleSelfUpdateCheck } from '../../src/cli/index';
-import { SELF_UPDATE_CHECK_COOLDOWN_MS, readSelfUpdateState } from '../../src/adapters/self-update/check-state';
+import { EMPTY_SELF_UPDATE_STATE, SELF_UPDATE_CHECK_COOLDOWN_MS, readSelfUpdateState } from '../../src/adapters/self-update/check-state';
 import { defaultSelfUpdateStatePath } from '../../src/cli/self-update-state-path';
 import type { SelfUpdatePort } from '../../src/application/ports';
 
@@ -129,6 +129,12 @@ describe('scheduleSelfUpdateCheck', () => {
     expect(started).toBe(false);
     expect(spawned).toBe(0);
   });
+  test('does not start a second check while the state lock is held', () => {
+    writeFileSync(`${statePath}.lock`, 'held', 'utf8');
+    let spawned = 0;
+    expect(scheduleSelfUpdateCheck({ statePath, nowMs: 5_000, spawnWorker: () => spawned += 1 })).toBe(false);
+    expect(spawned).toBe(0);
+  });
 });
 
 describe('runSelfUpdateWorker', () => {
@@ -160,6 +166,15 @@ describe('runSelfUpdateWorker', () => {
 
     // Nothing was written, so the next invocation simply checks again.
     expect(readSelfUpdateState(statePath)).toEqual({ lastCheckedAtMs: null, pendingNoticeVersion: null });
+  });
+  test('does not run a worker while another process holds the state lock', async () => {
+    writeFileSync(`${statePath}.lock`, 'held', 'utf8');
+    const updater = new FakeSelfUpdatePort('1.1.0');
+
+    await runSelfUpdateWorker({ statePath, currentVersion: '1.0.0', nowMs: 7_000, updater });
+
+    expect(updater.calls).toEqual([]);
+    expect(readSelfUpdateState(statePath)).toEqual(EMPTY_SELF_UPDATE_STATE);
   });
 });
 

@@ -1,7 +1,7 @@
 import type { Fact } from '../domain/facts';
 import type { StableConfigRevision, TriggerCategory } from '../domain/config';
 import type { ClientId } from '../domain/client';
-import type { LaunchPlan } from '../domain/activation';
+import type { LaunchPhase, LaunchPlan } from '../domain/activation';
 import type { ClaudeContentMaterializationResult } from '../adapters/clients/claude/content-materializer';
 import type { SupplyRefRejection } from '../cli/supply-root';
 
@@ -354,6 +354,11 @@ export class SupplyUnsupportedEntryError extends Error {
  */
 export interface LaunchPlanRepository {
   save(plan: LaunchPlan): Promise<void>;
+  /**
+   * Atomically save a transition only when the persisted plan is still in
+   * `expectedPhase`. Implementations should return false for a stale writer.
+   */
+  saveIfPhase?(plan: LaunchPlan, expectedPhase: LaunchPhase): Promise<boolean>;
   findById(planId: string): Promise<LaunchPlan | null>;
   /**
    * The most recently created plan for `client`, regardless of phase.

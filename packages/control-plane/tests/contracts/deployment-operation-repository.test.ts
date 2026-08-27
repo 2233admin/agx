@@ -112,6 +112,12 @@ describe('SqliteDeploymentOperationRepository', () => {
     await expect(repository.saveDeployment({ ...deployment('dep-1'), lastOperationId: unknown('not-recorded', 'now') })).resolves.toBeUndefined();
     repository.close();
   });
+  test('rejects direct verified persistence without evaluator evidence', async () => {
+    const repository = new SqliteDeploymentOperationRepository(':memory:');
+    await expect(repository.saveDeployment({ ...deployment('dep-verified'), phase: 'verified' })).rejects.toThrow('verified requires external evidence');
+    await expect(repository.saveOperation({ ...operation('op-verified', 'dep-verified'), phase: 'verified' })).rejects.toThrow('verified requires external evidence');
+    repository.close();
+  });
   test('tolerates a raced duplicate-column migration after rechecking schema', () => {
     let checks = 0;
     const fakeDatabase = {

@@ -196,6 +196,14 @@ export async function prepareLaunchPlan(
  * no longer `awaiting-confirmation` -- which is always surfaced as
  * `StaleConfirmationError` regardless of the domain-level reason string.
  */
+async function saveIfCurrent(deps: LaunchDeps, plan: LaunchPlan, expectedPhase: LaunchPlan['phase']): Promise<boolean> {
+  if (deps.launchPlanRepository.saveIfPhase !== undefined) {
+    return deps.launchPlanRepository.saveIfPhase(plan, expectedPhase);
+  }
+  await deps.launchPlanRepository.save(plan);
+  return true;
+}
+
 export async function confirmLaunchPlan(deps: LaunchDeps, planId: string): Promise<LaunchPlan> {
   const plan = await deps.launchPlanRepository.findById(planId);
   if (plan === null) {
@@ -210,7 +218,9 @@ export async function confirmLaunchPlan(deps: LaunchDeps, planId: string): Promi
     throw new StaleConfirmationError(planId, result.reason);
   }
 
-  await deps.launchPlanRepository.save(result.plan);
+  if (!(await saveIfCurrent(deps, result.plan, plan.phase))) {
+    throw new StaleConfirmationError(planId, 'stale-plan-write');
+  }
   return result.plan;
 }
 
@@ -224,10 +234,11 @@ export async function rejectLaunchPlan(deps: LaunchDeps, planId: string): Promis
   if (!result.ok) {
     throw new InvalidTransitionError(planId, plan.phase, 'rejected', result.reason);
   }
-  await deps.launchPlanRepository.save(result.plan);
+  if (!(await saveIfCurrent(deps, result.plan, plan.phase))) {
+    throw new InvalidTransitionError(planId, plan.phase, 'rejected', 'stale-plan-write');
+  }
   return result.plan;
 }
-
 function deriveOutcome(
   spawnResult: OmpSpawnResult,
   applyResult: 'applied' | 'degraded',
@@ -306,7 +317,9 @@ export async function launchOmp(
       // through the same typed-failure path as every other failure mode in
       // this function instead of letting the error escape unhandled.
       plan = applyFailure(plan, `revision-lookup: ${error.message}`);
-      await deps.launchPlanRepository.save(plan);
+      if (!(await saveIfCurrent(deps, plan, 'applying'))) {
+        throw new InvalidTransitionError(plan.planId, 'applying', 'apply-failed', 'stale-plan-write');
+      }
       return plan;
     }
     throw error;
@@ -317,7 +330,9 @@ export async function launchOmp(
   const probe = await deps.capabilityProbe.probeStatusViewingCapability();
   if (probe.level === 'unknown') {
     plan = applyFailure(plan, `spawn-process: ${probe.reason}`);
-    await deps.launchPlanRepository.save(plan);
+    if (!(await saveIfCurrent(deps, plan, 'applying'))) {
+      throw new InvalidTransitionError(plan.planId, 'applying', 'apply-failed', 'stale-plan-write');
+    }
     return plan;
   }
 
@@ -347,7 +362,9 @@ export async function launchOmp(
     });
   } catch (error) {
     plan = applyFailure(plan, `spawn-process: ${(error as Error).message}`);
-    await deps.launchPlanRepository.save(plan);
+    if (!(await saveIfCurrent(deps, plan, 'applying'))) {
+      throw new InvalidTransitionError(plan.planId, 'applying', 'apply-failed', 'stale-plan-write');
+    }
     return plan;
   }
 
@@ -356,7 +373,9 @@ export async function launchOmp(
     throw new InvalidTransitionError(plan.planId, plan.phase, 'process-started', started.reason);
   }
   plan = started.plan;
-  await deps.launchPlanRepository.save(plan);
+  if (!(await saveIfCurrent(deps, plan, 'applying'))) {
+    throw new InvalidTransitionError(plan.planId, 'applying', 'process-started', 'stale-plan-write');
+  }
 
   const outcome = deriveOutcome(spawnResult, applyResult);
   const observed = transitionLaunchPlan(plan, { type: 'observed', outcome: outcome.outcome, reason: outcome.reason });
@@ -364,7 +383,9 @@ export async function launchOmp(
     throw new InvalidTransitionError(plan.planId, plan.phase, 'observed', observed.reason);
   }
   plan = observed.plan;
-  await deps.launchPlanRepository.save(plan);
+  if (!(await saveIfCurrent(deps, plan, 'observing'))) {
+    throw new InvalidTransitionError(plan.planId, 'observing', 'observed', 'stale-plan-write');
+  }
   return plan;
 }
 

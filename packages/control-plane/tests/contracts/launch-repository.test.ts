@@ -110,4 +110,21 @@ describe('SqliteLaunchPlanRepository (:memory:, STRICT)', () => {
       repo.close();
     }
   });
+  test('saveIfPhase atomically rejects stale plans after one writer advances them', async () => {
+    const repo = new SqliteLaunchPlanRepository(':memory:');
+    try {
+      const plan = samplePlan();
+      await repo.save(plan);
+      const prepared = transitionLaunchPlan(plan, { type: 'prepared-ok' });
+      if (!prepared.ok) throw new Error('unreachable');
+      await repo.save(prepared.plan);
+      const confirmed = transitionLaunchPlan(prepared.plan, { type: 'confirmed', token: { planId: plan.planId, revisionId: plan.revisionId, planHash: plan.planHash, issuedAt: '2026-08-22T00:01:00.000Z' } });
+      if (!confirmed.ok) throw new Error('unreachable');
+      expect(await repo.saveIfPhase(confirmed.plan, 'awaiting-confirmation')).toBe(true);
+      expect(await repo.saveIfPhase({ ...confirmed.plan, phase: 'observing' }, 'awaiting-confirmation')).toBe(false);
+      expect((await repo.findById(plan.planId))!.phase).toBe('applying');
+    } finally {
+      repo.close();
+    }
+  });
 });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { rename as fsRename } from 'node:fs/promises';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -213,13 +214,13 @@ describe('GithubReleaseUpdater.checkAndApply', () => {
           jsonValue: {
             tag_name: 'configs-v1.1.0',
             assets: [
-              { name: 'configs-linux-x64', browser_download_url: 'https://assets.invalid/configs-linux-x64' },
-              { name: 'SHA256SUMS.txt', browser_download_url: 'https://assets.invalid/SHA256SUMS.txt' },
+              { name: 'configs-linux-x64', browser_download_url: 'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/configs-linux-x64' },
+              { name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/SHA256SUMS.txt' },
             ],
           },
         },
-        'https://assets.invalid/SHA256SUMS.txt': { ok: true, status: 200, textValue: `${hash}  configs-linux-x64\n` },
-        'https://assets.invalid/configs-linux-x64': { ok: true, status: 200, bytesValue: newBytes },
+        'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/SHA256SUMS.txt': { ok: true, status: 200, textValue: `${hash}  configs-linux-x64\n` },
+        'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/configs-linux-x64': { ok: true, status: 200, bytesValue: newBytes },
       },
       calls,
     );
@@ -246,13 +247,13 @@ describe('GithubReleaseUpdater.checkAndApply', () => {
           jsonValue: {
             tag_name: 'configs-v1.1.0',
             assets: [
-              { name: 'configs-linux-x64', browser_download_url: 'https://assets.invalid/configs-linux-x64' },
-              { name: 'SHA256SUMS.txt', browser_download_url: 'https://assets.invalid/SHA256SUMS.txt' },
+              { name: 'configs-linux-x64', browser_download_url: 'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/configs-linux-x64' },
+              { name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/SHA256SUMS.txt' },
             ],
           },
         },
-        'https://assets.invalid/SHA256SUMS.txt': { ok: true, status: 200, textValue: `${wrongHash}  configs-linux-x64\n` },
-        'https://assets.invalid/configs-linux-x64': { ok: true, status: 200, bytesValue: newBytes },
+        'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/SHA256SUMS.txt': { ok: true, status: 200, textValue: `${wrongHash}  configs-linux-x64\n` },
+        'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/configs-linux-x64': { ok: true, status: 200, bytesValue: newBytes },
       },
       calls,
     );
@@ -352,13 +353,13 @@ describe('GithubReleaseUpdater.checkAndApply', () => {
           jsonValue: {
             tag_name: 'configs-v1.1.0',
             assets: [
-              { name: 'configs-linux-x64', browser_download_url: 'https://assets.invalid/configs-linux-x64' },
-              { name: 'SHA256SUMS.txt', browser_download_url: 'https://assets.invalid/SHA256SUMS.txt' },
+              { name: 'configs-linux-x64', browser_download_url: 'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/configs-linux-x64' },
+              { name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/SHA256SUMS.txt' },
             ],
           },
         },
-        'https://assets.invalid/SHA256SUMS.txt': { ok: true, status: 200, textValue: `${hash}  configs-linux-x64\n` },
-        'https://assets.invalid/configs-linux-x64': { ok: true, status: 200, bytesValue: newBytes },
+        'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/SHA256SUMS.txt': { ok: true, status: 200, textValue: `${hash}  configs-linux-x64\n` },
+        'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0/configs-linux-x64': { ok: true, status: 200, bytesValue: newBytes },
       },
       calls,
     );
@@ -368,6 +369,76 @@ describe('GithubReleaseUpdater.checkAndApply', () => {
 
     expect(result).toBeNull();
     // Original binary untouched, no backup was ever created (rename never ran).
+    expect(readFileSync(execPath, 'utf8')).toBe('old-binary-content');
+    expect(existsSync(`${execPath}.1.0.0.bak`)).toBe(false);
+  });
+  test('rejects a release asset URL outside the canonical upstream release path', async () => {
+    const newBytes = new TextEncoder().encode('new-binary-content');
+    const hash = sha256Hex(newBytes);
+    const calls: string[] = [];
+    const fetchFn = buildFetch(
+      {
+        latest: {
+          ok: true,
+          status: 200,
+          jsonValue: {
+            tag_name: 'configs-v1.1.0',
+            assets: [
+              { name: 'configs-linux-x64', browser_download_url: 'https://evil.example/configs-linux-x64' },
+              { name: 'SHA256SUMS.txt', browser_download_url: 'https://evil.example/SHA256SUMS.txt' },
+            ],
+          },
+        },
+        'https://evil.example/SHA256SUMS.txt': { ok: true, status: 200, textValue: `${hash}  configs-linux-x64\n` },
+        'https://evil.example/configs-linux-x64': { ok: true, status: 200, bytesValue: newBytes },
+      },
+      calls,
+    );
+    const updater = new GithubReleaseUpdater({ fetchFn, execPath, platform: 'linux', arch: 'x64' });
+
+    expect(await updater.checkAndApply('1.0.0')).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(readFileSync(execPath, 'utf8')).toBe('old-binary-content');
+  });
+
+  test('restores the current binary if installing the replacement fails after backup', async () => {
+    const newBytes = new TextEncoder().encode('new-binary-content');
+    const hash = sha256Hex(newBytes);
+    const releaseRoot = 'https://github.com/2233admin/agent-systemX/releases/download/configs-v1.1.0';
+    const calls: string[] = [];
+    let renameCount = 0;
+    const fetchFn = buildFetch(
+      {
+        latest: {
+          ok: true,
+          status: 200,
+          jsonValue: {
+            tag_name: 'configs-v1.1.0',
+            assets: [
+              { name: 'configs-linux-x64', browser_download_url: `${releaseRoot}/configs-linux-x64` },
+              { name: 'SHA256SUMS.txt', browser_download_url: `${releaseRoot}/SHA256SUMS.txt` },
+            ],
+          },
+        },
+        [`${releaseRoot}/SHA256SUMS.txt`]: { ok: true, status: 200, textValue: `${hash}  configs-linux-x64\n` },
+        [`${releaseRoot}/configs-linux-x64`]: { ok: true, status: 200, bytesValue: newBytes },
+      },
+      calls,
+    );
+    const updater = new GithubReleaseUpdater({
+      fetchFn,
+      execPath,
+      platform: 'linux',
+      arch: 'x64',
+      renameFn: async (from, to) => {
+        renameCount += 1;
+        if (renameCount === 2) throw new Error('simulated install rename failure');
+        await fsRename(from, to);
+      },
+    });
+
+    expect(await updater.checkAndApply('1.0.0')).toBeNull();
+    expect(renameCount).toBe(3);
     expect(readFileSync(execPath, 'utf8')).toBe('old-binary-content');
     expect(existsSync(`${execPath}.1.0.0.bak`)).toBe(false);
   });

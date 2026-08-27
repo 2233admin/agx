@@ -52,6 +52,7 @@ function validSummary(value: string | null): boolean {
 }
 
 function validateDeploymentStatus(status: DeploymentStatus): void {
+  if (status.phase === 'verified') throw new Error('verified requires external evidence');
   if (!validIdentifier(status.deploymentId) || !validPhase(status.phase, DEPLOYMENT_PHASES) || !validSummary(status.reason) || status.nextAction.trim() === '' || !SAFE_SUMMARY.test(status.nextAction)) {
     throw new Error('invalid deployment status');
   }
@@ -61,11 +62,13 @@ function validateDeploymentStatus(status: DeploymentStatus): void {
 }
 
 function validateOperationStatus(status: OperationStatus): void {
+  if (status.phase === 'verified') throw new Error('verified requires external evidence');
   if (!validIdentifier(status.operationId) || !validIdentifier(status.deploymentId) || !validPhase(status.phase, OPERATION_PHASES) || !validSummary(status.reason) || status.nextAction.trim() === '' || !SAFE_SUMMARY.test(status.nextAction)) {
     throw new Error('invalid operation status');
   }
 }
 function mapDeployment(row: DeploymentStatusRow): DeploymentStatus {
+  if (row.phase === 'verified') throw new Error('verified requires external evidence');
   if (!validIdentifier(row.deployment_id) || !validPhase(row.phase, DEPLOYMENT_PHASES) ||
       !validSummary(row.reason) || !SAFE_SUMMARY.test(row.next_action) || row.next_action.trim() === '' ||
       !row.created_at || !row.updated_at) {
@@ -86,7 +89,8 @@ function mapDeployment(row: DeploymentStatusRow): DeploymentStatus {
 }
 
 function mapOperation(row: OperationStatusRow): OperationStatus {
-  if (!validIdentifier(row.operation_id) || !validIdentifier(row.deployment_id) || !validPhase(row.phase, OPERATION_PHASES) || !validSummary(row.reason) || !SAFE_SUMMARY.test(row.next_action) || !row.created_at || !row.updated_at) {
+  if (row.phase === 'verified') throw new Error('verified requires external evidence');
+  if (!validIdentifier(row.operation_id) || !validIdentifier(row.deployment_id) || !validPhase(row.phase, OPERATION_PHASES) || !validSummary(row.reason) || !SAFE_SUMMARY.test(row.next_action) || row.next_action.trim() === '' || !row.created_at || !row.updated_at) {
     throw new Error('invalid operation status row');
   }
   return {

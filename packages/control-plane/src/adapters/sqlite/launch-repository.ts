@@ -190,6 +190,31 @@ export class SqliteLaunchPlanRepository implements LaunchPlanRepository {
         observedOutcome.observedAt,
       );
   }
+  async saveIfPhase(plan: LaunchPlan, expectedPhase: LaunchPhase): Promise<boolean> {
+    const confirmedAt = factColumns(plan.confirmedAt);
+    const failureReason = factColumns(plan.failureReason);
+    const observedOutcome = factColumns(plan.observedOutcome);
+    const result = this.db.query<unknown, [
+      string, 'known' | 'unknown', string | null, string | null, string | null,
+      'known' | 'unknown', string | null, string | null, string | null,
+      'known' | 'unknown', string | null, string | null, string | null,
+      string, string,
+    ]>(
+      `UPDATE launch_plan SET
+         phase = ?,
+         confirmed_at_status = ?, confirmed_at_value = ?, confirmed_at_reason = ?, confirmed_at_observed_at = ?,
+         failure_reason_status = ?, failure_reason_value = ?, failure_reason_reason = ?, failure_reason_observed_at = ?,
+         observed_outcome_status = ?, observed_outcome_value = ?, observed_outcome_reason = ?, observed_outcome_observed_at = ?
+       WHERE plan_id = ? AND phase = ?`,
+    ).run(
+      plan.phase,
+      confirmedAt.status, confirmedAt.value, confirmedAt.reason, confirmedAt.observedAt,
+      failureReason.status, failureReason.value, failureReason.reason, failureReason.observedAt,
+      observedOutcome.status, observedOutcome.value, observedOutcome.reason, observedOutcome.observedAt,
+      plan.planId, expectedPhase,
+    );
+    return result.changes === 1;
+  }
 
   async findById(planId: string): Promise<LaunchPlan | null> {
     const row = this.db.query<LaunchPlanRow, [string]>(`SELECT ${PLAN_COLUMNS} FROM launch_plan WHERE plan_id = ?`).get(planId);

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
@@ -85,6 +85,35 @@ export function writeSelfUpdateState(statePath: string, state: SelfUpdateState):
     return true;
   } catch {
     return false;
+  }
+}
+const SELF_UPDATE_LOCK_STALE_MS = 10 * 60 * 1000;
+
+export function acquireSelfUpdateLock(statePath: string, nowMs: number = Date.now()): (() => void) | null {
+  const lockPath = `${statePath}.lock`;
+  try {
+    mkdirSync(dirname(statePath), { recursive: true });
+    try {
+      const lockStat = statSync(lockPath);
+      if (nowMs - lockStat.mtimeMs <= SELF_UPDATE_LOCK_STALE_MS) return null;
+      unlinkSync(lockPath);
+    } catch {
+      // A missing lock is the normal path.
+    }
+    const fd = openSync(lockPath, 'wx');
+    closeSync(fd);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // The lock may have been removed during cleanup.
+      }
+    };
+  } catch {
+    return null;
   }
 }
 
