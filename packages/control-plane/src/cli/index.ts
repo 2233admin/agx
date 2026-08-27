@@ -594,6 +594,7 @@ export interface CliOverrides {
   readonly claudeInvocationDirPort?: ClaudeInvocationDirPort;
   readonly claudeContentMaterializer?: ClaudeContentMaterializerPort;
   readonly statusProjection?: StatusProjectionInput;
+  readonly statusProjectionLoader?: () => Promise<StatusProjectionInput | null>;
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
 }
 
@@ -1183,11 +1184,15 @@ ${usageLine()}`);
 }
 
 async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverrides): Promise<number> {
-  if (overrides.statusProjection === undefined) {
-    console.error(`${kind} requires an injected status projection for this isolated rehearsal`);
-    return 1;
+  let projection: StatusProjectionInput | null | undefined = overrides.statusProjection;
+  if (projection === undefined && overrides.statusProjectionLoader !== undefined) {
+    try { projection = await overrides.statusProjectionLoader(); } catch { projection = null; }
   }
-  const value = kind === 'diagnose' ? diagnoseDeployment(overrides.statusProjection) : getUnifiedStatus(overrides.statusProjection);
+  if (projection === undefined || projection === null) {
+    console.log(JSON.stringify({ kind: 'unsupported', phase: 'preflight-blocked', code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'initialize-deployment-state', ...(kind === 'diagnose' ? { readOnly: true } : {}) }));
+    return 0;
+  }
+  const value = kind === 'diagnose' ? diagnoseDeployment(projection) : getUnifiedStatus(projection);
   console.log(JSON.stringify(value));
   return 0;
 }
@@ -1228,9 +1233,10 @@ export async function main(argv: readonly string[], overrides: CliOverrides = {}
     console.log(renderUnsupportedClient(parsed.clientId, parsed.reason));
     return 1;
   }
+  const legacyStatusOverride = parsed.kind === 'status' && overrides.statusProjection === undefined && overrides.statusProjectionLoader === undefined && (overrides.ompPort !== undefined || overrides.capabilityProbe !== undefined || overrides.contextWriter !== undefined);
   if (parsed.kind === 'diagnose') return await runUnifiedStatus('diagnose', overrides);
   if (parsed.kind === 'migrate-agx') return await runMigrateAgx(parsed, overrides);
-  if (parsed.kind === 'status' && overrides.statusProjection !== undefined) return await runUnifiedStatus('status', overrides);
+  if (parsed.kind === 'status' && !legacyStatusOverride) return await runUnifiedStatus('status', overrides);
   // `[DELTA]` Story 3.1: `establish` never calls `openDeps()` -- it neither
   // needs `launchPlanRepository` nor any OMP-launch port, and it must be
   // able to fail (missing trigger/evidence, TTY guard) without ever

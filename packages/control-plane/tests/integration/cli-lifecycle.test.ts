@@ -18,6 +18,15 @@ describe('lifecycle rehearsal CLI', () => {
     expect(output.join('\n')).toContain('STATUS-CONFIG-UNKNOWN');
     expect(output.join('\n')).not.toMatch(/prompt|transcript|secret|token/i);
   });
+  test('default status and diagnose report typed unsupported state without falling back to launch status', async () => {
+    const restore = capture();
+    expect(await main(['status'])).toBe(0);
+    expect(await main(['diagnose'])).toBe(0);
+    restore();
+    expect(output.join('\n')).toContain('STATUS-SOURCE-UNAVAILABLE');
+    expect(output.join('\n')).not.toContain('Revision:');
+    expect(output.join('\n')).toContain('"readOnly":true');
+  });
 
   test('migrate-agx requires explicit root and returns injected manual/rejected/imported decisions without writes', async () => {
     const restore = capture();
