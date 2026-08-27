@@ -50,8 +50,38 @@ type runtimeDependencies struct {
 	goos               string
 }
 
+func migrationHandoff(command string, stdout io.Writer) int {
+	result := struct {
+		Kind            string `json:"kind"`
+		Command         string `json:"command"`
+		Next            string `json:"next"`
+		RemoteRetention string `json:"remote_retention"`
+	}{Kind: "migration-handoff", Command: command, Next: "configs", RemoteRetention: "retain"}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return exitcode.Software
+	}
+	fmt.Fprintln(stdout, string(data))
+	return exitcode.Unsupported
+}
+
 func Run(args []string, version string, stdout, stderr io.Writer) int {
 	return runWithDependencies(args, version, stdout, stderr, runtimeDependencies{stdin: os.Stdin, goos: runtime.GOOS})
+}
+
+func RunFrozen(args []string, version string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && isFrozenMutation(args[0]) {
+		return migrationHandoff(args[0], stdout)
+	}
+	return Run(args, version, stdout, stderr)
+}
+func isFrozenMutation(command string) bool {
+	switch command {
+	case "apply", "init", "uninstall", "upgrade", "rollback", "install", "update":
+		return true
+	default:
+		return false
+	}
 }
 
 func runWithDependencies(args []string, version string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
@@ -88,14 +118,14 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 		return runPlan(args[1:], stdout, stderr)
 	case "apply":
 		return runApply(args[1:], stdout, stderr)
-	case "config":
-		return runConfig(args[1:], stdout, stderr, dependencies)
 	case "init":
 		return runInit(args[1:], stdout, stderr, dependencies)
-	case "status":
-		return runStatus(args[1:], stdout, stderr, dependencies)
 	case "uninstall":
 		return runUninstall(args[1:], stdout, stderr)
+	case "config":
+		return runConfig(args[1:], stdout, stderr, dependencies)
+	case "status":
+		return runStatus(args[1:], stdout, stderr, dependencies)
 	case "task", "tasks":
 		fmt.Fprintln(stderr, "AGX-UNSUPPORTED-TASK: AGX does not create, assign, or schedule daily Tasks")
 		return exitcode.Unsupported
