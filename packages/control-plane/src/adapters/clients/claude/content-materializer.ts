@@ -21,7 +21,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { cp, mkdir, readFile, realpath, rename, stat } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, realpath, rename, stat, writeFile, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { isKnown } from '../../../domain/facts';
 import type { CapabilityReference, StableConfigRevision } from '../../../domain/config';
@@ -178,6 +178,35 @@ async function materializeInstructions(
  * successfully-resolved skill under `skills/<name>/` (the whole source
  * directory -- SKILL.md and any attachments, not just SKILL.md itself).
  */
+const NOFOLLOW = process.platform === 'win32' ? 0 : 0x200000;
+
+async function readNoFollow(filePath: string): Promise<Buffer> {
+  const before = await lstat(filePath);
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error('source entry is not a regular file');
+  const handle = await open(filePath, process.platform === 'win32' ? 'r' : NOFOLLOW);
+  try {
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function copyTree(source: string, target: string): Promise<void> {
+  const sourceInfo = await lstat(source);
+  if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) throw new Error('source skill is not a real directory');
+  await mkdir(target, { recursive: true });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const sourceEntry = path.join(source, entry.name);
+    const targetEntry = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      await copyTree(sourceEntry, targetEntry);
+    } else if (entry.isFile()) {
+      await writeFile(targetEntry, await readNoFollow(sourceEntry));
+    } else {
+      throw new Error('source skill contains an unsupported entry');
+    }
+  }
+}
 async function materializeSkills(
   references: readonly CapabilityReference[],
   invocationDir: string,
@@ -201,7 +230,7 @@ async function materializeSkills(
     const targetDir = path.join(skillsDir, sanitizePathSegment(reference.name));
     try {
       await validateFingerprint(reference, resolved.path, supplyRoot);
-      await cp(resolved.path, targetDir, { recursive: true });
+      await copyTree(resolved.path, targetDir);
       anySucceeded = true;
     } catch (error) {
       failures.push({ name: reference.name, reason: `无法复制 Skill 目录：${errorMessage(error)}` });
