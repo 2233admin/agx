@@ -25,6 +25,8 @@ import { resolveClientSupport } from '../domain/client';
 import type { LaunchPlan } from '../domain/activation';
 import { SqliteConfigRevisionRepository } from '../adapters/sqlite/repository';
 import { SqliteConfigRevisionWriter } from '../adapters/sqlite/config-revision-writer';
+import { SqliteDeploymentOperationRepository } from '../adapters/sqlite/deployment-operation-repository';
+import { SqliteOperationJournal } from '../adapters/sqlite/operation-journal';
 import { SqliteLaunchPlanRepository } from '../adapters/sqlite/launch-repository';
 import { BunOmpProcessPort, defaultExtensionPath, findDenylistedForwardedArg } from '../adapters/omp/process-port';
 import { BunOmpCapabilityProbe } from '../adapters/omp/capability-probe';
@@ -86,7 +88,7 @@ import {
 import { buildSupplyCandidate, loadSupplyGroups } from '../adapters/sources/supply-fs';
 import { importLegacyReceipt, type MigrationImportResult } from '../adapters/migration/receipt-importer';
 import { diagnoseDeployment } from '../application/diagnose';
-import { getUnifiedStatus } from '../application/status';
+import { getUnifiedStatus, loadStatusProjection, type DurableStatusDependencies, type DurableStatusSelectors } from '../application/status';
 import type { StatusProjectionInput } from '../domain/status';
 import { defaultSupplyRoot } from './supply-root';
 import { isStdinTTY, readCandidateFile, readStdinText } from './candidate-source';
@@ -172,8 +174,8 @@ type ParsedCommand =
   | { readonly kind: 'unsupported-client'; readonly clientId: string; readonly reason: string }
   | { readonly kind: 'list' }
   | { readonly kind: 'show'; readonly id: string }
-  | { readonly kind: 'status'; readonly planId: string | null }
-  | { readonly kind: 'diagnose' }
+  | { readonly kind: 'status'; readonly planId: string | null; readonly deploymentId: string | null; readonly operationId: string | null }
+  | { readonly kind: 'diagnose'; readonly deploymentId: string | null; readonly operationId: string | null }
   | { readonly kind: 'init'; readonly mode: 'plan' | 'apply' }
   | { readonly kind: 'migrate-agx'; readonly root: string }
   | { readonly kind: 'compare'; readonly ids: readonly string[] }
@@ -549,6 +551,23 @@ function parseInit(rest: readonly string[]): ParsedCommand {
   if (rest.length !== 1 || (rest[0] !== '--plan' && rest[0] !== '--apply')) return { kind: 'usage-error', message: `${t('parseError.initMode')}\n${usageLine()}` };
   return { kind: 'init', mode: rest[0] === '--plan' ? 'plan' : 'apply' };
 }
+function parseStatus(rest: readonly string[]): ParsedCommand {
+  if (rest.length === 0) return { kind: 'status', planId: null, deploymentId: null, operationId: null };
+  if (!rest[0]!.startsWith('--')) return rest.length === 1 ? { kind: 'status', planId: rest[0]!, deploymentId: null, operationId: null } : { kind: 'usage-error', message: usageLine() };
+  let deploymentId: string | null = null; let operationId: string | null = null;
+  for (let index = 0; index < rest.length; index += 2) {
+    const flag = rest[index]; const value = rest[index + 1];
+    if ((flag !== '--deployment-id' && flag !== '--operation-id') || value === undefined || value.trim() === '') return { kind: 'usage-error', message: usageLine() };
+    if (flag === '--deployment-id') { if (deploymentId !== null) return { kind: 'usage-error', message: usageLine() }; deploymentId = value; }
+    else { if (operationId !== null) return { kind: 'usage-error', message: usageLine() }; operationId = value; }
+  }
+  if (deploymentId === null || operationId === null) return { kind: 'usage-error', message: usageLine() };
+  return { kind: 'status', planId: null, deploymentId, operationId };
+}
+function parseDiagnose(rest: readonly string[]): ParsedCommand {
+  const parsed = parseStatus(rest);
+  return parsed.kind === 'status' ? { kind: 'diagnose', deploymentId: parsed.deploymentId, operationId: parsed.operationId } : parsed;
+}
 function parseCommand(argv: readonly string[]): ParsedCommand {
   const [command, ...rest] = argv;
   switch (command) {
@@ -573,9 +592,9 @@ function parseCommand(argv: readonly string[]): ParsedCommand {
     case 'switch':
       return parseUseOrSwitch('switch', rest);
     case 'status':
-      return { kind: 'status', planId: rest[0] ?? null };
+      return parseStatus(rest);
     case 'diagnose':
-      return rest.length === 0 ? { kind: 'diagnose' } : { kind: 'usage-error', message: usageLine() };
+      return parseDiagnose(rest);
     case 'migrate-agx':
       return parseMigrateAgx(rest);
     case 'establish':
@@ -606,6 +625,7 @@ export interface CliOverrides {
   readonly claudeContentMaterializer?: ClaudeContentMaterializerPort;
   readonly statusProjection?: StatusProjectionInput;
   readonly statusProjectionLoader?: () => Promise<StatusProjectionInput | null>;
+  readonly statusDurableLoader?: (selectors: DurableStatusSelectors) => Promise<StatusProjectionInput | null>;
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
   readonly deploymentPlan?: { readonly journal: OperationJournalPort; readonly input: DeploymentPreflightInput; readonly ports: DeploymentPreflightPorts };
   readonly deploymentApply?: { readonly journal: OperationJournalPort; readonly operationId: string; readonly deploymentId: string; readonly targets: DeploymentApplyTargets; readonly ports: DeploymentApplyPorts };
@@ -1196,13 +1216,34 @@ ${usageLine()}`);
   }
 }
 
-async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverrides): Promise<number> {
+async function loadDefaultStatusProjection(selectors: DurableStatusSelectors): Promise<StatusProjectionInput | null> {
+  const dbPath = defaultDbPath();
+  let configRepository: SqliteConfigRevisionRepository | undefined;
+  let deploymentRepository: SqliteDeploymentOperationRepository | undefined;
+  let operationJournal: SqliteOperationJournal | undefined;
+  let launchPlanRepository: SqliteLaunchPlanRepository | undefined;
+  try {
+    configRepository = new SqliteConfigRevisionRepository(dbPath);
+    deploymentRepository = new SqliteDeploymentOperationRepository(dbPath);
+    operationJournal = new SqliteOperationJournal(dbPath);
+    launchPlanRepository = new SqliteLaunchPlanRepository(dbPath);
+    return await loadStatusProjection({ configRepository, deploymentRepository, operationJournal, launchPlanRepository }, selectors);
+  } catch {
+    return null;
+  } finally {
+    launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close();
+  }
+}
+async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverrides, selectors?: DurableStatusSelectors): Promise<number> {
   let projection: StatusProjectionInput | null | undefined = overrides.statusProjection;
   if (projection === undefined && overrides.statusProjectionLoader !== undefined) {
     try { projection = await overrides.statusProjectionLoader(); } catch { projection = null; }
   }
+  if (projection === undefined && selectors !== undefined) {
+    try { projection = overrides.statusDurableLoader === undefined ? await loadDefaultStatusProjection(selectors) : await overrides.statusDurableLoader(selectors); } catch { projection = null; }
+  }
   if (projection === undefined || projection === null) {
-    console.log(JSON.stringify({ kind: 'unsupported', phase: 'preflight-blocked', code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'initialize-deployment-state', ...(kind === 'diagnose' ? { readOnly: true } : {}) }));
+    console.log(JSON.stringify({ kind: 'unsupported', phase: 'preflight-blocked', code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'select-existing-deployment', ...(kind === 'diagnose' ? { readOnly: true } : {}) }));
     return 0;
   }
   const value = kind === 'diagnose' ? diagnoseDeployment(projection) : getUnifiedStatus(projection);
@@ -1268,9 +1309,9 @@ export async function main(argv: readonly string[], overrides: CliOverrides = {}
   }
   const legacyStatusOverride = parsed.kind === 'status' && overrides.statusProjection === undefined && overrides.statusProjectionLoader === undefined && (overrides.ompPort !== undefined || overrides.capabilityProbe !== undefined || overrides.contextWriter !== undefined);
   if (parsed.kind === 'init') return await runInit(parsed, overrides);
-  if (parsed.kind === 'diagnose') return await runUnifiedStatus('diagnose', overrides);
+  if (parsed.kind === 'diagnose') return await runUnifiedStatus('diagnose', overrides, parsed.deploymentId !== null && parsed.operationId !== null ? { deploymentId: parsed.deploymentId, operationId: parsed.operationId } : undefined);
   if (parsed.kind === 'migrate-agx') return await runMigrateAgx(parsed, overrides);
-  if (parsed.kind === 'status' && !legacyStatusOverride) return await runUnifiedStatus('status', overrides);
+  if (parsed.kind === 'status' && !legacyStatusOverride) return await runUnifiedStatus('status', overrides, parsed.deploymentId !== null && parsed.operationId !== null ? { deploymentId: parsed.deploymentId, operationId: parsed.operationId } : undefined);
   // `[DELTA]` Story 3.1: `establish` never calls `openDeps()` -- it neither
   // needs `launchPlanRepository` nor any OMP-launch port, and it must be
   // able to fail (missing trigger/evidence, TTY guard) without ever
