@@ -84,6 +84,10 @@ import {
   SupplyUnsupportedEntryError,
 } from '../application/establish';
 import { buildSupplyCandidate, loadSupplyGroups } from '../adapters/sources/supply-fs';
+import { importLegacyReceipt, type MigrationImportResult } from '../adapters/migration/receipt-importer';
+import { diagnoseDeployment } from '../application/diagnose';
+import { getUnifiedStatus } from '../application/status';
+import type { StatusProjectionInput } from '../domain/status';
 import { defaultSupplyRoot } from './supply-root';
 import { isStdinTTY, readCandidateFile, readStdinText } from './candidate-source';
 import {
@@ -131,11 +135,10 @@ import { runTui } from './tui';
 
 // The syntax portion never translates (command/subcommand/flag names are
 // stable, `grep`-matched identifiers -- same convention as everywhere
-// else in this file); only the leading "usage:"/"用法：" word is
 // language-dependent, so this is composed via `usageLine()` rather than
 // being a static constant.
 const USAGE_SYNTAX =
-  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group <group>...]>';
+  'configs <list|show <id>|compare <id> <id> [...ids]|use <id> [--client <id>] [--yes] [-- ...args]|status [<planId>]|diagnose|migrate-agx --root <installation-root>|switch <id> [--client <id>] [--yes] [-- ...args]|establish --trigger-category <cat> --evidence <ref> [--from <path>]|revise --trigger-category <cat> --evidence <ref> --supersedes <revisionId> [--from <path>]|supply --config-name <name> --group <group> [--group ...]>';
 
 function usageLine(): string {
   return `${t('usage.prefix')} ${USAGE_SYNTAX}`;
@@ -165,9 +168,11 @@ type ParsedCommand =
   | { readonly kind: 'unsupported-client'; readonly clientId: string; readonly reason: string }
   | { readonly kind: 'list' }
   | { readonly kind: 'show'; readonly id: string }
+  | { readonly kind: 'status'; readonly planId: string | null }
+  | { readonly kind: 'diagnose' }
+  | { readonly kind: 'migrate-agx'; readonly root: string }
   | { readonly kind: 'compare'; readonly ids: readonly string[] }
   | { readonly kind: 'use' | 'switch'; readonly id: string; readonly client: ClientId; readonly yes: boolean; readonly forwardedArgs: readonly string[] }
-  | { readonly kind: 'status'; readonly planId: string | null }
   | {
       readonly kind: 'establish';
       readonly triggerCategoryRaw: string | undefined;
@@ -531,6 +536,10 @@ ${usageLine()}` };
   return { kind: 'supply', configName: configName.trim(), groups };
 }
 
+function parseMigrateAgx(rest: readonly string[]): ParsedCommand {
+  if (rest.length !== 2 || rest[0] !== '--root' || rest[1] === undefined || rest[1].trim() === '') return { kind: 'usage-error', message: `${t('parseError.missingMigrationRoot')}\n${usageLine()}` };
+  return { kind: 'migrate-agx', root: rest[1] };
+}
 function parseCommand(argv: readonly string[]): ParsedCommand {
   const [command, ...rest] = argv;
   switch (command) {
@@ -554,6 +563,10 @@ function parseCommand(argv: readonly string[]): ParsedCommand {
       return parseUseOrSwitch('switch', rest);
     case 'status':
       return { kind: 'status', planId: rest[0] ?? null };
+    case 'diagnose':
+      return rest.length === 0 ? { kind: 'diagnose' } : { kind: 'usage-error', message: usageLine() };
+    case 'migrate-agx':
+      return parseMigrateAgx(rest);
     case 'establish':
       return parseEstablish(rest);
     case 'revise':
@@ -580,6 +593,8 @@ export interface CliOverrides {
   readonly claudeLaunchContextWriter?: ClaudeLaunchContextWriter;
   readonly claudeInvocationDirPort?: ClaudeInvocationDirPort;
   readonly claudeContentMaterializer?: ClaudeContentMaterializerPort;
+  readonly statusProjection?: StatusProjectionInput;
+  readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
 }
 
 /**
@@ -1167,6 +1182,22 @@ ${usageLine()}`);
   }
 }
 
+async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverrides): Promise<number> {
+  if (overrides.statusProjection === undefined) {
+    console.error(`${kind} requires an injected status projection for this isolated rehearsal`);
+    return 1;
+  }
+  const value = kind === 'diagnose' ? diagnoseDeployment(overrides.statusProjection) : getUnifiedStatus(overrides.statusProjection);
+  console.log(JSON.stringify(value));
+  return 0;
+}
+
+async function runMigrateAgx(parsed: Extract<ParsedCommand, { kind: 'migrate-agx' }>, overrides: CliOverrides): Promise<number> {
+  const importer = overrides.migrationImporter ?? ((root: string) => importLegacyReceipt(root));
+  const result = await importer(parsed.root);
+  console.log(JSON.stringify(result));
+  return result.kind === 'rejected' ? 1 : 0;
+}
 export async function main(argv: readonly string[], overrides: CliOverrides = {}): Promise<number> {
   // `[DELTA]` IA first layer: `configs` with no subcommand at all is no
   // longer a usage error -- it prints the same usage text as a normal,
@@ -1197,6 +1228,9 @@ export async function main(argv: readonly string[], overrides: CliOverrides = {}
     console.log(renderUnsupportedClient(parsed.clientId, parsed.reason));
     return 1;
   }
+  if (parsed.kind === 'diagnose') return await runUnifiedStatus('diagnose', overrides);
+  if (parsed.kind === 'migrate-agx') return await runMigrateAgx(parsed, overrides);
+  if (parsed.kind === 'status' && overrides.statusProjection !== undefined) return await runUnifiedStatus('status', overrides);
   // `[DELTA]` Story 3.1: `establish` never calls `openDeps()` -- it neither
   // needs `launchPlanRepository` nor any OMP-launch port, and it must be
   // able to fail (missing trigger/evidence, TTY guard) without ever
