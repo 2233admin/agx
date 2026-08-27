@@ -142,3 +142,8 @@ export function openSqliteDatabase(dbPath: string): Database {
   db.exec('PRAGMA foreign_keys = ON;');
   return db;
 }
+/** Opens an existing SQLite file without creating directories, tables, WAL, or migrations. */
+export function openSqliteDatabaseReadOnly(dbPath: string): Database {
+  if (dbPath === ':memory:') throw new Error('read-only status requires a durable database path');
+  return new Database(dbPath, { readonly: true, create: false });
+}

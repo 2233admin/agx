@@ -1,4 +1,4 @@
-import { isKnown, unknown } from '../domain/facts';
+import { unknown } from '../domain/facts';
 import type { EvidenceReceipt } from '../domain/evidence';
 import type { ConfigRevisionRepository, LaunchPlanRepository, OperationJournalPort } from './ports';
 import type { DeploymentStatus } from '../domain/deployment';
@@ -21,9 +21,7 @@ export async function loadStatusProjection(deps: DurableStatusDependencies, sele
   const deployment = await deps.deploymentRepository.findDeployment(selectors.deploymentId);
   const operation = await deps.operationJournal.find(selectors.operationId);
   if (deployment === null || operation === null || operation.deploymentId !== deployment.deploymentId) return null;
-  const revisions = await deps.configRepository.listAll();
-  const active = revisions.filter((revision) => isKnown(revision.defaultMarker) && revision.defaultMarker.value).sort((left, right) => left.revisionId < right.revisionId ? -1 : left.revisionId > right.revisionId ? 1 : 0)[0];
-  return { activeRevision: active === undefined ? unknown('active-revision-unavailable', new Date(0).toISOString()) : { kind: 'known', value: active }, deployment, operation, launchPlans: [], readbacks: [], evidence: awaitingEvidence() };
+  return { activeRevision: unknown('active-revision-unbound', deployment.nextAction), deployment, operation, launchPlans: [], readbacks: [], evidence: awaitingEvidence() };
 }
 
 export function getUnifiedStatus(input: StatusProjectionInput): UnifiedStatus {

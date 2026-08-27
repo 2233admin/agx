@@ -23,10 +23,14 @@ import { spawn } from 'node:child_process';
 import type { ClientId } from '../domain/client';
 import { resolveClientSupport } from '../domain/client';
 import type { LaunchPlan } from '../domain/activation';
+import { unknown } from '../domain/facts';
+import type { OperationJournalPhase, OperationJournalRecord, OperationStep } from '../domain/operation-journal';
+import type { DeploymentStatus } from '../domain/deployment';
 import { SqliteConfigRevisionRepository } from '../adapters/sqlite/repository';
 import { SqliteConfigRevisionWriter } from '../adapters/sqlite/config-revision-writer';
 import { SqliteDeploymentOperationRepository } from '../adapters/sqlite/deployment-operation-repository';
 import { SqliteOperationJournal } from '../adapters/sqlite/operation-journal';
+import { openSqliteDatabaseReadOnly } from '../adapters/sqlite/connection';
 import { SqliteLaunchPlanRepository } from '../adapters/sqlite/launch-repository';
 import { BunOmpProcessPort, defaultExtensionPath, findDenylistedForwardedArg } from '../adapters/omp/process-port';
 import { BunOmpCapabilityProbe } from '../adapters/omp/capability-probe';
@@ -1217,21 +1221,21 @@ ${usageLine()}`);
 }
 
 async function loadDefaultStatusProjection(selectors: DurableStatusSelectors): Promise<StatusProjectionInput | null> {
-  const dbPath = defaultDbPath();
-  let configRepository: SqliteConfigRevisionRepository | undefined;
-  let deploymentRepository: SqliteDeploymentOperationRepository | undefined;
-  let operationJournal: SqliteOperationJournal | undefined;
-  let launchPlanRepository: SqliteLaunchPlanRepository | undefined;
+  if (selectors.deploymentId.trim() === '' || selectors.operationId.trim() === '') return null;
+  let db: ReturnType<typeof openSqliteDatabaseReadOnly> | undefined;
   try {
-    configRepository = new SqliteConfigRevisionRepository(dbPath);
-    deploymentRepository = new SqliteDeploymentOperationRepository(dbPath);
-    operationJournal = new SqliteOperationJournal(dbPath);
-    launchPlanRepository = new SqliteLaunchPlanRepository(dbPath);
-    return await loadStatusProjection({ configRepository, deploymentRepository, operationJournal, launchPlanRepository }, selectors);
+    db = openSqliteDatabaseReadOnly(defaultDbPath());
+    const deployment = db.query(`SELECT deployment_id, phase, last_operation_id, reason, next_action, updated_at FROM deployment_status WHERE deployment_id = ?`).get(selectors.deploymentId) as { deployment_id: string; phase: DeploymentStatus['phase']; last_operation_id: string | null; reason: string | null; next_action: string; updated_at: string } | null;
+    const operation = db.query(`SELECT operation_id, deployment_id, phase, next_action, updated_at FROM operation_status WHERE operation_id = ?`).get(selectors.operationId) as { operation_id: string; deployment_id: string; phase: OperationJournalPhase; next_action: string; updated_at: string } | null;
+    if (deployment === null || operation === null || operation.deployment_id !== deployment.deployment_id) return null;
+    const rows = db.query(`SELECT sequence, kind, resource, phase, reason FROM operation_step AS current WHERE operation_id = ? AND revision = (SELECT MAX(revision) FROM operation_step AS latest WHERE latest.operation_id = current.operation_id AND latest.sequence = current.sequence) ORDER BY sequence`).all(selectors.operationId) as Array<{ sequence: number; kind: OperationStep['kind']; resource: string; phase: OperationStep['phase']; reason: string | null }>;
+    const journal: OperationJournalRecord = { operationId: operation.operation_id, deploymentId: operation.deployment_id, phase: operation.phase, steps: rows.map((row) => ({ sequence: row.sequence, kind: row.kind, resource: row.resource, phase: row.phase, ...(row.reason === null ? {} : { reason: row.reason }) })), remoteRetention: 'retain', nextAction: operation.next_action };
+    const status: DeploymentStatus = { deploymentId: deployment.deployment_id, phase: deployment.phase, lastOperationId: deployment.last_operation_id === null ? unknown('operation-id-unavailable', deployment.updated_at) : { kind: 'known', value: deployment.last_operation_id }, reason: deployment.reason, nextAction: deployment.next_action };
+    return { activeRevision: unknown('active-revision-unbound', deployment.updated_at), deployment: status, operation: journal, launchPlans: [], readbacks: [], evidence: { phase: 'awaiting_verification', profile: 'github-delivery/v1', installationId: '', deploymentDigest: '', subjectDigest: '', evaluatedAt: deployment.updated_at, satisfied: [], missing: [], diagnostics: [], nextSteps: [], evidence: [] } };
   } catch {
     return null;
   } finally {
-    launchPlanRepository?.close(); operationJournal?.close(); deploymentRepository?.close(); configRepository?.close();
+    db?.close();
   }
 }
 async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverrides, selectors?: DurableStatusSelectors): Promise<number> {
