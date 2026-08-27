@@ -86,17 +86,18 @@ export interface GithubRepositoryPort {
 }
 export interface ProviderCommandResult {
   readonly stdout: string;
+  readonly stderr?: string;
   readonly exitCode: number | null;
 }
 
 export interface CodexProviderCommandPort {
-  available(): Promise<boolean>;
-  run(args: readonly string[]): Promise<ProviderCommandResult>;
+  available(signal?: AbortSignal): Promise<boolean>;
+  run(args: readonly string[], signal?: AbortSignal): Promise<ProviderCommandResult>;
 }
 
 export interface ClaudeProviderCommandPort {
-  available(): Promise<boolean>;
-  run(args: readonly string[]): Promise<ProviderCommandResult>;
+  available(signal?: AbortSignal): Promise<boolean>;
+  run(args: readonly string[], signal?: AbortSignal): Promise<ProviderCommandResult>;
 }
 
 export interface ProviderInventoryPort {
