@@ -87,16 +87,34 @@ export function validateFirstUseContract(input: unknown): FirstUseContractDecisi
   return { kind: 'valid', contract: value as FirstUseContract };
 }
 
-export function summarizeFirstUseEvidence(input: unknown): FirstUseEvidenceDecision {
+function escaped(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function resourceNumber(value: unknown, base: string, resource: 'issues' | 'pull'): number | null {
+  if (typeof value !== 'string' || value.length > 512 || CONTROL.test(value)) return null;
+  const match = new RegExp(`^${escaped(base)}/${resource}/(\\d+)$`).exec(value);
+  if (match === null || !Number.isSafeInteger(Number(match[1])) || Number(match[1]) <= 0 || String(Number(match[1])) !== match[1]) return null;
+  return Number(match[1]);
+}
+function boundedText(value: unknown, max: number): value is string { return typeof value === 'string' && value.length <= max && !CONTROL.test(value); }
+
+export function summarizeFirstUseEvidence(contractInput: unknown, input: unknown): FirstUseEvidenceDecision {
+  const contractDecision = validateFirstUseContract(contractInput);
+  if (contractDecision.kind !== 'valid') return { kind: 'rejected', reason: 'malformed-evidence' };
   if (!isRecord(input) || hasForbidden(input)) return { kind: 'rejected', reason: hasForbidden(input) ? 'unsafe-field' : 'malformed-evidence' };
   const allowed = new Set(['status', 'issueURL', 'issueNumber', 'projectItem', 'pullRequestURL', 'pullRequestNumber', 'revision', 'workPointer', 'validationResult', 'problems']);
   if (Object.keys(input).some((key) => !allowed.has(key))) return { kind: 'rejected', reason: 'unsafe-field' };
   if (input.status !== 'awaiting' && input.status !== 'effective') return { kind: 'rejected', reason: 'malformed-evidence' };
+  const contract = contractDecision.contract;
+  const issueNumber = input.issueURL === undefined ? null : resourceNumber(input.issueURL, contract.controlRepository.url, 'issues');
+  const pullRequestNumber = input.pullRequestURL === undefined ? null : resourceNumber(input.pullRequestURL, contract.controlRepository.url, 'pull');
+  if ((input.issueURL !== undefined && issueNumber === null) || (input.pullRequestURL !== undefined && pullRequestNumber === null) || (input.issueNumber !== undefined && (typeof input.issueNumber !== 'number' || !Number.isSafeInteger(input.issueNumber) || input.issueNumber <= 0)) || (input.pullRequestNumber !== undefined && (typeof input.pullRequestNumber !== 'number' || !Number.isSafeInteger(input.pullRequestNumber) || input.pullRequestNumber <= 0)) || (issueNumber !== null && input.issueNumber !== undefined && issueNumber !== input.issueNumber) || (pullRequestNumber !== null && input.pullRequestNumber !== undefined && pullRequestNumber !== input.pullRequestNumber)) return { kind: 'rejected', reason: 'malformed-evidence' };
+  if (input.projectItem !== undefined && (!boundedText(input.projectItem, 256) || !NODE_ID.test(input.projectItem))) return { kind: 'rejected', reason: 'malformed-evidence' };
+  if (input.workPointer !== undefined && input.workPointer !== 'work/current.md') return { kind: 'rejected', reason: 'malformed-evidence' };
+  if (input.revision !== undefined && (input.revision !== contract.revision || !SHA1.test(input.revision))) return { kind: 'rejected', reason: 'malformed-evidence' };
   const summary: FirstUseEvidenceSummary = { status: input.status };
-  for (const key of ['issueURL', 'projectItem', 'pullRequestURL', 'revision', 'workPointer'] as const) if (input[key] !== undefined) { if (typeof input[key] !== 'string' || CONTROL.test(input[key])) return { kind: 'rejected', reason: 'malformed-evidence' }; (summary as unknown as Record<string, unknown>)[key] = input[key]; }
-  for (const key of ['issueNumber', 'pullRequestNumber'] as const) if (input[key] !== undefined) { if (typeof input[key] !== 'number' || !Number.isSafeInteger(input[key]) || input[key] <= 0) return { kind: 'rejected', reason: 'malformed-evidence' }; (summary as unknown as Record<string, unknown>)[key] = input[key]; }
+  for (const key of ['issueURL', 'projectItem', 'pullRequestURL', 'revision', 'workPointer'] as const) if (input[key] !== undefined) (summary as unknown as Record<string, unknown>)[key] = input[key];
+  for (const key of ['issueNumber', 'pullRequestNumber'] as const) if (input[key] !== undefined) (summary as unknown as Record<string, unknown>)[key] = input[key];
   if (input.validationResult !== undefined && !['awaiting', 'passed', 'pending_or_failed'].includes(String(input.validationResult))) return { kind: 'rejected', reason: 'malformed-evidence' };
   if (input.validationResult !== undefined) (summary as unknown as Record<string, unknown>).validationResult = input.validationResult;
-  if (input.problems !== undefined) { if (!Array.isArray(input.problems) || !input.problems.every((item) => typeof item === 'string' && !CONTROL.test(item))) return { kind: 'rejected', reason: 'malformed-evidence' }; (summary as unknown as Record<string, unknown>).problems = [...input.problems]; }
+  if (input.problems !== undefined) { if (!Array.isArray(input.problems) || input.problems.length > 32 || !input.problems.every((item) => boundedText(item, 256))) return { kind: 'rejected', reason: 'malformed-evidence' }; (summary as unknown as Record<string, unknown>).problems = [...input.problems]; }
   return { kind: 'accepted', summary };
 }

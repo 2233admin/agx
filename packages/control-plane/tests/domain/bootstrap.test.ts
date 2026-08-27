@@ -50,4 +50,9 @@ describe('bootstrap renderer', () => {
     expect(decideBootstrapTree(rendered, [{ path: 'README.md', kind: 'file', content: 'drift' }])).toMatchObject({ kind: 'reject' });
     expect(decideBootstrapTree(rendered, [{ path: 'README.md', kind: 'symlink' }])).toMatchObject({ kind: 'reject' });
   });
+
+  test('rejects an extra existing file instead of claiming an exact tree', () => {
+    const rendered = renderBootstrap(source(), { owner: 'octo-lab', repository: 'agent-control', pluginSource: 'zaurakworks/agent-plugins' });
+    expect(decideBootstrapTree(rendered, [...rendered.files.map((file) => ({ path: file.path, kind: 'file' as const, content: file.content })), { path: 'operator.md', kind: 'file', content: 'operator state' }])).toEqual({ kind: 'reject', reason: 'unexpected-existing-path' });
+  });
 });

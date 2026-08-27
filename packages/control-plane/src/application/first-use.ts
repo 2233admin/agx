@@ -4,6 +4,6 @@ export function validateFirstUse(input: unknown): FirstUseContractDecision {
   return validateFirstUseContract(input);
 }
 
-export function summarizeFirstUse(input: unknown): FirstUseEvidenceDecision {
-  return summarizeFirstUseEvidence(input);
+export function summarizeFirstUse(contract: unknown, input: unknown): FirstUseEvidenceDecision {
+  return summarizeFirstUseEvidence(contract, input);
 }

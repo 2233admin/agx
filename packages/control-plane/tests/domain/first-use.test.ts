@@ -45,9 +45,22 @@ describe('first-use contract', () => {
   });
 
   test('summarizes only redaction-safe evidence fields and rejects prompt/transcript/Issue body', () => {
-    const summary = summarizeFirstUseEvidence({ status: 'effective', issueURL: 'https://github.com/octocat/agent-control/issues/1', issueNumber: 1, projectItem: 'PVTI_1', pullRequestURL: 'https://github.com/octocat/agent-control/pull/2', pullRequestNumber: 2, revision: 'a'.repeat(40), validationResult: 'passed', problems: [] });
+    const summary = summarizeFirstUseEvidence(contract(), { status: 'effective', issueURL: 'https://github.com/octocat/agent-control/issues/1', issueNumber: 1, projectItem: 'PVTI_1', pullRequestURL: 'https://github.com/octocat/agent-control/pull/2', pullRequestNumber: 2, revision: contract().revision, validationResult: 'passed', problems: [] });
     expect(summary).toEqual({ kind: 'accepted', summary: expect.objectContaining({ status: 'effective', issueNumber: 1, pullRequestNumber: 2 }) });
-    expect(summarizeFirstUseEvidence({ status: 'awaiting', body: 'raw Issue body' }).kind).toBe('rejected');
-    expect(summarizeFirstUseEvidence({ status: 'awaiting', transcript: 'raw transcript' }).kind).toBe('rejected');
+    expect(summarizeFirstUseEvidence(contract(), { status: 'awaiting', body: 'raw Issue body' }).kind).toBe('rejected');
+    expect(summarizeFirstUseEvidence(contract(), { status: 'awaiting', transcript: 'raw transcript' }).kind).toBe('rejected');
+  });
+  test('rejects unbounded or contract-mismatched evidence identities without verifying it', () => {
+    const base = { status: 'awaiting', issueURL: 'https://github.com/octocat/agent-control/issues/1', issueNumber: 1, projectItem: 'PVTI_1', pullRequestURL: 'https://github.com/octocat/agent-control/pull/2', pullRequestNumber: 2, revision: contract().revision, workPointer: 'work/current.md' };
+    for (const evidence of [
+      { ...base, issueURL: 'https://github.com/other/repo/issues/1' },
+      { ...base, issueURL: `${base.issueURL}?body=raw` },
+      { ...base, projectItem: 'x'.repeat(257) },
+      { ...base, workPointer: 'work/other.md' },
+      { ...base, revision: 'b'.repeat(40) },
+      { ...base, pullRequestNumber: 3 },
+    ]) expect(summarizeFirstUseEvidence(contract(), evidence)).toMatchObject({ kind: 'rejected' });
+    expect(summarizeFirstUseEvidence({ ...contract(), revision: 'b'.repeat(40) }, base as never).kind).toBe('rejected');
+    expect(summarizeFirstUseEvidence(contract(), base)).toMatchObject({ kind: 'accepted', summary: { status: 'awaiting' } });
   });
 });

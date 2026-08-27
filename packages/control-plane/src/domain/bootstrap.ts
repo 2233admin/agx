@@ -26,7 +26,7 @@ export interface BootstrapTreeEntry { readonly path: string; readonly kind: 'fil
 export type BootstrapTreeDecision =
   | { readonly kind: 'create' }
   | { readonly kind: 'already-exact' }
-  | { readonly kind: 'reject'; readonly reason: 'invalid-rendered-tree' | 'drift' | 'non-regular-target' | 'unsafe-existing-path' };
+  | { readonly kind: 'reject'; readonly reason: 'invalid-rendered-tree' | 'drift' | 'non-regular-target' | 'unsafe-existing-path' | 'unexpected-existing-path' };
 
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -109,6 +109,8 @@ export function decideBootstrapTree(rendered: BootstrapRendered, existing: reado
     if (byPath.has(path)) return { kind: 'reject', reason: 'unsafe-existing-path' };
     byPath.set(path, entry);
   }
+  const expectedPaths = new Set(rendered.files.map((file) => file.path));
+  for (const path of byPath.keys()) if (!expectedPaths.has(path)) return { kind: 'reject', reason: 'unexpected-existing-path' };
   let exact = true;
   for (const file of rendered.files) {
     const entry = byPath.get(file.path);
