@@ -21,8 +21,10 @@ describe('projectStatus', () => {
     expect(projectStatus(input({ launchPlans: [launch('failed')] })).phase).toBe('failed');
     expect(projectStatus(input({ launchPlans: [launch('applying')] })).phase).toBe('applying');
     expect(projectStatus(input({ deployment: { ...input().deployment, phase: 'awaiting' } })).phase).toBe('awaiting');
-    expect(projectStatus(input()).phase).toBe('succeeded');
-    expect(projectStatus(input({ evidence: evidence('verified') })).phase).toBe('verified');
+    expect(projectStatus(input()).phase).toBe('awaiting');
+    expect(projectStatus(input({ evidence: evidence('verified'), readbacks: [{ kind: 'repository', resourceId: 'octocat/agent-control', digest: 'c'.repeat(64), ownership: 'created-by-configs', outcome: 'matched' }] })).phase).toBe('verified');
+    expect(projectStatus(input({ evidence: evidence('blocked_outcome') })).phase).toBe('failed');
+    expect(projectStatus(input({ evidence: evidence('blocked_freshness') })).phase).toBe('awaiting');
   });
 
   test('does not overclaim verified for stale or unsuccessful identity/evidence', () => {
@@ -41,5 +43,13 @@ describe('projectStatus', () => {
     const status = projectStatus(input({ readbacks: [{ kind: 'project', resourceId: 'project-1', ownership: 'unknown', outcome: 'unknown' }] }));
     expect(status.phase).toBe('inconclusive');
     expect(JSON.stringify(status)).not.toContain('raw');
+  });
+  test('keeps missing required readbacks awaiting and rejects malformed runtime readback fields', () => {
+    const missing = projectStatus(input({ evidence: evidence('verified'), readbacks: [] }));
+    expect(missing.phase).toBe('awaiting');
+    expect(missing.diagnostics).toContain('STATUS-READBACK-MISSING');
+    const malformed = projectStatus(input({ readbacks: [{ kind: 'not-a-resource', resourceId: 'x'.repeat(500), ownership: 'unknown', outcome: 'matched', digest: 'not-a-digest' } as never] }));
+    expect(malformed.resources).toEqual([]);
+    expect(malformed.diagnostics).toContain('STATUS-READBACK-INVALID');
   });
 });

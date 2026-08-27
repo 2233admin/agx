@@ -41,7 +41,7 @@ export interface UnifiedStatus {
   readonly nextActions: readonly string[];
 }
 
-const DIGEST = /^[a-f0-9]{64}$/;
+const DIGEST = /^[a-f0-9]{64}$/i;
 const CODE = /^[A-Z0-9][A-Z0-9-]{0,127}$/;
 const NEXT_ACTIONS: Record<UnifiedStatusPhase, string> = {
   'preflight-blocked': 'resolve-preflight', 'manual-cleanup': 'perform-manual-cleanup', inconclusive: 'observe-remote-state', 'needs-resume': 'resume-operation', drifted: 'reconcile-resources', failed: 'inspect-diagnostics', cancelled: 'start-new-operation', incomplete: 'inspect-diagnostics', applying: 'observe-resources', observing: 'record-outcome', awaiting: 'complete-first-use', configured: 'none', succeeded: 'none', verified: 'none',
@@ -49,19 +49,33 @@ const NEXT_ACTIONS: Record<UnifiedStatusPhase, string> = {
 
 function uniqueSorted(values: readonly string[]): readonly string[] { return [...new Set(values)].sort(); }
 function validKnownRevision(fact: Fact<StableConfigRevision>): fact is { readonly kind: 'known'; readonly value: StableConfigRevision } { return fact.kind === 'known'; }
+function validReadback(value: unknown): value is StatusReadback {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const readback = value as Record<string, unknown>;
+  if (Object.keys(readback).some((key) => !['kind', 'resourceId', 'digest', 'ownership', 'outcome'].includes(key))) return false;
+  if (!['repository', 'project', 'provider'].includes(String(readback.kind)) || typeof readback.resourceId !== 'string' || !/^\S{1,256}$/.test(readback.resourceId) || /[\u0000-\u001f\u007f]/.test(readback.resourceId) || !['created-by-configs', 'pre-existing', 'unknown'].includes(String(readback.ownership)) || !['matched', 'missing', 'modified', 'unknown'].includes(String(readback.outcome))) return false;
+  return readback.digest === undefined || (typeof readback.digest === 'string' && DIGEST.test(readback.digest));
+}
 function readbackSummaries(readbacks: readonly StatusReadback[], diagnostics: string[]): readonly StatusResourceSummary[] {
-  const sorted = [...readbacks].sort((left, right) => left.kind < right.kind ? -1 : left.kind > right.kind ? 1 : left.resourceId < right.resourceId ? -1 : left.resourceId > right.resourceId ? 1 : 0);
-  return sorted.map((readback) => {
-    const digest = readback.digest === undefined ? undefined : DIGEST.test(readback.digest) ? readback.digest : undefined;
-    if (readback.digest !== undefined && digest === undefined) diagnostics.push('STATUS-READBACK-DIGEST-INVALID');
-    return { kind: readback.kind, resourceId: readback.resourceId, ...(digest === undefined ? {} : { digest }), ownership: readback.ownership, outcome: readback.outcome };
-  });
-
+  if (!Array.isArray(readbacks)) { diagnostics.push('STATUS-READBACK-INVALID'); return []; }
+  const valid: StatusReadback[] = [];
+  const seen = new Set<string>();
+  for (const readback of readbacks) {
+    if (!validReadback(readback)) { diagnostics.push('STATUS-READBACK-INVALID'); continue; }
+    const key = `${readback.kind}:${readback.resourceId}`;
+    if (seen.has(key)) { diagnostics.push('STATUS-READBACK-INVALID'); continue; }
+    seen.add(key); valid.push(readback);
+  }
+  const sorted = valid.sort((left, right) => left.kind < right.kind ? -1 : left.kind > right.kind ? 1 : left.resourceId < right.resourceId ? -1 : left.resourceId > right.resourceId ? 1 : 0);
+  return sorted.map((readback) => ({ kind: readback.kind, resourceId: readback.resourceId, ...(readback.digest === undefined ? {} : { digest: readback.digest.toLowerCase() }), ownership: readback.ownership, outcome: readback.outcome }));
 }
 export function projectStatus(input: StatusProjectionInput): UnifiedStatus {
   const diagnostics: string[] = [];
   const missing: string[] = [];
   const resources = readbackSummaries(input.readbacks, diagnostics);
+  const required = input.operation.steps.map((step) => ({ kind: step.kind === 'github-repository' ? 'repository' : step.kind === 'github-project' ? 'project' : 'provider', resourceId: step.resource }));
+  const readbackMissing = required.some((expected) => !resources.some((actual) => actual.kind === expected.kind && actual.resourceId === expected.resourceId && actual.outcome === 'matched'));
+  if (readbackMissing) { missing.push('STATUS-READBACK-MISSING'); diagnostics.push('STATUS-READBACK-MISSING'); }
   for (const requirement of input.evidence.missing) if (CODE.test(requirement.code)) missing.push(requirement.code);
   for (const diagnostic of input.evidence.diagnostics) if (CODE.test(diagnostic.code)) diagnostics.push(diagnostic.code);
   const revisionId = validKnownRevision(input.activeRevision) ? input.activeRevision.value.revisionId : undefined;
@@ -82,9 +96,11 @@ export function projectStatus(input: StatusProjectionInput): UnifiedStatus {
   const incomplete = input.launchPlans.some((plan) => plan.phase === 'incomplete');
   const observing = input.deployment.phase === 'applying' && input.launchPlans.some((plan) => plan.phase === 'observing');
   const applying = input.deployment.phase === 'applying' || input.operation.phase === 'applying' || input.launchPlans.some((plan) => plan.phase === 'applying');
-  const awaiting = input.deployment.phase === 'awaiting' || input.launchPlans.some((plan) => plan.phase === 'awaiting-confirmation') || input.evidence.phase === 'awaiting_verification';
+  const evidenceOutcomeBlocked = input.evidence.phase === 'blocked_outcome';
+  const evidenceFreshnessBlocked = input.evidence.phase === 'blocked_freshness';
+  const awaiting = input.deployment.phase === 'awaiting' || input.launchPlans.some((plan) => plan.phase === 'awaiting-confirmation') || input.evidence.phase === 'awaiting_verification' || evidenceFreshnessBlocked || readbackMissing;
   const successful = input.deployment.phase === 'configured' && input.operation.phase === 'succeeded';
   const verified = successful && input.evidence.phase === 'verified' && input.evidence.missing.length === 0 && input.evidence.diagnostics.length === 0 && diagnostics.length === 0;
-  const phase: UnifiedStatusPhase = !validKnownRevision(input.activeRevision) || diagnostics.includes('STATUS-STALE-IDENTITY') || diagnostics.includes('STATUS-STALE-REVISION') || diagnostics.includes('STATUS-DEPLOYMENT-OPERATION-UNKNOWN') || input.evidence.phase === 'blocked_preflight' ? 'preflight-blocked' : manual ? 'manual-cleanup' : uncertain ? (input.operation.phase === 'needs-resume' ? 'needs-resume' : 'inconclusive') : drifted ? 'drifted' : failed ? (input.operation.phase === 'cancelled' ? 'cancelled' : 'failed') : incomplete ? 'incomplete' : observing ? 'observing' : applying ? 'applying' : awaiting ? 'awaiting' : verified ? 'verified' : successful ? 'succeeded' : input.deployment.phase === 'configured' ? 'configured' : 'awaiting';
+  const phase: UnifiedStatusPhase = !validKnownRevision(input.activeRevision) || diagnostics.includes('STATUS-STALE-IDENTITY') || diagnostics.includes('STATUS-STALE-REVISION') || diagnostics.includes('STATUS-DEPLOYMENT-OPERATION-UNKNOWN') || input.evidence.phase === 'blocked_preflight' ? 'preflight-blocked' : manual ? 'manual-cleanup' : uncertain ? (input.operation.phase === 'needs-resume' ? 'needs-resume' : 'inconclusive') : drifted ? 'drifted' : failed || evidenceOutcomeBlocked ? (input.operation.phase === 'cancelled' ? 'cancelled' : 'failed') : incomplete ? 'incomplete' : observing ? 'observing' : applying ? 'applying' : awaiting ? 'awaiting' : verified ? 'verified' : successful ? 'succeeded' : input.deployment.phase === 'configured' ? 'configured' : 'awaiting';
   return { phase, deploymentId: input.deployment.deploymentId, operationId: input.operation.operationId, ...(revisionId === undefined ? {} : { revisionId }), resources, diagnostics: uniqueSorted(diagnostics), missing: uniqueSorted(missing), nextActions: [NEXT_ACTIONS[phase]] };
 }
