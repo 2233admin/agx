@@ -116,6 +116,7 @@ import { prepareDeploymentPlan, type DeploymentPreflightInput, type DeploymentPr
 import type { OperationJournalPort } from '../application/ports';
 import { readYesNo } from './confirm-prompt';
 import { defaultDbPath } from './db-path';
+import { createOperationJournal } from '../domain/operation-journal';
 import { defaultSelfUpdateStatePath } from './self-update-state-path';
 import { t } from './i18n';
 import { CONFIGS_VERSION } from './version';
@@ -1217,12 +1218,16 @@ async function runMigrateAgx(parsed: Extract<ParsedCommand, { kind: 'migrate-agx
 }
 function unavailableInit(mode: 'plan' | 'apply'): number {
   console.log(JSON.stringify({ kind: 'unsupported', command: `init-${mode}`, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inject-deployment-dependencies' }));
-  return 0;
+  return 1;
+}
+function dryRunOperationJournal(): OperationJournalPort {
+  const unsupported = async (): Promise<never> => { throw new Error('dry-run journal does not persist operation state'); };
+  return { prepare: async (input) => createOperationJournal(input), start: unsupported, resolveInconclusive: unsupported, appendStep: unsupported, finish: unsupported, find: async () => null };
 }
 async function runInit(parsed: Extract<ParsedCommand, { kind: 'init' }>, overrides: CliOverrides): Promise<number> {
   if (parsed.mode === 'plan') {
     if (overrides.deploymentPlan === undefined) return unavailableInit(parsed.mode);
-    const result = await prepareDeploymentPlan(overrides.deploymentPlan.journal, overrides.deploymentPlan.input, overrides.deploymentPlan.ports);
+    const result = await prepareDeploymentPlan(dryRunOperationJournal(), overrides.deploymentPlan.input, overrides.deploymentPlan.ports);
     console.log(JSON.stringify({ kind: result.kind, plan: result.plan, blockers: result.blockers.map(({ resource, reason }) => ({ resource, reason })), remoteRetention: result.remoteRetention }));
     return result.kind === 'ready' ? 0 : 1;
   }

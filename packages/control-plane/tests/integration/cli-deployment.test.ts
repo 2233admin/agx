@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { main } from '../../src/cli/index';
 import { InMemoryOperationJournal } from '../../src/adapters/operation/in-memory-journal';
-import type { ConfigRevisionRepository, GithubProjectPort, GithubRepositoryPort, ProviderActivationPort, ProviderInventoryPort } from '../../src/application/ports';
+import { prepareDeploymentOperationPlan } from '../../src/application/operation-plan';
 import type { DeploymentApplyTargets } from '../../src/application/deployment-apply';
 import type { DeploymentPreflightPorts } from '../../src/application/deployment-preflight';
+import type { ConfigRevisionRepository, GithubProjectPort, GithubRepositoryPort, ProviderActivationPort, ProviderInventoryPort } from '../../src/application/ports';
 import type { OperationPlanInput } from '../../src/domain/operation-journal';
 
 const repo = { owner: 'octocat', name: 'agent-control', visibility: 'private', description: '', sourcePath: 'C:/template', initialRevision: { commit: 'a'.repeat(40), templateVersion: 'v1', templateDigest: 'b'.repeat(64), requiredPaths: ['README.md'] } } as const;
@@ -22,7 +23,7 @@ function adapters(order: string[], counters: { remote: number }): { preflight: D
 
 describe('configs init deployment CLI', () => {
   test('missing injected deployment dependencies returns typed unsupported without opening clients', async () => {
-    const restore = capture(); expect(await main(['init', '--plan'])).toBe(0); expect(await main(['init', '--apply'])).toBe(0); restore();
+    const restore = capture(); expect(await main(['init', '--plan'])).toBe(1); expect(await main(['init', '--apply'])).toBe(1); restore();
     expect(output.join('\n')).toContain('STATUS-SOURCE-UNAVAILABLE'); expect(output.join('\n')).not.toMatch(/prompt|transcript|token|secret/i);
   });
   test('strictly parses only init plan/apply modes', async () => {
@@ -33,6 +34,8 @@ describe('configs init deployment CLI', () => {
     const restore = capture();
     const planned = await main(['init', '--plan'], { deploymentPlan: { journal, input: { deploymentId: plan.deploymentId, operationId: plan.operationId, revisionId: 'rev', repositories: [repo], project, providers: [provider] }, ports: fixture.preflight } });
     expect(planned).toBe(0); expect(counters.remote).toBe(0);
+    expect(planned).toBe(0); expect(counters.remote).toBe(0); expect(await journal.find(plan.operationId)).toBeNull();
+    await prepareDeploymentOperationPlan(journal, plan);
     const applied = await main(['init', '--apply'], { deploymentApply: { journal, operationId: plan.operationId, deploymentId: plan.deploymentId, targets: fixture.targets, ports: { repositories: fixture.preflight.repositories, project: fixture.preflight.project, provider: fixture.preflight.providers as never } } });
     restore(); expect(applied).toBe(1); expect(order).toEqual(['repo']); expect(output.join('\n')).toContain('retain');
   });
