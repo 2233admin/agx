@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import type { GithubRepositoryCommandPort } from '../../src/application/ports';
+import type { GithubRepositoryCommandPort, GithubRepositorySourcePort } from '../../src/application/ports';
 import type { GithubRepositoryTarget } from '../../src/domain/github-repository';
 import { GithubRepositoryAdapter } from '../../src/adapters/github/repository';
 
@@ -18,6 +18,12 @@ const TARGET: GithubRepositoryTarget = {
     requiredPaths: ['README.md', 'control.yaml'],
   },
 };
+
+const VALID_SOURCE: GithubRepositorySourcePort = { validate: async () => ({ kind: 'valid' }) };
+
+function makeAdapter(command: GithubRepositoryCommandPort): GithubRepositoryAdapter {
+  return new GithubRepositoryAdapter(command, VALID_SOURCE);
+}
 
 type FixtureResponse = { readonly stdout: string; readonly exitCode: number | null };
 
@@ -68,7 +74,7 @@ function tree(): FixtureResponse {
 describe('GithubRepositoryAdapter', () => {
   test('preflight parses structured absence and never mutates', async () => {
     const gh = new FixtureGh(json({ login: 'octocat' }), absent());
-    const adapter = new GithubRepositoryAdapter(gh);
+    const adapter = makeAdapter(gh);
 
     await expect(adapter.preflight(TARGET)).resolves.toEqual({ kind: 'ready' });
     expect(gh.calls.some((args) => args[0] === 'repo' || args[0] === 'repo')).toBe(false);
@@ -84,7 +90,7 @@ describe('GithubRepositoryAdapter', () => {
       present(),
       tree(),
     );
-    const adapter = new GithubRepositoryAdapter(gh);
+    const adapter = makeAdapter(gh);
 
     const result = await adapter.provision(TARGET);
 
@@ -104,8 +110,9 @@ describe('GithubRepositoryAdapter', () => {
       binding: {
         kind: 'github-repository',
         resourceId: 'octocat/agent-control',
-        ownership: 'created-by-configs',
-        fingerprint: { kind: 'known', value: 'https://github.com/octocat/agent-control' },
+        ownership: 'unknown',
+        remoteIdentity: 'https://github.com/octocat/agent-control',
+        destructiveActions: 'denied',
       },
     });
     const createCall = gh.calls.find((args) => args[0] === 'repo' && args[1] === 'create');
@@ -120,7 +127,7 @@ describe('GithubRepositoryAdapter', () => {
 
   test('same-name repository is a typed collision and is never adopted or mutated', async () => {
     const gh = new FixtureGh(json({ login: 'octocat' }), present());
-    const adapter = new GithubRepositoryAdapter(gh);
+    const adapter = makeAdapter(gh);
 
     await expect(adapter.provision(TARGET)).resolves.toEqual({
       kind: 'collision',
@@ -139,7 +146,7 @@ describe('GithubRepositoryAdapter', () => {
       present({ defaultBranchRef: { name: 'main', target: { oid: 'c'.repeat(40) } }, object: null }),
       tree(),
     );
-    const adapter = new GithubRepositoryAdapter(gh);
+    const adapter = makeAdapter(gh);
 
     await expect(adapter.provision(TARGET)).resolves.toEqual({
       kind: 'inconclusive',
@@ -151,7 +158,7 @@ describe('GithubRepositoryAdapter', () => {
 
   test('inconclusive preflight does not become absence and does not create', async () => {
     const gh = new FixtureGh(json({ login: 'octocat' }), json({ data: { repository: null } }));
-    const adapter = new GithubRepositoryAdapter(gh);
+    const adapter = makeAdapter(gh);
 
     await expect(adapter.provision(TARGET)).resolves.toEqual({
       kind: 'inconclusive',
@@ -167,7 +174,7 @@ describe('GithubRepositoryAdapter', () => {
         throw new Error('timeout');
       },
     };
-    const adapter = new GithubRepositoryAdapter(command);
+    const adapter = makeAdapter(command);
 
     await expect(adapter.provision(TARGET)).resolves.toEqual({
       kind: 'inconclusive',
@@ -175,5 +182,40 @@ describe('GithubRepositoryAdapter', () => {
       reason: 'github-command-inconclusive',
       remoteRetention: 'retain',
     });
+  });
+  test('rejects an invalid source before the create command', async () => {
+    const gh = new FixtureGh(json({ login: 'octocat' }), absent());
+    const source: GithubRepositorySourcePort = {
+      validate: async () => ({ kind: 'invalid', reason: 'source-path-is-not-a-regular-contained-directory' }),
+    };
+    const adapter = new GithubRepositoryAdapter(gh, source);
+
+    await expect(adapter.provision(TARGET)).resolves.toEqual({
+      kind: 'inconclusive',
+      stage: 'create',
+      reason: 'source-path-invalid:source-path-is-not-a-regular-contained-directory',
+      remoteRetention: 'retain',
+    });
+    expect(gh.calls).toHaveLength(2);
+  });
+  test('accepts later commits while preserving the requested initial commit readback', async () => {
+    const laterCommit = 'c'.repeat(40);
+    const gh = new FixtureGh(
+      json({ login: 'octocat' }),
+      absent(),
+      json({}),
+      json({}),
+      present({ defaultBranchRef: { name: 'main', target: { oid: laterCommit } }, object: { oid: INITIAL_COMMIT } }),
+      tree(),
+    );
+    const adapter = makeAdapter(gh);
+
+    const result = await adapter.provision(TARGET);
+
+    expect(result.kind).toBe('created');
+    if (result.kind === 'created') {
+      expect(result.repository.headCommit).toBe(laterCommit);
+      expect(result.repository.initialCommit).toBe(INITIAL_COMMIT);
+    }
   });
 });

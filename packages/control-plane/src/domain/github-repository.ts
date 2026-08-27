@@ -1,4 +1,4 @@
-import type { ResourceBinding } from './deployment';
+
 
 export type GithubRepositoryVisibility = 'private' | 'public';
 export type GithubRepositoryOwnership = 'created-by-configs' | 'pre-existing' | 'unknown';
@@ -29,10 +29,16 @@ export interface GithubRepositoryInspection {
   readonly initialCommit: string | null;
 }
 
-export interface GithubRepositoryBinding extends ResourceBinding {
+/**
+ * Identity only. A URL does not prove content or ownership, so this binding
+ * deliberately cannot authorize destructive actions.
+ */
+export interface GithubRepositoryBinding {
   readonly kind: 'github-repository';
   readonly resourceId: string;
-  readonly ownership: GithubRepositoryOwnership;
+  readonly ownership: 'unknown';
+  readonly remoteIdentity: string;
+  readonly destructiveActions: 'denied';
 }
 
 export type GithubRepositoryPreflightResult =

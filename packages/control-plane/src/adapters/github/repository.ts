@@ -1,5 +1,7 @@
+import { lstat, readdir, realpath } from 'node:fs/promises';
+import path from 'node:path';
 import { known } from '../../domain/facts';
-import type { GithubRepositoryCommandPort, GithubRepositoryPort } from '../../application/ports';
+import type { GithubRepositoryCommandPort, GithubRepositoryPort, GithubRepositorySourcePort } from '../../application/ports';
 import type {
   GithubRepositoryInspection,
   GithubRepositoryPreflightResult,
@@ -103,16 +105,53 @@ function argsForRepositoryQuery(target: GithubRepositoryTarget, includeCommit: b
 function repositoryMatchesTarget(target: GithubRepositoryTarget, repository: GithubRepositoryInspection): boolean {
   return repository.nameWithOwner.toLowerCase() === `${target.owner}/${target.name}`.toLowerCase() &&
     repository.visibility === target.visibility && repository.defaultBranch === 'main' &&
-    repository.headCommit.toLowerCase() === target.initialRevision.commit.toLowerCase() &&
     repository.initialCommit?.toLowerCase() === target.initialRevision.commit.toLowerCase();
 }
 
 function inconclusive(stage: 'preflight' | 'create' | 'visibility' | 'readback', reason: string): GithubRepositoryProvisionResult {
   return { kind: 'inconclusive', stage, reason, remoteRetention: 'retain' };
 }
+function isContained(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort {
+  async validate(sourcePath: string): Promise<{ readonly kind: 'valid' } | { readonly kind: 'invalid'; readonly reason: string }> {
+    try {
+      if (!path.isAbsolute(sourcePath)) return { kind: 'invalid', reason: 'source-path-not-absolute' };
+      const sourceInfo = await lstat(sourcePath);
+      if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) {
+        return { kind: 'invalid', reason: 'source-path-is-not-a-regular-contained-directory' };
+      }
+      const root = await realpath(sourcePath);
+      const pending = [sourcePath];
+      while (pending.length > 0) {
+        const directory = pending.pop();
+        if (directory === undefined) continue;
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          const candidate = path.join(directory, entry.name);
+          const info = await lstat(candidate);
+          if (info.isSymbolicLink()) return { kind: 'invalid', reason: 'source-tree-contains-symlink-or-junction' };
+          const resolved = await realpath(candidate);
+          if (!isContained(root, resolved)) return { kind: 'invalid', reason: 'source-tree-escapes-source-root' };
+          if (info.isDirectory()) pending.push(candidate);
+          else if (!info.isFile()) return { kind: 'invalid', reason: 'source-tree-contains-non-regular-entry' };
+        }
+      }
+      return { kind: 'valid' };
+    } catch {
+      return { kind: 'invalid', reason: 'source-path-unreadable' };
+    }
+  }
+}
+
 
 export class GithubRepositoryAdapter implements GithubRepositoryPort {
-  constructor(private readonly command: GithubRepositoryCommandPort) {}
+  constructor(
+    private readonly command: GithubRepositoryCommandPort,
+    private readonly source: GithubRepositorySourcePort,
+  ) {}
 
   async preflight(target: GithubRepositoryTarget): Promise<GithubRepositoryPreflightResult> {
     validateTarget(target);
@@ -162,6 +201,8 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
       const preflight = await this.preflight(target);
       if (preflight.kind === 'collision') return preflight;
       if (preflight.kind === 'inconclusive') return inconclusive('preflight', preflight.reason);
+      const source = await this.source.validate(target.sourcePath);
+      if (source.kind === 'invalid') return inconclusive('create', `source-path-invalid:${source.reason}`);
 
       const create = await this.command.run([
         'repo', 'create', `${target.owner}/${target.name}`, `--${target.visibility}`,
@@ -194,8 +235,9 @@ export class GithubRepositoryAdapter implements GithubRepositoryPort {
       binding: {
         kind: 'github-repository',
         resourceId: repository.nameWithOwner,
-        ownership: 'created-by-configs',
-        fingerprint: known(repository.url),
+        ownership: 'unknown',
+        remoteIdentity: repository.url,
+        destructiveActions: 'denied',
       },
     };
   }
