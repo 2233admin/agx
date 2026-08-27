@@ -98,4 +98,11 @@ describe('Evidence evaluator', () => {
       expect(decodeEvidenceInput(JSON.stringify({ ...validEnvelope, observations: [invalidObservation] })).kind).toBe('rejected');
     }
   });
+  test('direct evaluator calls with untrusted non-object input return blocked_preflight safely', () => {
+    for (const invalid of [null, undefined, 42, 'not-an-input', []]) {
+      const result = evaluateEvidence(invalid as unknown as EvidenceEvaluationInput, NOW);
+      expect(result.phase).toBe('blocked_preflight');
+      expect(result.diagnostics).toContainEqual({ code: 'AGX-EVIDENCE-INPUT-INVALID', category: 'preflight' });
+    }
+  });
 });

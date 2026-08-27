@@ -166,7 +166,24 @@ function requirementSet(profile: EvidenceProfile): readonly Requirement[] { retu
 function observationKey(value: EvidenceObservation): string { return JSON.stringify({ source: value.source, kind: value.kind, ref: value.ref }); }
 function observationSortKey(value: EvidenceObservation): string { return JSON.stringify(value); }
 
+function invalidInputReceipt(now: string): EvidenceReceipt {
+  return {
+    phase: 'blocked_preflight',
+    profile: 'github-delivery/v1',
+    installationId: '',
+    deploymentDigest: '',
+    subjectDigest: '',
+    evaluatedAt: now,
+    satisfied: [],
+    missing: githubRequirements.map(({ id, code }) => ({ id, code })),
+    diagnostics: [diag('AGX-EVIDENCE-INPUT-INVALID', 'preflight')],
+    nextSteps: githubRequirements.map(({ next }) => next),
+    evidence: [],
+  };
+}
+
 export function evaluateEvidence(input: EvidenceEvaluationInput, now: string): EvidenceReceipt {
+  if (input === null || typeof input !== 'object' || Array.isArray(input) || !Array.isArray((input as { observations?: unknown }).observations)) return invalidInputReceipt(now);
   const requirements = requirementSet(input.profile);
   const initialDiagnostics = envelopeDiagnostics(input);
   const base: EvidenceReceipt = { phase: 'blocked_preflight', profile: input.profile, installationId: input.installationId, deploymentDigest: input.deploymentDigest, subjectDigest: input.subjectDigest, evaluatedAt: now, satisfied: [], missing: requirements.map(({ id, code }) => ({ id, code })), diagnostics: uniqueDiagnostics(initialDiagnostics), nextSteps: requirements.map(({ next }) => next), evidence: [] };
