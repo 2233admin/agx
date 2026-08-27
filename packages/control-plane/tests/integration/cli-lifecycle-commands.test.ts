@@ -9,7 +9,8 @@ test('lifecycle commands return typed unsupported without injected decisions', a
     expect(await main(['rollback', '--checkpoint', 'checkpoint-1'])).toBe(1);
     expect(await main(['uninstall'])).toBe(1);
   } finally { console.log = old; }
-  expect(output.join('\n')).toContain('STATUS-SOURCE-UNAVAILABLE');
+  expect(output.join('\n')).toContain('unknown-local-state');
+  expect(output.join('\n')).toContain('"remoteRetention":"retain"');
 });
 
 test('lifecycle commands strictly parse selectors and emit allowlisted decisions with remote retention', async () => {

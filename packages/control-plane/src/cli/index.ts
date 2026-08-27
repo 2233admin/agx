@@ -96,6 +96,7 @@ import { buildSupplyCandidate, loadSupplyGroups } from '../adapters/sources/supp
 import { importLegacyReceipt, type MigrationImportResult } from '../adapters/migration/receipt-importer';
 import { createDefaultDeploymentDependencies, createDefaultDeploymentPreflightDependencies, type DefaultDeploymentDependencies, type DefaultDeploymentPreflightDependencies } from '../adapters/deployment/default-dependencies';
 import { parseDeploymentInput, type DeploymentInputResult } from '../domain/deployment-input';
+import { createLifecycleStateStore, createDefaultLifecycleDecisionProviders, type DefaultLifecycleDecisionProviders, type LifecycleStateStore } from '../adapters/state/lifecycle-state-store';
 import type { StatusProjectionInput } from '../domain/status';
 import { getUnifiedStatus, loadStatusProjection, type DurableStatusDependencies, type DurableStatusSelectors } from '../application/status';
 import { diagnoseDeployment } from '../application/diagnose';
@@ -655,7 +656,9 @@ export interface CliOverrides {
   readonly deploymentPlan?: { readonly journal: OperationJournalPort; readonly input: DeploymentPreflightInput; readonly ports: DeploymentPreflightPorts };
   readonly defaultDeploymentPreflightFactory?: (options: Parameters<typeof createDefaultDeploymentPreflightDependencies>[0]) => DefaultDeploymentPreflightDependencies;
   readonly defaultDeploymentFactory?: (options: Parameters<typeof createDefaultDeploymentDependencies>[0]) => DefaultDeploymentDependencies;
+  readonly migrationStateStore?: LifecycleStateStore;
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
+  readonly lifecycleStateStore?: LifecycleStateStore;
   readonly lifecycleDecisionProviders?: LifecycleDecisionProviders;
   readonly defaultDeployment?: DefaultDeploymentDependencies;
   readonly deploymentApply?: { readonly journal: OperationJournalPort; readonly operationId: string; readonly deploymentId: string; readonly targets: DeploymentApplyTargets; readonly ports: DeploymentApplyPorts };
@@ -1285,11 +1288,33 @@ async function runUnifiedStatus(kind: 'status' | 'diagnose', overrides: CliOverr
   return 0;
 }
 
+function defaultLifecycleStatePath(): string { return defaultDbPath(); }
 async function runMigrateAgx(parsed: Extract<ParsedCommand, { kind: 'migrate-agx' }>, overrides: CliOverrides): Promise<number> {
   const importer = overrides.migrationImporter ?? ((root: string) => importLegacyReceipt(root));
-  const result = await importer(parsed.root);
-  console.log(JSON.stringify(result));
-  return result.kind === 'rejected' ? 1 : 0;
+  let result: MigrationImportResult;
+  try { result = await importer(parsed.root); } catch {
+    console.log(JSON.stringify({ kind: 'rejected', reason: 'io-failure', remoteRetention: 'retain' }));
+    return 1;
+  }
+  if (result.kind === 'imported') {
+    const ownsStore = overrides.migrationStateStore === undefined;
+    let store: LifecycleStateStore | undefined;
+    try {
+      store = overrides.migrationStateStore ?? createLifecycleStateStore(defaultLifecycleStatePath());
+      const persisted = await store.writeMigration(result.checkpoint, result.checkpoint.migrationId);
+      if (persisted.kind === 'rejected') {
+        console.log(JSON.stringify({ kind: 'rejected', reason: persisted.reason, remoteRetention: 'retain' }));
+        return 1;
+      }
+    } catch {
+      console.log(JSON.stringify({ kind: 'rejected', reason: 'io-failure', remoteRetention: 'retain' }));
+      return 1;
+    } finally {
+      if (ownsStore) store?.close();
+    }
+  }
+  console.log(JSON.stringify(result.kind === 'requires-manual-review' ? { ...result, remoteRetention: 'retain' } : result));
+  return result.kind === 'imported' ? 0 : 1;
 }
 function unavailableInit(mode: 'plan' | 'apply'): number {
   console.log(JSON.stringify({ kind: 'unsupported', command: `init-${mode}`, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inject-deployment-dependencies' }));
@@ -1368,19 +1393,25 @@ async function runInit(parsed: Extract<ParsedCommand, { kind: 'init' }>, overrid
   return result.kind === 'succeeded' ? 0 : 1;
 }
 async function runLifecycleCommand(command: Extract<ParsedCommand, { kind: 'upgrade' | 'rollback' | 'uninstall' }>, overrides: CliOverrides): Promise<number> {
-  const providers = overrides.lifecycleDecisionProviders;
-  if (providers === undefined) {
-    console.log(JSON.stringify({ kind: 'unsupported', command: command.kind, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inject-lifecycle-dependencies' }));
-    return 1;
-  }
+  let stateStore: LifecycleStateStore | undefined;
+  let ownsStateStore = false;
+  let providers: DefaultLifecycleDecisionProviders;
   let decision: UpgradeDecision | RollbackDecision | UninstallDecision;
   try {
+    if (overrides.lifecycleDecisionProviders !== undefined) providers = overrides.lifecycleDecisionProviders;
+    else {
+      stateStore = overrides.lifecycleStateStore ?? createLifecycleStateStore(defaultLifecycleStatePath(), { readonly: true });
+      ownsStateStore = overrides.lifecycleStateStore === undefined;
+      providers = createDefaultLifecycleDecisionProviders(stateStore, { os: process.platform, arch: process.arch });
+    }
     decision = command.kind === 'upgrade' ? await providers.upgrade(command.checkpointId) : command.kind === 'rollback' ? await providers.rollback(command.checkpointId) : await providers.uninstall();
   } catch {
-    console.log(JSON.stringify({ kind: 'unsupported', command: command.kind, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inspect-lifecycle-state' }));
+    console.log(JSON.stringify({ kind: 'unsupported', command: command.kind, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inspect-lifecycle-state', remoteRetention: 'retain' }));
+    if (ownsStateStore) stateStore?.close();
     return 1;
   }
-  if (decision.kind === 'rejected') { console.log(JSON.stringify({ kind: decision.kind, reason: decision.reason })); return 1; }
+  if (ownsStateStore) stateStore?.close();
+  if (decision.kind === 'rejected') { console.log(JSON.stringify({ kind: decision.kind, reason: decision.reason, remoteRetention: 'retain' })); return 1; }
   if (command.kind === 'upgrade') {
     const value = decision as Extract<UpgradeDecision, { readonly kind: 'ready' }>;
     console.log(JSON.stringify({ kind: value.kind, action: value.action, checkpoint: { schemaVersion: value.checkpoint.schemaVersion, checkpointId: value.checkpoint.checkpointId, installationId: value.checkpoint.installationId, deploymentId: value.checkpoint.deploymentId, revisionId: value.checkpoint.revisionId, fromVersion: value.checkpoint.fromVersion, toVersion: value.checkpoint.toVersion }, remoteRetention: value.remoteRetention }));
