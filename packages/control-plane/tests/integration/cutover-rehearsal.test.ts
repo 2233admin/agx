@@ -12,6 +12,7 @@ import { prepareDeploymentOperationPlan } from '../../src/application/operation-
 import { applyDeploymentPlan, type DeploymentApplyPorts, type DeploymentApplyTargets } from '../../src/application/deployment-apply';
 import { prepareDeploymentPlan, type DeploymentPreflightPorts } from '../../src/application/deployment-preflight';
 import { projectStatus, type StatusProjectionInput } from '../../src/domain/status';
+import { decideRollback, decideUninstall, decideUpgrade, type LocalState, type ReleaseDescriptor, type UpgradeCheckpoint } from '../../src/domain/lifecycle';
 import { known } from '../../src/domain/facts';
 import type { ConfigRevisionRepository, GithubProjectPort, GithubRepositoryPort, ProviderActivationPort, ProviderInventoryPort } from '../../src/application/ports';
 
@@ -58,6 +59,10 @@ function completeEvidence() {
   ];
   return evaluateEvidence(evidenceInput(observations), EVIDENCE_NOW);
 }
+const lifecycleRelease: ReleaseDescriptor = { version: '1.2.3', tag: 'configs-v1.2.3', assetName: 'configs-windows-amd64.zip', assetSHA256: '1'.repeat(64), provenance: { repository: 'zaurakworks/agent-control', commitSHA: '2'.repeat(40) }, platform: { os: 'windows', arch: 'amd64' } };
+const lifecycleCheckpoint = (checkpointId: string): UpgradeCheckpoint => ({ schemaVersion: 'configs.lifecycle/v1', checkpointId, installationId: project.installationId, deploymentId: 'dep-user-flow', revisionId: 'rev-1', fromVersion: '1.2.2', toVersion: lifecycleRelease.version, release: lifecycleRelease, preUpgradeStateDigest: 'a'.repeat(64), postUpgradeStateDigest: 'b'.repeat(64), preUpgradeState: [], remoteRetention: 'retain' });
+const lifecyclePreState: LocalState = { digest: 'a'.repeat(64), records: [] };
+const lifecyclePostState: LocalState = { digest: 'b'.repeat(64), records: [] };
 
 describe('configs-primary cutover rehearsal', () => {
   test('runs preflight, interrupted apply, explicit resolution, verified status/diagnose, and legacy import without side effects', async () => {
@@ -98,10 +103,14 @@ describe('configs-primary cutover rehearsal', () => {
       const statusProjection: StatusProjectionInput = { activeRevision: known(revision), deployment: { deploymentId: 'dep-user-flow', phase: 'configured', lastOperationId: known('op-user-flow'), reason: null, nextAction: 'none' }, operation: operation!, launchPlans: [], readbacks: [{ kind: 'repository', resourceId: 'octocat/agent-control', digest: 'a'.repeat(64), ownership: 'created-by-configs', outcome: 'matched' }, { kind: 'project', resourceId: project.installationId, digest: 'b'.repeat(64), ownership: 'created-by-configs', outcome: 'matched' }, { kind: 'provider', resourceId: 'codex', digest: 'c'.repeat(64), ownership: 'created-by-configs', outcome: 'matched' }], evidence: completeEvidence() };
       expect(await main(['status'], { statusProjection: statusProjection })).toBe(0);
       expect(await main(['diagnose'], { statusProjection: statusProjection })).toBe(0);
+      const checkpoint = lifecycleCheckpoint('checkpoint-1');
+      expect(decideUpgrade({ checkpoint, release: lifecycleRelease, platform: lifecycleRelease.platform, currentState: lifecyclePreState, smoke: 'passed' }).kind).toBe('ready');
+      expect(decideUpgrade({ checkpoint, release: { ...lifecycleRelease, tag: 'v1.2.3' }, platform: lifecycleRelease.platform, currentState: lifecyclePreState, smoke: 'passed' }).kind).toBe('rejected');
+      expect(decideUpgrade({ checkpoint, release: lifecycleRelease, platform: lifecycleRelease.platform, currentState: { digest: lifecyclePreState.digest, records: [{ path: 'configs/state.json', digest: '3'.repeat(64), ownership: 'unknown', kind: 'file' }] }, smoke: 'passed' }).kind).toBe('rejected');
       const lifecycle: LifecycleDecisionProviders = {
-        upgrade: async (checkpointId) => ({ kind: 'ready', action: 'upgrade-locally-atomically', checkpoint: { schemaVersion: 'configs.lifecycle/v1', checkpointId, installationId: 'install-0123456789abcdef', deploymentId: 'dep-user-flow', revisionId: 'rev-1', fromVersion: '1.2.2', toVersion: '1.2.3', release: {} as never, preUpgradeStateDigest: 'a'.repeat(64), postUpgradeStateDigest: 'b'.repeat(64), preUpgradeState: [], remoteRetention: 'retain' } as never, remoteRetention: 'retain' }),
-        rollback: async () => ({ kind: 'ready', action: 'restore-local-atomically', restore: [], remoteRetention: 'retain' }),
-        uninstall: async () => ({ kind: 'ready', action: 'delete-owned-local-only', deletePaths: ['configs/state.json'], retainRemote: ['repositories', 'projects', 'provider-client'] }),
+        upgrade: async (checkpointId) => decideUpgrade({ checkpoint: lifecycleCheckpoint(checkpointId), release: lifecycleRelease, platform: lifecycleRelease.platform, currentState: lifecyclePreState, smoke: 'passed' }),
+        rollback: async (checkpointId) => decideRollback({ checkpoint: lifecycleCheckpoint(checkpointId), currentState: lifecyclePostState, smoke: 'passed' }),
+        uninstall: async () => decideUninstall({ localState: { digest: '3'.repeat(64), records: [{ path: 'configs/state.json', digest: '3'.repeat(64), ownership: 'created-by-configs', kind: 'file' }] }, remoteResources: ['repositories', 'projects', 'provider-client'] }),
       };
       expect(await main(['upgrade', '--checkpoint', 'checkpoint-1'], { lifecycleDecisionProviders: lifecycle })).toBe(0);
       expect(await main(['rollback', '--checkpoint', 'checkpoint-1'], { lifecycleDecisionProviders: lifecycle })).toBe(0);
