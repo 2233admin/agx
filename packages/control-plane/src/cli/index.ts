@@ -111,6 +111,9 @@ import {
   type ClaudeLaunchOutcome,
   type LaunchClaudeFreshDeps,
 } from '../application/claude-launch';
+import { applyDeploymentPlan, type DeploymentApplyPorts, type DeploymentApplyTargets } from '../application/deployment-apply';
+import { prepareDeploymentPlan, type DeploymentPreflightInput, type DeploymentPreflightPorts } from '../application/deployment-preflight';
+import type { OperationJournalPort } from '../application/ports';
 import { readYesNo } from './confirm-prompt';
 import { defaultDbPath } from './db-path';
 import { defaultSelfUpdateStatePath } from './self-update-state-path';
@@ -170,6 +173,7 @@ type ParsedCommand =
   | { readonly kind: 'show'; readonly id: string }
   | { readonly kind: 'status'; readonly planId: string | null }
   | { readonly kind: 'diagnose' }
+  | { readonly kind: 'init'; readonly mode: 'plan' | 'apply' }
   | { readonly kind: 'migrate-agx'; readonly root: string }
   | { readonly kind: 'compare'; readonly ids: readonly string[] }
   | { readonly kind: 'use' | 'switch'; readonly id: string; readonly client: ClientId; readonly yes: boolean; readonly forwardedArgs: readonly string[] }
@@ -540,11 +544,17 @@ function parseMigrateAgx(rest: readonly string[]): ParsedCommand {
   if (rest.length !== 2 || rest[0] !== '--root' || rest[1] === undefined || rest[1].trim() === '') return { kind: 'usage-error', message: `${t('parseError.missingMigrationRoot')}\n${usageLine()}` };
   return { kind: 'migrate-agx', root: rest[1] };
 }
+function parseInit(rest: readonly string[]): ParsedCommand {
+  if (rest.length !== 1 || (rest[0] !== '--plan' && rest[0] !== '--apply')) return { kind: 'usage-error', message: `${t('parseError.initMode')}\n${usageLine()}` };
+  return { kind: 'init', mode: rest[0] === '--plan' ? 'plan' : 'apply' };
+}
 function parseCommand(argv: readonly string[]): ParsedCommand {
   const [command, ...rest] = argv;
   switch (command) {
     case 'list':
       return { kind: 'list' };
+    case 'init':
+      return parseInit(rest);
     case 'show': {
       const id = rest[0];
       if (id === undefined) {
@@ -596,6 +606,8 @@ export interface CliOverrides {
   readonly statusProjection?: StatusProjectionInput;
   readonly statusProjectionLoader?: () => Promise<StatusProjectionInput | null>;
   readonly migrationImporter?: (root: string) => Promise<MigrationImportResult>;
+  readonly deploymentPlan?: { readonly journal: OperationJournalPort; readonly input: DeploymentPreflightInput; readonly ports: DeploymentPreflightPorts };
+  readonly deploymentApply?: { readonly journal: OperationJournalPort; readonly operationId: string; readonly deploymentId: string; readonly targets: DeploymentApplyTargets; readonly ports: DeploymentApplyPorts };
 }
 
 /**
@@ -1203,6 +1215,22 @@ async function runMigrateAgx(parsed: Extract<ParsedCommand, { kind: 'migrate-agx
   console.log(JSON.stringify(result));
   return result.kind === 'rejected' ? 1 : 0;
 }
+function unavailableInit(mode: 'plan' | 'apply'): number {
+  console.log(JSON.stringify({ kind: 'unsupported', command: `init-${mode}`, code: 'STATUS-SOURCE-UNAVAILABLE', nextAction: 'inject-deployment-dependencies' }));
+  return 0;
+}
+async function runInit(parsed: Extract<ParsedCommand, { kind: 'init' }>, overrides: CliOverrides): Promise<number> {
+  if (parsed.mode === 'plan') {
+    if (overrides.deploymentPlan === undefined) return unavailableInit(parsed.mode);
+    const result = await prepareDeploymentPlan(overrides.deploymentPlan.journal, overrides.deploymentPlan.input, overrides.deploymentPlan.ports);
+    console.log(JSON.stringify({ kind: result.kind, plan: result.plan, blockers: result.blockers.map(({ resource, reason }) => ({ resource, reason })), remoteRetention: result.remoteRetention }));
+    return result.kind === 'ready' ? 0 : 1;
+  }
+  if (overrides.deploymentApply === undefined) return unavailableInit(parsed.mode);
+  const result = await applyDeploymentPlan(overrides.deploymentApply.journal, overrides.deploymentApply.operationId, overrides.deploymentApply.targets, overrides.deploymentApply.ports);
+  console.log(JSON.stringify({ kind: result.kind, operation: result.operation === null ? null : { operationId: result.operation.operationId, deploymentId: result.operation.deploymentId, phase: result.operation.phase, remoteRetention: result.operation.remoteRetention, nextAction: result.operation.nextAction }, remoteRetention: result.remoteRetention, nextAction: result.nextAction }));
+  return result.kind === 'succeeded' ? 0 : 1;
+}
 export async function main(argv: readonly string[], overrides: CliOverrides = {}): Promise<number> {
   // `[DELTA]` IA first layer: `configs` with no subcommand at all is no
   // longer a usage error -- it prints the same usage text as a normal,
@@ -1234,6 +1262,7 @@ export async function main(argv: readonly string[], overrides: CliOverrides = {}
     return 1;
   }
   const legacyStatusOverride = parsed.kind === 'status' && overrides.statusProjection === undefined && overrides.statusProjectionLoader === undefined && (overrides.ompPort !== undefined || overrides.capabilityProbe !== undefined || overrides.contextWriter !== undefined);
+  if (parsed.kind === 'init') return await runInit(parsed, overrides);
   if (parsed.kind === 'diagnose') return await runUnifiedStatus('diagnose', overrides);
   if (parsed.kind === 'migrate-agx') return await runMigrateAgx(parsed, overrides);
   if (parsed.kind === 'status' && !legacyStatusOverride) return await runUnifiedStatus('status', overrides);
