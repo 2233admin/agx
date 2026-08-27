@@ -20,10 +20,10 @@ export class InMemoryOperationJournal implements OperationJournalPort {
     this.records.set(operationId, updated);
     return updated;
   }
-  async resolveInconclusive(operationId: string, resolution: OperationResolution): Promise<OperationJournalRecord> {
+  async resolveInconclusive(operationId: string, resolution: OperationResolution, now: string): Promise<OperationJournalRecord> {
     const current = this.records.get(operationId);
     if (current === undefined) throw new Error('operation not found');
-    const updated = resolveInconclusiveOperation(current, resolution);
+    const updated = resolveInconclusiveOperation(current, resolution, now);
     this.records.set(operationId, updated);
     return updated;
   }

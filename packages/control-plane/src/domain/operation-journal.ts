@@ -22,6 +22,7 @@ export interface OperationJournalRecord {
   readonly remoteRetention: 'retain';
   readonly nextAction: string;
 }
+export const OPERATION_RESOLUTION_MAX_AGE_MS = 15 * 60 * 1000;
 export type ResolutionOutcome = 'matched' | 'absent' | 'drifted';
 export interface OperationResolution {
   readonly operationId: string;
@@ -77,12 +78,14 @@ export function startOperationJournal(record: OperationJournalRecord): Operation
 export function resolveInconclusiveOperation(
   record: OperationJournalRecord,
   resolution: OperationResolution,
+  now: string,
 ): OperationJournalRecord {
   const pending = record.steps.find((step) => step.phase === 'inconclusive' || step.phase === 'pending');
   if (record.phase !== 'inconclusive' || pending === undefined ||
       resolution.operationId !== record.operationId || resolution.deploymentId !== record.deploymentId ||
       resolution.sequence !== pending.sequence || resolution.kind !== pending.kind || resolution.resource !== pending.resource ||
-      !/^[a-f0-9]{64}$/.test(resolution.fingerprint) || !Number.isFinite(Date.parse(resolution.observedAt))) {
+      !/^[a-f0-9]{64}$/.test(resolution.fingerprint) || !Number.isFinite(Date.parse(resolution.observedAt)) || !Number.isFinite(Date.parse(now)) ||
+      Date.parse(resolution.observedAt) > Date.parse(now) || Date.parse(now) - Date.parse(resolution.observedAt) > OPERATION_RESOLUTION_MAX_AGE_MS) {
     throw new Error('invalid operation resolution');
   }
   if (resolution.outcome !== 'matched') return { ...record, resolutions: [...(record.resolutions ?? []), resolution], phase: 'needs-manual-cleanup', nextAction: 'manual-cleanup' };

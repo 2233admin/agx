@@ -53,17 +53,27 @@ describe('recoverDeploymentOperation', () => {
       outcome: 'matched' as const, fingerprint: 'a'.repeat(64), observedAt: '2026-08-27T00:00:00Z',
     };
     await expect(recoverDeploymentOperation(journal, 'op-recovery', 'dep-recovery', targets, deps([]))).resolves.toMatchObject({ kind: 'inconclusive' });
-    await expect(journal.resolveInconclusive('op-recovery', { ...resolution, operationId: 'wrong' })).rejects.toThrow('invalid operation resolution');
-    const resumed = await resolveDeploymentOperation(journal, 'op-recovery', 'dep-recovery', resolution);
+    await expect(journal.resolveInconclusive('op-recovery', { ...resolution, operationId: 'wrong' }, '2026-08-27T00:00:01Z')).rejects.toThrow('invalid operation resolution');
+    const resumed = await resolveDeploymentOperation(journal, 'op-recovery', 'dep-recovery', resolution, '2026-08-27T00:00:01Z');
     expect(resumed.operation?.phase).toBe('needs-resume');
     expect(resumed.operation?.nextAction).toBe('resume-operation');
     expect(resumed.remoteRetention).toBe('retain');
+  });
+  test('rejects stale and future resolutions without persisting them', async () => {
+    for (const observedAt of ['2026-08-26T23:00:00.000Z', '2026-08-27T00:00:02.000Z']) {
+      const journal = new InMemoryOperationJournal(); await prepared(journal); const uncertainDeps = deps([]);
+      uncertainDeps.repositories = { ...uncertainDeps.repositories, provision: async () => ({ kind: 'inconclusive', stage: 'readback', reason: 'timeout', remoteRetention: 'retain' }) };
+      await applyDeploymentPlan(journal, 'op-recovery', targets, uncertainDeps);
+      const resolution = { operationId: 'op-recovery', deploymentId: 'dep-recovery', sequence: 1, kind: 'github-repository' as const, resource: 'octocat/agent-control', outcome: 'matched' as const, fingerprint: 'a'.repeat(64), observedAt };
+      await expect(resolveDeploymentOperation(journal, 'op-recovery', 'dep-recovery', resolution, '2026-08-27T00:00:01.000Z')).rejects.toThrow('invalid operation resolution');
+      expect((await journal.find('op-recovery'))?.resolutions).toEqual([]);
+    }
   });
   test('apply retries the resolved inconclusive step before later planned steps', async () => {
     const journal = new InMemoryOperationJournal(); await prepared(journal); const order: string[] = []; const first = deps(order); let attempts = 0;
     first.repositories = { ...first.repositories, provision: async () => { order.push('repo'); attempts += 1; return attempts === 1 ? { kind: 'inconclusive', stage: 'readback', reason: 'timeout', remoteRetention: 'retain' } : repoResult; } };
     await applyDeploymentPlan(journal, 'op-recovery', targets, first);
-    await resolveDeploymentOperation(journal, 'op-recovery', 'dep-recovery', { operationId: 'op-recovery', deploymentId: 'dep-recovery', sequence: 1, kind: 'github-repository', resource: 'octocat/agent-control', outcome: 'matched', fingerprint: 'a'.repeat(64), observedAt: '2026-08-27T00:00:00Z' });
+    await resolveDeploymentOperation(journal, 'op-recovery', 'dep-recovery', { operationId: 'op-recovery', deploymentId: 'dep-recovery', sequence: 1, kind: 'github-repository', resource: 'octocat/agent-control', outcome: 'matched', fingerprint: 'a'.repeat(64), observedAt: '2026-08-27T00:00:00Z' }, '2026-08-27T00:00:01Z');
     const resumed = await applyDeploymentPlan(journal, 'op-recovery', targets, deps(order));
     expect(resumed.operation?.phase).toBe('succeeded');
     expect(order).toEqual(['repo', 'repo', 'repo-readback', 'project', 'project-readback', 'provider']);

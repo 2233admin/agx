@@ -112,8 +112,9 @@ export async function resolveDeploymentOperation(
   operationId: string,
   deploymentId: string,
   resolution: OperationResolution,
+  now: string,
 ): Promise<DeploymentApplyResult> {
   if (resolution.operationId !== operationId || resolution.deploymentId !== deploymentId) return result('inconclusive', await journal.find(operationId), 'observe-remote-state');
-  const operation = await journal.resolveInconclusive(operationId, resolution);
+  const operation = await journal.resolveInconclusive(operationId, resolution, now);
   return result(operation.phase === 'needs-manual-cleanup' ? 'needs-manual-cleanup' : 'inconclusive', operation);
 }

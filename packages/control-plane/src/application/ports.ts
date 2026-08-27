@@ -42,7 +42,7 @@ export interface ConfigRevisionRepository {
 export interface OperationJournalPort {
   prepare(input: OperationPlanInput): Promise<OperationJournalRecord>;
   start(operationId: string): Promise<OperationJournalRecord>;
-  resolveInconclusive(operationId: string, resolution: OperationResolution): Promise<OperationJournalRecord>;
+  resolveInconclusive(operationId: string, resolution: OperationResolution, now: string): Promise<OperationJournalRecord>;
   appendStep(operationId: string, step: OperationStep): Promise<OperationJournalRecord>;
   finish(operationId: string, phase: 'succeeded' | 'failed' | 'cancelled', reason?: string): Promise<OperationJournalRecord>;
   find(operationId: string): Promise<OperationJournalRecord | null>;
