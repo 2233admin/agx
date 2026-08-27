@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
-import type { GithubRepositoryCommandPort, GithubRepositorySourcePort } from '../../src/application/ports';
+import type { GithubRepositoryCommandPort, GithubRepositoryGitPort, GithubRepositorySourcePort } from '../../src/application/ports';
 import type { GithubRepositoryTarget } from '../../src/domain/github-repository';
 import { GithubRepositoryAdapter, FsGithubRepositorySourcePort } from '../../src/adapters/github/repository';
 
@@ -132,6 +132,7 @@ describe('GithubRepositoryAdapter', () => {
     expect(gh.calls.find((args) => args[0] === 'repo' && args[1] === 'edit')).toEqual([
       'repo', 'edit', 'octocat/agent-control', '--enable-issues',
     ]);
+    expect(gh.calls.every((args) => args[0] !== '-C' && args[0] !== 'git')).toBe(true);
   });
 
   test('same-name repository is a typed collision and is never adopted or mutated', async () => {
@@ -209,8 +210,10 @@ describe('GithubRepositoryAdapter', () => {
   });
   test('snapshots only source content, excludes .git metadata, and leaves Git staging writable', async () => {
     const sourcePath = mkdtempSync(path.join(os.tmpdir(), 'github-source-'));
-    const git: GithubRepositoryCommandPort = {
+    const gitCalls: string[][] = [];
+    const git: GithubRepositoryGitPort = {
       async run(args) {
+        gitCalls.push([...args]);
         return { stdout: args.includes('rev-parse') ? `${INITIAL_COMMIT}\n` : '', exitCode: 0 };
       },
     };
@@ -226,6 +229,7 @@ describe('GithubRepositoryAdapter', () => {
       expect(readFileSync(path.join(result.snapshotPath, 'README.md'), 'utf8')).toBe('hello');
       expect(statSync(path.join(result.snapshotPath, 'README.md')).mode & 0o200).toBe(0);
       expect(statSync(result.snapshotPath).mode & 0o200).not.toBe(0);
+      expect(gitCalls.every((args) => args[0] === '-C' && !args.includes('git'))).toBe(true);
       const withGitDigest = result.contentDigest;
       rmSync(result.snapshotPath, { recursive: true, force: true });
       rmSync(path.join(sourcePath, '.git'), { recursive: true, force: true });
@@ -244,9 +248,9 @@ describe('GithubRepositoryAdapter', () => {
     let snapshotPath = '';
     try {
       writeFileSync(path.join(sourcePath, 'README.md'), 'hello');
-      const git: GithubRepositoryCommandPort = {
+      const git: GithubRepositoryGitPort = {
         async run(args) {
-          snapshotPath = args[2] ?? snapshotPath;
+          snapshotPath = args[1] ?? snapshotPath;
           return { stdout: args.includes('rev-parse') ? `${INITIAL_COMMIT}\n` : '', exitCode: args.includes('add') ? 1 : 0 };
         },
       };

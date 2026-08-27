@@ -30,6 +30,10 @@ export interface GithubRepositoryCommandPort {
   run(args: readonly string[]): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
 }
 
+export interface GithubRepositoryGitPort {
+  run(args: readonly string[]): Promise<{ readonly stdout: string; readonly exitCode: number | null }>;
+}
+
 export interface GithubRepositoryPort {
   preflight(target: GithubRepositoryTarget): Promise<GithubRepositoryPreflightResult>;
   readback(target: GithubRepositoryTarget): Promise<GithubRepositoryReadbackResult>;

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { known } from '../../domain/facts';
 import type {
   GithubRepositoryCommandPort,
+  GithubRepositoryGitPort,
   GithubRepositoryPort,
   GithubRepositorySourcePort,
   GithubRepositorySourceValidation,
@@ -144,9 +145,8 @@ function snapshotDigest(files: readonly SnapshotFile[]): string {
   }
   return hash.digest('hex');
 }
-
 export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort {
-  constructor(private readonly command: GithubRepositoryCommandPort) {}
+  constructor(private readonly git: GithubRepositoryGitPort) {}
   async validate(sourcePath: string): Promise<GithubRepositorySourceValidation> {
     let snapshotPath: string | null = null;
     try {
@@ -188,16 +188,16 @@ export class FsGithubRepositorySourcePort implements GithubRepositorySourcePort 
         await writeFile(destination, file.content, { mode: 0o400 });
       }
       const runGit = async (args: readonly string[]): Promise<{ readonly stdout: string }> => {
-        const result = await this.command.run(args);
+        const result = await this.git.run(args);
         if (result.exitCode !== 0) throw new Error('git staging command failed');
         return result;
       };
-      await runGit(['git', '-C', snapshotPath, 'init', '--initial-branch=main']);
-      await runGit(['git', '-C', snapshotPath, 'config', 'user.name', 'configs']);
-      await runGit(['git', '-C', snapshotPath, 'config', 'user.email', 'configs@users.noreply.github.com']);
-      await runGit(['git', '-C', snapshotPath, 'add', '--all']);
-      await runGit(['git', '-C', snapshotPath, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize repository']);
-      const initialCommit = (await runGit(['git', '-C', snapshotPath, 'rev-parse', 'HEAD'])).stdout.trim();
+      await runGit(['-C', snapshotPath, 'init', '--initial-branch=main']);
+      await runGit(['-C', snapshotPath, 'config', 'user.name', 'configs']);
+      await runGit(['-C', snapshotPath, 'config', 'user.email', 'configs@users.noreply.github.com']);
+      await runGit(['-C', snapshotPath, 'add', '--all']);
+      await runGit(['-C', snapshotPath, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize repository']);
+      const initialCommit = (await runGit(['-C', snapshotPath, 'rev-parse', 'HEAD'])).stdout.trim();
       if (!HEX_COMMIT.test(initialCommit)) throw new Error('invalid staged initial commit');
       await chmod(snapshotPath, 0o700);
       return { kind: 'valid', snapshotPath, contentDigest, initialCommit };
