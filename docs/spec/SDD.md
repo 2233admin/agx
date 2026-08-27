@@ -19,7 +19,7 @@
 
 ## Bundle 和验收
 
-Bundle v2 包含 schema/version、兼容范围、唯一 `agent-plugins` 上游与分发 provenance、release commit、asset/content SHA-256，以及 bootstrap 模板版本、内容摘要和三个参考仓固定提交。生产解析在任何 auth-dependent mutation 前验证完整性，并拒绝 sibling checkout、mutable ref 与旧的双组件 Bundle。
+- Bundle v2 包含 schema/version、兼容范围、唯一 `agent-plugins` 上游与分发 provenance、release commit、asset/content SHA-256，以及可选的、平台绑定的 `configs_runtime` 直接可执行文件描述和其 asset/content SHA-256；它还包含 bootstrap 模板版本、内容摘要和三个参考仓固定提交。生产解析在任何 auth-dependent mutation 前验证完整性，并拒绝 sibling checkout、mutable ref 与旧的双组件 Bundle。
 
 初始化计划包含安装 ID、目标 owner/name/visibility、模板版本/摘要、provider/profile 和待新增对象。所有目标仓与 provider 必须在第一次写入前完成只读 preflight。每创建一个仓库都立即持久化回执；若外部命令返回不确定结果，先结构化回读并进入 `needs_resume` 或 `needs_manual_cleanup`。卸载只撤销可证明由 AGX 新增的 provider 对象并删除本地 owned files，远端仓库始终保留。
 

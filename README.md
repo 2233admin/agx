@@ -50,7 +50,7 @@ agx init --root D:\agx\installations\default --github-owner octo-lab --provider 
 
 AGX 负责：
 
-- `plan`、`apply`、`init`、`status`、`diagnose`、`uninstall`、`version`
+- `plan`、`apply`、`config`、`init`、`status`、`diagnose`、`uninstall`、`version`
 - 消费固定版本与摘要的唯一 `agent-plugins` Release artifact
 - 从版本化、摘要固定的干净模板创建部署专属 `agent-control` / `agent-contracts` 仓库
 - 创建、关联并结构化回读部署专属 GitHub Project
