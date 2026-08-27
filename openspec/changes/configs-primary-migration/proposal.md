@@ -59,7 +59,7 @@ The command names may be grouped according to the upstream CLI contract, but eve
 The proposal is successful only when:
 
 - a fresh deployment uses `configs` without AGX Bundle download or local AGX installer state;
-- an old AGX deployment can be imported through a read-only, checkpointed migration and reconciled against new state;
+- an old AGX deployment can first be inspected through a read-only migration plan, then (after explicit operator confirmation) imported and reconciled through a controlled state-changing apply phase;
 - all capability-map rows have parity evidence and explicit ownership;
 - failure, retry, inconclusive remote mutation, drift, rollback, and uninstall behaviors are testable;
 - code and release scans show the old installer, Bundle, archive extraction, and sidecar are not production paths;

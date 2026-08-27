@@ -2,9 +2,9 @@
 
 ## Change status
 
-Draft OpenSpec change for the Agent System X Project. This change supersedes the thin sidecar design in `docs/superpowers/specs/2026-08-26-agent-system-x-merge-design.md` and the implementation context from commits `dc61e62`, `7cf5458`, and `77061a0`. Those commits demonstrate the existing AGX Bundle, installer, Receipt, runtime bridge, and status behavior; they are not the target architecture.
+Draft OpenSpec change for the Agent System X Project. This change supersedes the thin sidecar design in `docs/superpowers/specs/2026-08-26-agent-system-x-merge-design.md`. Earlier branch commits `dc61e62`, `7cf5458`, and `77061a0` include the superseded AGX Bundle/installer/Receipt/runtime-bridge sidecar implementation and status work; they are historical context, not the final architecture.
 
-The change is design and planning only. It does not modify product code, the production manifest, or `.serena/`.
+This OpenSpec change itself contains no product-code edits. It does not modify the production manifest or `.serena/`; implementation commits from the earlier branch remain superseded until the configs-primary migration is approved and delivered.
 
 ## Decision
 
