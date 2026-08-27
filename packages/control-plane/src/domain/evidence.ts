@@ -118,6 +118,7 @@ function validateRef(kind: EvidenceKind, ref: unknown): boolean {
 }
 
 function validateObservation(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const observation = value as Record<string, unknown>;
   if (Object.keys(observation).some((key) => !['schemaVersion', 'evaluatorVersion', 'source', 'kind', 'installationId', 'deploymentDigest', 'subjectDigest', 'ref', 'fingerprint', 'outcome', 'observedAt'].includes(key))) return false;
   return observation.schemaVersion === EVIDENCE_OBSERVATION_SCHEMA_V1 && observation.evaluatorVersion === EVIDENCE_EVALUATOR_V1 &&

@@ -93,5 +93,9 @@ describe('Evidence evaluator', () => {
     expect(decodeEvidenceInput('{"schemaVersion":"x","schemaVersion":"y"}').kind).toBe('rejected');
     expect(decodeEvidenceInput('{} {}').kind).toBe('rejected');
     expect(decodeEvidenceInput('x'.repeat(MAX_EVIDENCE_INPUT_BYTES + 1)).kind).toBe('rejected');
+    const validEnvelope = input('github-delivery/v1', []);
+    for (const invalidObservation of [null, 42, []]) {
+      expect(decodeEvidenceInput(JSON.stringify({ ...validEnvelope, observations: [invalidObservation] })).kind).toBe('rejected');
+    }
   });
 });
