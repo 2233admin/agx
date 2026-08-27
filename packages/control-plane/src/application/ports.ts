@@ -24,6 +24,7 @@ import type {
   ProviderName,
 } from '../domain/provider';
 import type { MulticaReadbackResult, MulticaSubject } from '../domain/multica';
+import type { OperationJournalRecord, OperationPlanInput, OperationStep } from '../domain/operation-journal';
 import type { ClaudeContentMaterializationResult } from '../adapters/clients/claude/content-materializer';
 import type { SupplyRefRejection } from '../cli/supply-root';
 
@@ -36,6 +37,12 @@ import type { SupplyRefRejection } from '../cli/supply-root';
 export interface ConfigRevisionRepository {
   listAll(): Promise<readonly StableConfigRevision[]>;
   findById(revisionId: string): Promise<StableConfigRevision | null>;
+}
+
+export interface OperationJournalPort {
+  prepare(input: OperationPlanInput): Promise<OperationJournalRecord>;
+  appendStep(operationId: string, step: OperationStep): Promise<OperationJournalRecord>;
+  find(operationId: string): Promise<OperationJournalRecord | null>;
 }
 export interface MulticaCommandPort {
   available(signal: AbortSignal): Promise<boolean>;

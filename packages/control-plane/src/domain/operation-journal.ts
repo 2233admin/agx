@@ -1,0 +1,48 @@
+export type OperationStepKind = 'github-repository' | 'github-project' | 'provider-activation';
+export type OperationStepPhase = 'pending' | 'succeeded' | 'inconclusive' | 'needs-manual-cleanup';
+
+export interface OperationStep {
+  readonly sequence: number;
+  readonly kind: OperationStepKind;
+  readonly resource: string;
+  readonly phase: OperationStepPhase;
+  readonly reason?: string;
+}
+
+export interface OperationJournalRecord {
+  readonly operationId: string;
+  readonly deploymentId: string;
+  readonly phase: 'prepared' | 'inconclusive' | 'needs-manual-cleanup';
+  readonly steps: readonly OperationStep[];
+  readonly remoteRetention: 'retain';
+  readonly nextAction: 'start-operation' | 'observe-remote-state' | 'manual-cleanup';
+}
+
+export interface OperationPlanStep {
+  readonly kind: OperationStepKind;
+  readonly resource: string;
+}
+
+export interface OperationPlanInput {
+  readonly operationId: string;
+  readonly deploymentId: string;
+  readonly steps: readonly OperationPlanStep[];
+}
+
+export function createOperationJournal(input: OperationPlanInput): OperationJournalRecord {
+  if (input.operationId.trim() === '' || input.deploymentId.trim() === '' || input.steps.length === 0) throw new Error('invalid operation plan');
+  const steps = input.steps.map((step, index) => {
+    if (step.resource.trim() === '') throw new Error('invalid operation plan step');
+    return { sequence: index + 1, kind: step.kind, resource: step.resource, phase: 'pending' as const };
+  });
+  return { operationId: input.operationId, deploymentId: input.deploymentId, phase: 'prepared', steps, remoteRetention: 'retain', nextAction: 'start-operation' };
+}
+export function appendOperationStep(record: OperationJournalRecord, step: OperationStep): OperationJournalRecord {
+  if (step.phase === ('verified' as OperationStepPhase)) throw new Error('verified requires evaluator-approved evidence');
+  const pending = record.steps.find((value) => value.phase === 'pending');
+  if (pending === undefined || step.sequence !== pending.sequence) throw new Error('operation step sequence is not append-only');
+  const steps = record.steps.map((value) => value.sequence === step.sequence ? step : value);
+  if (step.phase === 'inconclusive') return { ...record, steps, phase: 'inconclusive', nextAction: 'observe-remote-state' };
+  if (step.phase === 'needs-manual-cleanup') return { ...record, steps, phase: 'needs-manual-cleanup', nextAction: 'manual-cleanup' };
+  return { ...record, steps };
+}
