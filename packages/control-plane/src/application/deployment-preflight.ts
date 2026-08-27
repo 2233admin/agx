@@ -40,6 +40,49 @@ export interface DeploymentPreflightBlocker {
 export type DeploymentPreflightResult =
   | { readonly kind: 'ready'; readonly plan: OperationJournalRecord; readonly blockers: readonly []; readonly remoteRetention: 'retain' }
   | { readonly kind: 'blocked'; readonly plan: OperationJournalRecord; readonly blockers: readonly DeploymentPreflightBlocker[]; readonly remoteRetention: 'retain' };
+interface NormalizedDeploymentInput {
+  readonly input: DeploymentPreflightInput;
+  readonly blockers: readonly DeploymentPreflightBlocker[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeInput(value: unknown): NormalizedDeploymentInput {
+  const raw = isRecord(value) ? value : {};
+  const blockers: DeploymentPreflightBlocker[] = [];
+  if (raw.repositories !== undefined && !Array.isArray(raw.repositories)) blockers.push({ resource: '(invalid repositories)', reason: 'invalid-repositories-input' });
+  const repositories: GithubRepositoryTarget[] = [];
+  for (const target of Array.isArray(raw.repositories) ? raw.repositories : []) {
+    if (isRecord(target) && typeof target.owner === 'string' && typeof target.name === 'string') repositories.push(target as unknown as GithubRepositoryTarget);
+    else blockers.push({ resource: '(invalid repository target)', reason: 'invalid-repository-input' });
+  }
+  if (raw.providers !== undefined && !Array.isArray(raw.providers)) blockers.push({ resource: '(invalid providers)', reason: 'invalid-providers-input' });
+  const providers: ProviderActivationTarget[] = [];
+  for (const target of Array.isArray(raw.providers) ? raw.providers : []) {
+    if (isRecord(target) && typeof target.provider === 'string' && typeof target.marketplaceSource === 'string' && Array.isArray(target.plugins)) providers.push(target as unknown as ProviderActivationTarget);
+    else blockers.push({ resource: '(invalid provider target)', reason: 'invalid-provider-input' });
+  }
+  if (raw.multicaSubjects !== undefined && !Array.isArray(raw.multicaSubjects)) blockers.push({ resource: '(invalid Multica subjects)', reason: 'invalid-multica-input' });
+  const multicaSubjects: MulticaSubject[] = [];
+  for (const subject of Array.isArray(raw.multicaSubjects) ? raw.multicaSubjects : []) {
+    if (isRecord(subject) && typeof subject.kind === 'string' && typeof subject.id === 'string') multicaSubjects.push(subject as unknown as MulticaSubject);
+    else blockers.push({ resource: '(invalid Multica subject)', reason: 'invalid-multica-input' });
+  }
+  const project = isRecord(raw.project) ? raw.project as unknown as GithubProjectTarget : null;
+  const normalized: DeploymentPreflightInput = {
+    deploymentId: typeof raw.deploymentId === 'string' ? raw.deploymentId : '',
+    operationId: typeof raw.operationId === 'string' ? raw.operationId : '',
+    revisionId: typeof raw.revisionId === 'string' ? raw.revisionId : '[invalid-revision-id]',
+    repositories,
+    project: project as GithubProjectTarget,
+    providers,
+    multicaSubjects,
+  };
+  if (raw.revisionId !== undefined && typeof raw.revisionId !== 'string') blockers.push({ resource: '(invalid revision id)', reason: 'invalid-revision-input' });
+  return { input: normalized, blockers };
+}
 
 const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 function repositoryResource(target: GithubRepositoryTarget): string { return `${target.owner}/${target.name}`; }
@@ -124,9 +167,11 @@ export async function prepareDeploymentPlan(
   input: DeploymentPreflightInput,
   ports: DeploymentPreflightPorts,
 ): Promise<DeploymentPreflightResult> {
+  const normalized = normalizeInput(input);
+  input = normalized.input;
   const planInput = buildPlanInput(input);
   const diagnostic = diagnosticPlan(planInput);
-  const blockers = [...inputBlockers(input)];
+  const blockers = [...normalized.blockers, ...inputBlockers(input)];
   if (blockers.length > 0) return { kind: 'blocked', plan: diagnostic, blockers, remoteRetention: 'retain' };
   try {
     const revision = await ports.revision.findById(input.revisionId);

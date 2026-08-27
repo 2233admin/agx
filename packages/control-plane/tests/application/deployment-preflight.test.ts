@@ -114,6 +114,21 @@ describe('prepareDeploymentPlan preflight', () => {
     expect(result.blockers.map((blocker) => blocker.reason)).toEqual(['duplicate-repository-target', 'duplicate-provider-target']);
     expect(journal.prepareCalls).toBe(0);
   });
+  test('normalizes non-array fields and invalid target entries without journal or remote calls', async () => {
+    const journal = new RecordingJournal();
+    const result = await prepareDeploymentPlan(journal, {
+      ...input(),
+      revisionId: 42 as unknown as string,
+      repositories: [null as unknown as GithubRepositoryTarget],
+      providers: 'invalid' as unknown as typeof PROVIDERS,
+      multicaSubjects: null as unknown as readonly MulticaSubject[],
+    }, readyPorts());
+    expect(result.kind).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.reason)).toEqual([
+      'invalid-repository-input', 'invalid-providers-input', 'invalid-multica-input', 'invalid-revision-input',
+    ]);
+    expect(journal.prepareCalls).toBe(0);
+  });
   test('keeps repositories with equal names but different owners distinct', async () => {
     const otherOwner = { ...REPOSITORIES[1]!, owner: 'other-owner' };
     const result = await prepareDeploymentPlan(new InMemoryOperationJournal(), input({ repositories: [REPOSITORIES[1]!, otherOwner] }), readyPorts());
