@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstat, open, readFile } from 'node:fs/promises';
+import { lstat, open } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { assessLegacyReceipt, type ImportedLegacyBinding, type LegacyReceipt, type MigrationCheckpoint } from '../../domain/migration';
 
@@ -7,8 +8,7 @@ export type MigrationImportResult =
   | { readonly kind: 'imported'; readonly checkpoint: MigrationCheckpoint }
   | { readonly kind: 'requires-manual-review'; readonly reason: 'sidecar-runtime-not-authoritative' | 'requires-ownership-verification' }
   | { readonly kind: 'rejected'; readonly reason: 'invalid-root' | 'receipt-missing' | 'receipt-invalid-json' | 'receipt-invalid' | 'io-failure' | 'unsafe-path' | 'symlink-or-reparse' | 'owned-file-missing' | 'owned-file-not-regular' | 'owned-file-digest-mismatch' | 'source-digest-mismatch' | 'invalid-checkpoint-time' };
-
-export interface MigrationImportOptions { readonly now?: string; }
+export interface MigrationImportOptions { readonly clock?: () => string; }
 
 function sha256(data: Uint8Array): string { return createHash('sha256').update(data).digest('hex'); }
 function error(reason: Extract<MigrationImportResult, { readonly kind: 'rejected' }>['reason']): MigrationImportResult { return { kind: 'rejected', reason }; }
@@ -22,6 +22,39 @@ async function ensureDirectory(target: string): Promise<MigrationImportResult | 
   if (stat.value.isSymbolicLink()) return error('symlink-or-reparse');
   if (!stat.value.isDirectory()) return error('unsafe-path');
   return null;
+}
+function statIdentity(stat: Awaited<ReturnType<typeof lstat>>): string | null {
+  const device = Number(stat.dev); const inode = Number(stat.ino);
+  if (!Number.isFinite(device) || !Number.isFinite(inode) || device <= 0 || inode <= 0) return null;
+  return `${device}:${inode}:${stat.size}:${stat.mtimeMs}`;
+}
+async function readStableFile(root: string, relative: string, missingReason: 'receipt-missing' | 'owned-file-missing'): Promise<{ readonly ok: true; readonly data: Uint8Array } | MigrationImportResult> {
+  const parts = relative.split('/'); let current = root; const before: string[] = [];
+  for (const [index, part] of parts.entries()) {
+    current = path.join(current, part);
+    const stat = await safeStat(current);
+    if (!stat.ok) return index === parts.length - 1 ? error(missingReason) : error(stat.reason);
+    if (stat.value.isSymbolicLink()) return error('symlink-or-reparse');
+    if (index < parts.length - 1 && !stat.value.isDirectory()) return error('unsafe-path');
+    if (index === parts.length - 1 && !stat.value.isFile()) return error('owned-file-not-regular');
+    const identity = statIdentity(stat.value);
+    if (identity === null) return error('symlink-or-reparse');
+    before.push(identity);
+  }
+  let handle: FileHandle;
+  try { handle = await open(current, 'r'); } catch { return error('io-failure'); }
+  try {
+    const opened = statIdentity(await handle.stat());
+    if (opened === null || opened !== before[before.length - 1]) return error('symlink-or-reparse');
+    const data = await handle.readFile();
+    let verify = root;
+    for (const [index, part] of parts.entries()) {
+      verify = path.join(verify, part);
+      const stat = await safeStat(verify);
+      if (!stat.ok || stat.value.isSymbolicLink() || statIdentity(stat.value) !== before[index]) return error('symlink-or-reparse');
+    }
+    return { ok: true, data };
+  } catch { return error('io-failure'); } finally { await handle.close(); }
 }
 async function ensureNoFollowPath(root: string, relative: string, finalKind: 'file' | 'directory'): Promise<MigrationImportResult | null> {
   const parts = relative.split('/');
@@ -57,13 +90,11 @@ export async function importLegacyReceipt(root: string, options: MigrationImport
   if (!isAbsoluteRoot(root)) return error('invalid-root');
   const rootResult = await ensureDirectory(root);
   if (rootResult !== null) return rootResult;
-  const receiptPath = path.join(root, '.agx', 'receipt.json');
   const agxResult = await ensureDirectory(path.join(root, '.agx'));
   if (agxResult !== null) return agxResult.kind === 'rejected' && agxResult.reason === 'receipt-missing' ? error('receipt-missing') : agxResult;
-  const receiptStat = await ensureNoFollowPath(root, '.agx/receipt.json', 'file');
-  if (receiptStat !== null) return receiptStat;
-  let bytes: Uint8Array;
-  try { bytes = await readFile(receiptPath); } catch { return error('io-failure'); }
+  const receiptRead = await readStableFile(root, '.agx/receipt.json', 'receipt-missing');
+  if ('kind' in receiptRead) return receiptRead;
+  const bytes = receiptRead.data;
   const receiptDigest = sha256(bytes);
   const parsed = parseReceipt(bytes);
   if ('kind' in parsed && parsed.kind !== undefined) return parsed as MigrationImportResult;
@@ -73,13 +104,11 @@ export async function importLegacyReceipt(root: string, options: MigrationImport
   const componentResult = await ensureNoFollowPath(root, component.path, 'directory');
   if (componentResult !== null) return componentResult;
   for (const ownedPath of receipt.owned_files) {
-    const pathResult = await ensureNoFollowPath(root, ownedPath, 'file');
-    if (pathResult !== null) return pathResult;
-    let content: Uint8Array;
-    try { content = await readFile(path.join(root, ...ownedPath.split('/'))); } catch { return error('io-failure'); }
-    if (sha256(content) !== receipt.owned_file_sha256[ownedPath]) return error('owned-file-digest-mismatch');
+    const contentRead = await readStableFile(root, ownedPath, 'owned-file-missing');
+    if ('kind' in contentRead) return contentRead;
+    if (sha256(contentRead.data) !== receipt.owned_file_sha256[ownedPath]) return error('owned-file-digest-mismatch');
   }
-  const now = options.now ?? new Date().toISOString();
+  const now = options.clock?.() ?? new Date().toISOString();
   if (!Number.isFinite(Date.parse(now))) return error('invalid-checkpoint-time');
   const ownedDigests = receipt.owned_file_sha256;
   const binding: ImportedLegacyBinding = { installationId: receipt.installation_id, bundleId: receipt.bundle_id, bundleSHA256: receipt.bundle_sha256, templateVersion: receipt.template_version, templateContentSHA256: receipt.template_content_sha256, component: { name: component.name, repository: component.repository, distributionRepository: component.distribution_repository, commitSHA: component.commit_sha, assetSHA256: component.asset_sha256, path: component.path }, ownedFiles: [...receipt.owned_files].sort(), ownedFileSHA256: ownedDigests };

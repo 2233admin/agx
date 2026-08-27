@@ -20,7 +20,7 @@ async function fixture(value = receipt()) {
 describe('legacy receipt importer', () => {
   test('imports a real receipt after no-follow ownership and digest verification', async () => {
     const root = await fixture();
-    const result = await importLegacyReceipt(root, { now: '2026-08-27T00:00:00.000Z' });
+    const result = await importLegacyReceipt(root, { clock: () => '2026-08-27T00:00:00.000Z' });
     expect(result.kind).toBe('imported');
     if (result.kind === 'imported') expect(result.checkpoint).toEqual(expect.objectContaining({ schemaVersion: 'configs.migration/v1', installationId: 'install-1', sourceReceiptSHA256: expect.stringMatching(/^[a-f0-9]{64}$/) }));
   });
@@ -45,5 +45,9 @@ describe('legacy receipt importer', () => {
     const root = await fixture(receipt({ configs_runtime: { path: 'components/configs-runtime/configs.exe' } }));
     const before = await importLegacyReceipt(root);
     expect(before).toEqual({ kind: 'requires-manual-review', reason: 'sidecar-runtime-not-authoritative' });
+  });
+  test('rejects an invalid injected test clock without accepting caller-provided checkpoint time', async () => {
+    const root = await fixture();
+    expect(await importLegacyReceipt(root, { clock: () => 'not-a-time' })).toEqual({ kind: 'rejected', reason: 'invalid-checkpoint-time' });
   });
 });
