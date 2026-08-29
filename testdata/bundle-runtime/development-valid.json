@@ -15,6 +15,24 @@
       "download_url": "https://example.invalid/agent-plugins.tar.gz",
       "asset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "configs_runtime": {
+      "runtime_id": "configs",
+      "runtime_version": "configs-v0.synthetic",
+      "source_repository": "2233admin/agent-systemX",
+      "release_tag": "configs-v0.synthetic",
+      "commit_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "contract_version": "configs/v1",
+      "artifacts": [
+        {
+          "platform": "windows",
+          "architecture": "amd64",
+          "asset_name": "configs-windows-amd64.exe",
+          "download_url": "https://example.invalid/configs-windows-amd64.exe",
+          "asset_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ]
     }
   },
   "templates": {

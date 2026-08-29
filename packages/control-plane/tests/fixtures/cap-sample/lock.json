@@ -1,0 +1,16 @@
+{
+  "profiles": {
+    "general": {
+      "layer_digest": "sha256:general-fixture-digest",
+      "inventory": {
+        "skills": ["openspec-explore", "grilling"],
+        "mcps": [],
+        "hooks": [],
+        "plugins": []
+      }
+    }
+  },
+  "project_skill_imports": [
+    { "name": "grilling", "source": "plugins/grilling/skills/grilling" }
+  ]
+}

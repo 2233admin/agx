@@ -1,0 +1,22 @@
+version = 3
+prompt = ".cap/prompts/general.md"
+
+[skills]
+allow = []
+deny = []
+override = []
+
+[mcps]
+allow = []
+deny = []
+override = []
+
+[hooks]
+allow = []
+deny = []
+override = []
+
+[plugins]
+allow = []
+deny = []
+override = []

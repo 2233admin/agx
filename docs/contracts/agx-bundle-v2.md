@@ -1,6 +1,6 @@
-# AGX Bundle v2 单一 Plugin 源契约
+# Agent System X Project — AGX Bundle v2 单一 Plugin 源契约
 
-状态：`IMPLEMENTED_PENDING_MERGE`。`2233admin` 是 Bundle/provenance decision owner。Bundle v2 只安装一个 Plugin 源；`agent-control`、`agent-contracts` 是初始化阶段从版本化模板创建的部署仓库，不是预先存在的 Release 组件。Plugin Source 是 `zaurakworks/agent-system`；生产输入是 `2233admin` 的 immutable Release。AGX 不跟随 Source git `main`。
+状态：`IMPLEMENTED_PENDING_MERGE`。AGXCLI 的对外品牌为 Agent System X Project；`2233admin` 是 Bundle/provenance decision owner。Bundle v2 只安装一个 Plugin 源；`agent-control`、`agent-contracts` 是初始化阶段从版本化模板创建的部署仓库，不是预先存在的 Release 组件。Plugin Source 是 `zaurakworks/agent-system`；生产输入是 `2233admin` 的 immutable Release。AGX 不跟随 Source git `main`。
 
 ## 生产输入
 
@@ -16,19 +16,40 @@
 
 生产模式只接受 `github_release` provenance，且 URL 必须精确落在固定分发仓库、Release tag 与 asset 名组合出的路径。生产拒绝 sibling checkout、可变 branch/tag、本地路径、旧 `artifacts` 双组件结构和任何 `agent_control` source。Multica 不属于 Bundle v2 compatibility；出现 `multica_cli` 会按未知字段拒绝。
 
+## `configs` runtime sidecar
+
+Phase 1 may add `sources.configs_runtime` as an additive, platform-specific direct executable
+descriptor. It binds the `2233admin/agent-systemX` source, a `configs-v*` release tag, source
+commit, contract version, one or more `windows`/`linux`/`darwin` plus `amd64`/`arm64`
+artifacts, and both asset/content SHA-256 digests. The runtime is installed at
+`components/configs-runtime/configs` (or `configs.exe` on Windows). Unlike
+`agent_plugins`, it is never treated as an archive and is never extracted.
+
+The upstream release prerequisite is currently open: no published `configs-v*` release was
+available when this contract was implemented. Therefore the embedded production manifest remains
+unchanged and contains no fabricated runtime tag, URL, commit, or digest. Synthetic development
+fixtures may exercise the descriptor and installer using deterministic test bytes. A production
+manifest carrying `configs_runtime` must use exact GitHub Release asset URLs and pass all digest and
+provenance checks.
+
+安装后统一入口为 `agx config --root <directory> <subcommand> ...`。AGX 只校验 Receipt
+绑定、路径归属和 runtime/content digest，然后直接透传 argv、标准输入输出和退出码；
+runtime 配置数据库路径由 `CONTROL_PLANE_DB_PATH` 固定在安装目录内。`agx status` 的
+human/JSON 输出只显示 allowlisted binding、平台和完整性状态，不代表配置已生效，也不
+提升现有 `verified` 状态。
+
 ## 模板元数据
 
 `templates` 记录初始化模板集的版本、确定性内容 SHA-256，以及提炼模板时只读参考的三个仓库和精确 head：
 
 - `zaurakworks/agent-plugins` @ `ad07742ade0f0039ed1df1a9262e8f087117fca0`；
 - `zaurakworks/agent-system` @ `b0e6e0e8244ef518f671e2326745cd67c6d2307a`（改名后仍可寻址的历史蒸馏快照，不是 untagged main）；
-- `zaurakworks/agent-contracts` @ `5bb8ea0b54f063b0758c294b73ea270ba69322d2`。
+- `zaurakworks/agent-contracts` @ `5bb8ea0b54f063b0758c294b73ea270ba69322d2`.
 
 这些 reference 只解释模板来源与取舍，不把部署仓 `agent-control` / `agent-contracts` 或 Source 整树变成安装组件。模板集版本是 `bootstrap-20260819.1`，未渲染 embedded source manifest 的固定 SHA-256 是 `66b4db310377e9dfb173b3e39f4bc54665313ad2c4f6ee80602e941ea453e005`；部署参数产生的 rendered tree digest 由初始化回执另行记录。
 
 ## 安装回执
-
-Apply 先分别验证压缩资产和 gzip 解压后的 tar 字节流摘要，再只解包 `components/agent-plugins`。`agx.receipt/v2` 必须恰好记录一个 `agent-plugins` component，其 `repository` 为上游身份、`distribution_repository` 为分发身份；所有 owned file 必须位于该组件。`owned_file_sha256` 与 owned file 一一绑定，使 Status、重复 Apply 与 Uninstall 能拒绝内容篡改。回执同时记录 `template_version` 与 `template_content_sha256`，供后续初始化计划和漂移检查使用。
+Apply 先分别验证压缩资产和 gzip 解压后的 tar 字节流摘要，再只解包 `components/agent-plugins`；若 Bundle 带有 `configs_runtime`，则另行下载并校验平台特定的直接可执行文件，不经过 archive extractor。`agx.receipt/v2` 必须恰好记录一个 `agent-plugins` component，并可选记录最小 `configs_runtime` binding，其 `repository` 为上游身份、`distribution_repository` 为分发身份；所有 owned file 必须位于受管组件或 runtime 路径。`owned_file_sha256` 与 owned file 一一绑定，使 Status、重复 Apply 与 Uninstall 能拒绝内容篡改。回执同时记录 `template_version` 与 `template_content_sha256`，供后续初始化计划和漂移检查使用。旧 receipt 没有 runtime binding 时仍可读取。
 
 旧 `agx.bundle/v1`、旧 `agx.receipt/v1`、双组件回执、`components/agent-control` owned file、身份或 digest 不匹配都拒绝。Status 与 Uninstall 仍逐段检查真实目录和 regular file，不跟随 symlink/junction，也不删除回执无法证明归属的文件。
 

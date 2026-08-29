@@ -1,0 +1,22 @@
+version = 3
+prompt = ".cap/prompts/reviewer.md"
+
+[skills]
+allow = ["review-checklist"]
+deny = []
+override = []
+
+[mcps]
+allow = []
+deny = []
+override = []
+
+[hooks]
+allow = []
+deny = []
+override = []
+
+[plugins]
+allow = []
+deny = []
+override = []

@@ -16,5 +16,5 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	return cli.Run(args, version, stdout, stderr)
+	return cli.RunFrozen(args, version, stdout, stderr)
 }

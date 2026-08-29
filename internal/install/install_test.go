@@ -96,6 +96,109 @@ func TestApplyUsesEmbeddedProductionBundleAndKeepsDownloadChecks(t *testing.T) {
 		t.Fatalf("failed production Apply() left target behind: %v", statErr)
 	}
 }
+func TestApplyInstallsAndRecordsDirectConfigsRuntime(t *testing.T) {
+	archive := makeArchive(t, "source/README.md", []byte("inline\n"), tar.TypeReg)
+	runtimeBytes := []byte("synthetic configs runtime\n")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/plugins":
+			_, _ = writer.Write(archive)
+		case "/configs.exe":
+			_, _ = writer.Write(runtimeBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := filepath.Join(t.TempDir(), "installation")
+	receipt, unchanged, err := installer.Apply(context.Background(), installer.Options{
+		BundleData:     developmentBundleWithRuntime(t, server.URL, archive, runtimeBytes),
+		Root:           root,
+		Client:         server.Client(),
+		TargetPlatform: "windows",
+		TargetArch:     "amd64",
+	})
+	if err != nil || unchanged {
+		t.Fatalf("Apply() receipt=%+v unchanged=%v err=%v", receipt, unchanged, err)
+	}
+	const runtimePath = "components/configs-runtime/configs.exe"
+	if receipt.ConfigsRuntime == nil || receipt.ConfigsRuntime.Path != runtimePath ||
+		receipt.OwnedFileSHA256[runtimePath] != sha256Hex(runtimeBytes) {
+		t.Fatalf("runtime receipt = %+v", receipt.ConfigsRuntime)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(runtimePath))); err != nil {
+		t.Fatalf("runtime executable missing: %v", err)
+	}
+	state, err := installer.Status(root)
+	if err != nil || state.Phase != "configured" {
+		t.Fatalf("Status() state=%+v err=%v", state, err)
+	}
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(runtimePath))); err != nil {
+		t.Fatal(err)
+	}
+	state, err = installer.Status(root)
+	if err != nil || state.Phase != "drifted" || len(state.Missing) != 1 || state.Missing[0] != runtimePath {
+		t.Fatalf("Status() runtime drift state=%+v err=%v", state, err)
+	}
+	if _, err := installer.Uninstall(root); err != nil {
+		t.Fatalf("Uninstall() with missing runtime error = %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("Uninstall() left installation root: %v", err)
+	}
+}
+func TestApplyRejectsConfigsRuntimeDigestMismatchBeforeCommit(t *testing.T) {
+	archive := makeArchive(t, "source/README.md", []byte("inline\n"), tar.TypeReg)
+	runtimeBytes := []byte("synthetic configs runtime\n")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/plugins" {
+			_, _ = writer.Write(archive)
+			return
+		}
+		_, _ = writer.Write(runtimeBytes)
+	}))
+	defer server.Close()
+
+	bundleData := developmentBundleWithRuntime(t, server.URL, archive, runtimeBytes)
+	bundleData = bytes.Replace(bundleData, []byte(sha256Hex(runtimeBytes)), []byte(strings.Repeat("a", 64)), 1)
+	root := filepath.Join(t.TempDir(), "installation")
+	_, _, err := installer.Apply(context.Background(), installer.Options{
+		BundleData:     bundleData,
+		Root:           root,
+		Client:         server.Client(),
+		TargetPlatform: "windows",
+		TargetArch:     "amd64",
+	})
+	if err == nil || !strings.Contains(err.Error(), "asset digest mismatch") {
+		t.Fatalf("Apply() error = %v, want runtime asset digest mismatch", err)
+	}
+	if _, statErr := os.Lstat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("failed runtime Apply() left target behind: %v", statErr)
+	}
+}
+
+func developmentBundleWithRuntime(t *testing.T, downloadURL string, archive, runtime []byte) []byte {
+	t.Helper()
+	pluginsURL := downloadURL + "/plugins"
+	runtimeURL := downloadURL + "/configs.exe"
+	return []byte(fmt.Sprintf(`{
+  "schema_version":"agx.bundle/v2","bundle_id":"inline-runtime-bundle","mode":"development",
+  "provenance":"synthetic_test_only","development_override":true,
+  "compatibility":{"agx":"test"},
+  "sources":{"agent_plugins":{"upstream_repository":"zaurakworks/agent-plugins","distribution_repository":"2233admin/agent-plugins","release_tag":"test","commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","asset_name":"plugins.tar.gz","download_url":%q,"asset_sha256":%q,"content_sha256":%q},
+    "configs_runtime":{"runtime_id":"configs","runtime_version":"configs-v0.synthetic","source_repository":"2233admin/agent-systemX","release_tag":"configs-v0.synthetic","commit_sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","contract_version":"configs/v1","artifacts":[{"platform":"windows","architecture":"amd64","asset_name":"configs.exe","download_url":%q,"asset_sha256":%q,"content_sha256":%q}]}},
+  %s
+}`,
+		pluginsURL,
+		sha256Hex(archive),
+		uncompressedSHA256(t, archive),
+		runtimeURL,
+		sha256Hex(runtime),
+		sha256Hex(runtime),
+		templateMetadataJSON(),
+	))
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

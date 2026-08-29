@@ -12,6 +12,7 @@ import (
 
 	"github.com/2233admin/agx/internal/activation"
 	"github.com/2233admin/agx/internal/bundle"
+	"github.com/2233admin/agx/internal/configs"
 	"github.com/2233admin/agx/internal/contracts"
 	"github.com/2233admin/agx/internal/domain"
 	"github.com/2233admin/agx/internal/exitcode"
@@ -30,6 +31,7 @@ type command struct {
 var lifecycleCommands = []command{
 	{name: "plan", description: "Show a side-effect-free Installation Plan"},
 	{name: "apply", description: "Install pinned Bundle assets"},
+	{name: "config", description: "Run the bound configs runtime"},
 	{name: "init", description: "Plan or apply repositories, Project, and provider activation"},
 	{name: "status", description: "Show the observed Installation state"},
 	{name: "diagnose", description: "Explain deployment evidence and next recovery steps"},
@@ -44,11 +46,42 @@ type runtimeDependencies struct {
 	initApply          func(context.Context, activation.Options) (activation.Receipt, bool, error)
 	status             func(context.Context, string, provider.Runner, ...repository.Runner) (activation.State, error)
 	statusWithEvidence func(context.Context, string, provider.Runner, activation.StatusOptions, ...repository.Runner) (activation.State, error)
+	configRun          func(context.Context, string, installer.Receipt, []string, io.Reader, io.Writer, io.Writer) int
 	goos               string
+}
+
+func migrationHandoff(command string, stdout io.Writer) int {
+	result := struct {
+		Kind            string `json:"kind"`
+		Command         string `json:"command"`
+		Next            string `json:"next"`
+		RemoteRetention string `json:"remote_retention"`
+	}{Kind: "migration-handoff", Command: command, Next: "configs", RemoteRetention: "retain"}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return exitcode.Software
+	}
+	fmt.Fprintln(stdout, string(data))
+	return exitcode.Unsupported
 }
 
 func Run(args []string, version string, stdout, stderr io.Writer) int {
 	return runWithDependencies(args, version, stdout, stderr, runtimeDependencies{stdin: os.Stdin, goos: runtime.GOOS})
+}
+
+func RunFrozen(args []string, version string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && isFrozenMutation(args[0]) {
+		return migrationHandoff(args[0], stdout)
+	}
+	return Run(args, version, stdout, stderr)
+}
+func isFrozenMutation(command string) bool {
+	switch command {
+	case "apply", "init", "uninstall", "upgrade", "rollback", "install", "update", "config":
+		return true
+	default:
+		return false
+	}
 }
 
 func runWithDependencies(args []string, version string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
@@ -87,10 +120,12 @@ func runWithDependencies(args []string, version string, stdout, stderr io.Writer
 		return runApply(args[1:], stdout, stderr)
 	case "init":
 		return runInit(args[1:], stdout, stderr, dependencies)
-	case "status":
-		return runStatus(args[1:], stdout, stderr, dependencies)
 	case "uninstall":
 		return runUninstall(args[1:], stdout, stderr)
+	case "config":
+		return runConfig(args[1:], stdout, stderr, dependencies)
+	case "status":
+		return runStatus(args[1:], stdout, stderr, dependencies)
 	case "task", "tasks":
 		fmt.Fprintln(stderr, "AGX-UNSUPPORTED-TASK: AGX does not create, assign, or schedule daily Tasks")
 		return exitcode.Unsupported
@@ -537,6 +572,60 @@ func providerDisplayName(name provider.Name) string {
 	default:
 		return string(name)
 	}
+
+}
+
+func runConfig(args []string, stdout, stderr io.Writer, dependencies runtimeDependencies) int {
+	root, forwarded, err := parseConfigInvocation(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-USAGE-CONFIG: %v\n", err)
+		return exitcode.Usage
+	}
+	state, err := installer.Status(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "AGX-CONFIG-RUNTIME: cannot read installation receipt: %v\n", err)
+		return exitcode.Software
+	}
+	if state.Phase != "configured" || state.Receipt == nil || state.Receipt.ConfigsRuntime == nil {
+		fmt.Fprintln(stderr, "AGX-CONFIG-RUNTIME: installation has no intact configs runtime binding")
+		return exitcode.Software
+	}
+	run := dependencies.configRun
+	if run == nil {
+		run = configs.Run
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return run(ctx, root, *state.Receipt, forwarded, dependencies.stdin, stdout, stderr)
+}
+
+func parseConfigInvocation(args []string) (string, []string, error) {
+	var root string
+	var forwarded []string
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--root":
+			if root != "" || index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+				return "", nil, fmt.Errorf("--root <directory> is required exactly once")
+			}
+			index++
+			root = args[index]
+		case "--runtime", "--runtime-path", "--db-path", "--database-path", "--control-plane-db-path":
+			return "", nil, fmt.Errorf("%s is managed by AGX and cannot be overridden", args[index])
+		default:
+			if strings.HasPrefix(args[index], "--root=") {
+				return "", nil, fmt.Errorf("--root must be provided as a separate option")
+			}
+			forwarded = append(forwarded, args[index])
+		}
+	}
+	if strings.TrimSpace(root) == "" {
+		return "", nil, fmt.Errorf("--root <directory> is required")
+	}
+	if len(forwarded) == 0 {
+		return "", nil, fmt.Errorf("one configs subcommand is required")
+	}
+	return root, forwarded, nil
 }
 
 func runApply(args []string, stdout, stderr io.Writer) int {
@@ -646,14 +735,16 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 		return exitcode.Data
 	}
 	if values["--output"] == "json" {
+		configsRuntime := newConfigsRuntimeStatus(state)
 		result := struct {
-			Phase          string           `json:"phase"`
-			InstallationID string           `json:"installation_id,omitempty"`
-			BundleID       string           `json:"bundle_id,omitempty"`
-			Missing        []string         `json:"missing,omitempty"`
-			Modified       []string         `json:"modified,omitempty"`
-			Initialization activation.State `json:"initialization"`
-		}{Phase: state.Phase, Missing: state.Missing, Modified: state.Modified, Initialization: initialization}
+			Phase          string               `json:"phase"`
+			InstallationID string               `json:"installation_id,omitempty"`
+			BundleID       string               `json:"bundle_id,omitempty"`
+			Missing        []string             `json:"missing,omitempty"`
+			Modified       []string             `json:"modified,omitempty"`
+			ConfigsRuntime configsRuntimeStatus `json:"configs_runtime"`
+			Initialization activation.State     `json:"initialization"`
+		}{Phase: state.Phase, Missing: state.Missing, Modified: state.Modified, ConfigsRuntime: configsRuntime, Initialization: initialization}
 		if state.Receipt != nil {
 			result.InstallationID = state.Receipt.InstallationID
 			result.BundleID = state.Receipt.BundleID
@@ -665,6 +756,14 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 	fmt.Fprintf(stdout, "AGX installation phase: %s\n", state.Phase)
 	if state.Receipt != nil {
 		fmt.Fprintf(stdout, "Installation: %s\nBundle: %s\n", state.Receipt.InstallationID, state.Receipt.BundleID)
+	}
+	runtimeStatus := newConfigsRuntimeStatus(state)
+	fmt.Fprintf(stdout, "Configs runtime: %s\n", runtimeStatus.HumanState)
+	if runtimeStatus.Installed {
+		fmt.Fprintf(stdout, "Configs runtime version: %s\nSource: %s @ %s (commit %s)\nPlatform: %s/%s\nIntegrity: %s\nAsset SHA-256: %s\nContent SHA-256: %s\nPath: %s\n",
+			runtimeStatus.Version, runtimeStatus.SourceRepository, runtimeStatus.ReleaseTag, runtimeStatus.CommitSHA,
+			runtimeStatus.Platform, runtimeStatus.Architecture, runtimeStatus.Integrity,
+			runtimeStatus.AssetSHA256, runtimeStatus.ContentSHA256, runtimeStatus.Path)
 	}
 	for _, missing := range state.Missing {
 		fmt.Fprintf(stdout, "Missing owned file: %s\n", missing)
@@ -682,6 +781,62 @@ func runStatus(args []string, stdout, stderr io.Writer, dependencies runtimeDepe
 	}
 	printStatusNext(stdout, values["--root"], state.Phase, state.Missing, state.Modified, initialization)
 	return exitcode.Success
+}
+
+type configsRuntimeStatus struct {
+	Installed        bool   `json:"installed"`
+	HumanState       string `json:"-"`
+	RuntimeID        string `json:"runtime_id,omitempty"`
+	Version          string `json:"runtime_version,omitempty"`
+	SourceRepository string `json:"source_repository,omitempty"`
+	ReleaseTag       string `json:"release_tag,omitempty"`
+	CommitSHA        string `json:"commit_sha,omitempty"`
+	ContractVersion  string `json:"contract_version,omitempty"`
+	Platform         string `json:"platform,omitempty"`
+	Architecture     string `json:"architecture,omitempty"`
+	AssetSHA256      string `json:"asset_sha256,omitempty"`
+	ContentSHA256    string `json:"content_sha256,omitempty"`
+	Path             string `json:"path,omitempty"`
+	Integrity        string `json:"integrity"`
+	NextAction       string `json:"next_action"`
+}
+
+func newConfigsRuntimeStatus(state installer.State) configsRuntimeStatus {
+	result := configsRuntimeStatus{HumanState: "unbound", Integrity: "unbound", NextAction: "apply a Bundle with configs_runtime"}
+	if state.Receipt == nil || state.Receipt.ConfigsRuntime == nil {
+		return result
+	}
+	binding := state.Receipt.ConfigsRuntime
+	result.Installed = true
+	result.HumanState = "installed"
+	result.RuntimeID = binding.RuntimeID
+	result.Version = binding.Version
+	result.SourceRepository = binding.SourceRepository
+	result.ReleaseTag = binding.ReleaseTag
+	result.CommitSHA = binding.CommitSHA
+	result.ContractVersion = binding.ContractVersion
+	result.Platform = binding.Platform
+	result.Architecture = binding.Architecture
+	result.AssetSHA256 = binding.AssetSHA256
+	result.ContentSHA256 = binding.ContentSHA256
+	result.Path = binding.Path
+	result.Integrity = "matched"
+	result.NextAction = "none"
+	for _, missing := range state.Missing {
+		if missing == binding.Path {
+			result.Integrity = "missing"
+			result.HumanState = "drifted"
+			result.NextAction = "re-apply the same Bundle"
+		}
+	}
+	for _, modified := range state.Modified {
+		if modified == binding.Path {
+			result.Integrity = "modified"
+			result.HumanState = "drifted"
+			result.NextAction = "restore the receipt-bound runtime"
+		}
+	}
+	return result
 }
 
 func printDeploymentVisibility(output io.Writer, state activation.State) {
@@ -1077,6 +1232,11 @@ func showCommandHelp(commandName string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Usage: agx apply --root <directory> [--bundle <bundle.json>]")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Download, verify, and atomically install the built-in production Bundle. Use --bundle only to explicitly override it with a local Bundle file.")
+		return exitcode.Success
+	case "config":
+		fmt.Fprintln(stdout, "Usage: agx config --root <directory> <list|show|compare|use|status|switch|establish|revise|supply> ...")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Validate and run the receipt-bound configs runtime with direct argv and controlled state under the installation root.")
 		return exitcode.Success
 	case "init":
 		fmt.Fprintln(stdout, "Usage: agx init --guided --root <directory>")

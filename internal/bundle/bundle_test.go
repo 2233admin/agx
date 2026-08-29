@@ -295,3 +295,109 @@ func readFixture(t *testing.T, name string) []byte {
 	}
 	return data
 }
+func TestDecodeAcceptsSyntheticConfigsRuntime(t *testing.T) {
+	data := mutateFixture(t, "development-valid.json", func(document map[string]any) {
+		document["sources"].(map[string]any)["configs_runtime"] = syntheticConfigsRuntime()
+	})
+
+	decoded, err := bundle.Decode(data)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	runtime := decoded.Sources.ConfigsRuntime
+	if runtime == nil || runtime.RuntimeID != "configs" || len(runtime.Artifacts) != 1 {
+		t.Fatalf("configs runtime = %#v", runtime)
+	}
+}
+
+func TestDecodeRejectsInvalidConfigsRuntime(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{
+			name: "wrong source repository",
+			mutate: func(document map[string]any) {
+				syntheticConfigsRuntimeMap(document)["source_repository"] = "example/configs"
+			},
+			want: "AGX-BUNDLE-PROVENANCE",
+		},
+		{
+			name: "malformed commit",
+			mutate: func(document map[string]any) {
+				syntheticConfigsRuntimeMap(document)["commit_sha"] = "not-a-commit"
+			},
+			want: "AGX-BUNDLE-VALIDATION",
+		},
+		{
+			name: "duplicate target",
+			mutate: func(document map[string]any) {
+				runtime := syntheticConfigsRuntimeMap(document)
+				runtime["artifacts"] = append(runtime["artifacts"].([]any), runtime["artifacts"].([]any)[0])
+			},
+			want: "AGX-BUNDLE-VALIDATION",
+		},
+		{
+			name: "mutable release URL",
+			mutate: func(document map[string]any) {
+				document["mode"] = "production"
+				document["provenance"] = "github_release"
+				document["development_override"] = false
+				artifact := syntheticConfigsRuntimeMap(document)["artifacts"].([]any)[0].(map[string]any)
+				artifact["download_url"] = "https://github.com/2233admin/agent-systemX/archive/main"
+			},
+			want: "AGX-BUNDLE-PROVENANCE",
+		},
+		{
+			name: "malformed digest",
+			mutate: func(document map[string]any) {
+				artifact := syntheticConfigsRuntimeMap(document)["artifacts"].([]any)[0].(map[string]any)
+				artifact["content_sha256"] = "not-a-digest"
+			},
+			want: "AGX-BUNDLE-VALIDATION",
+		},
+		{
+			name: "release tag path traversal",
+			mutate: func(document map[string]any) {
+				syntheticConfigsRuntimeMap(document)["release_tag"] = "configs-v0/evil"
+			},
+			want: "AGX-BUNDLE-VALIDATION",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data := mutateFixture(t, "development-valid.json", func(document map[string]any) {
+				document["sources"].(map[string]any)["configs_runtime"] = syntheticConfigsRuntime()
+				test.mutate(document)
+			})
+			_, err := bundle.Decode(data)
+			if err == nil || !strings.HasPrefix(err.Error(), test.want) {
+				t.Fatalf("Decode() error = %v, want prefix %q", err, test.want)
+			}
+		})
+	}
+}
+
+func syntheticConfigsRuntime() map[string]any {
+	return map[string]any{
+		"runtime_id":        "configs",
+		"runtime_version":   "configs-v0.synthetic",
+		"source_repository": "2233admin/agent-systemX",
+		"release_tag":       "configs-v0.synthetic",
+		"commit_sha":        strings.Repeat("e", 40),
+		"contract_version":  "configs/v1",
+		"artifacts": []any{map[string]any{
+			"platform":       "windows",
+			"architecture":   "amd64",
+			"asset_name":     "configs-windows-amd64.exe",
+			"download_url":   "https://example.invalid/configs-windows-amd64.exe",
+			"asset_sha256":   strings.Repeat("a", 64),
+			"content_sha256": strings.Repeat("b", 64),
+		}},
+	}
+}
+
+func syntheticConfigsRuntimeMap(document map[string]any) map[string]any {
+	return document["sources"].(map[string]any)["configs_runtime"].(map[string]any)
+}
